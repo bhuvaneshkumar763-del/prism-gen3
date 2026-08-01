@@ -103,6 +103,55 @@ scripts/
   repo's `13.x`, which was meaningless lineage baggage from three
   rewrites.
 
+## Current status
+
+**Session 1 (framework/repo bootstrap) and Session 2 (first vertical
+slice) are complete.** What Session 2 landed:
+- `src/engine/translator.ts`: the `Translator` port every provider
+  implements — deliberately minimal (no batching/retry/concurrency yet;
+  those generalize once there's more than one provider, in Session 4).
+- `src/engine/providers/libretranslate.ts`: a real LibreTranslate provider
+  (documented JSON HTTP API — POST `{q, source, target, format}` to
+  `${baseUrl}/translate`). Chosen deliberately over Google/Bing/Yandex
+  (token-scraping) and the DeepL live-tab bridge (third-party UI
+  automation) for this first slice — see the Gen 3 plan's Session 4 section
+  for why those are deferred. Calls `fetch` directly — that's fine per the
+  engine-purity rule (`fetch` is a standard Web API, not `chrome`/
+  `browser`-namespaced — see `src/engine/README.md`).
+- `src/platform/providerConfig.ts`: reads the provider's `{baseUrl,
+  apiKey}` from `browser.storage.local` — the one genuinely
+  `chrome`-namespaced capability this slice needed, kept out of
+  `src/engine/` on purpose. A real config schema/store is Session 3; this
+  is deliberately the smallest version of "read config from storage" that
+  proves the seam.
+- `entrypoints/background.ts`: one raw message type (`translateText`) —
+  not the full typed messaging protocol yet (that's Session 6, once there
+  are enough real message types to design well against).
+- `entrypoints/content.ts` + `entrypoints/popup/App.tsx`: click "Translate"
+  → background translates the page's first `<p>` via the real provider →
+  content script writes the result back into the real page. Not the real
+  page-translation engine (dedupe/mutationWatcher/resweep/grouping/
+  translateLoop is Session 5) — just enough DOM plumbing to prove the
+  pipeline end to end.
+- **Verified for real, not just "the build succeeded"**: a Playwright run
+  against the actual built extension, with a local mock LibreTranslate-
+  shaped HTTP server and a local static test page — confirmed a genuine
+  network POST, a genuine background↔content-script round trip, and a
+  genuine DOM mutation on the page. No third-party API credentials were
+  available to hit a real LibreTranslate instance (every public instance
+  checked either requires a paid API key now or was down) — the mock
+  server matches this project's own established "local mock + local test
+  page" verification convention from the old repo, not a shortcut.
+- **A real platform quirk found while writing that verification, not a
+  product bug**: `chrome.runtime.sendMessage` never delivers back to the
+  exact execution context that sent it (Chrome deliberately doesn't loop a
+  message back to its own sender) — this only matters for test scripts
+  that try to simulate a message send from the service worker's own
+  `evaluate()` context; real popup→background calls are a genuinely
+  different JS realm and are unaffected. Documented here so it isn't
+  rediscovered as "the messaging is broken" in a future session's
+  real-round-trip verification.
+
 ## Testing
 
 Run before considering any Gen 3 change done:
@@ -122,15 +171,28 @@ All of steps 1-4 run in CI (`.github/workflows/ci.yml`) on every push to
 
 ## Known gaps (expected at this stage, not oversights)
 
-- No real feature code yet — Session 1 only bootstraps the repo/tooling.
-  Session 2 is the first session that gets a real translated word on a
-  real page.
-- No E2E test harness yet (the old repo's Playwright pattern — full Chrome
-  with `--headless=new`, since `chrome-headless-shell` silently doesn't
-  support extensions at all — is the reference to follow when this gets
-  built, likely Session 9).
+- Only one provider (LibreTranslate) and one message type exist. Google/
+  Bing/Yandex/LLM/Builtin providers, the shared retry/batching/concurrency
+  machinery, and the DeepL-live-tab-bridge decision are Session 4.
+- No real config schema/store yet — `src/platform/providerConfig.ts` is a
+  deliberately minimal placeholder. Session 3 builds the real thing
+  (versioned migrations, the settings-sync deferral decision, export/
+  import).
+- No real page-translation engine yet — `entrypoints/content.ts` only
+  handles one hardcoded `<p>`. Session 5 builds dedupe/mutationWatcher/
+  resweep/grouping/translateLoop.
+- No permission-model decision made yet — `wxt.config.ts` only requests
+  `"storage"` so far (needed for `providerConfig.ts`). Broad `<all_urls>`-
+  style access (matching the old repo's final, reverted-to state) is a
+  deliberate Session 7 decision, not decided by omission.
+- No E2E test harness committed yet (the old repo's Playwright pattern —
+  full Chrome with `--headless=new`, since `chrome-headless-shell` silently
+  doesn't support extensions at all — is the reference to follow when this
+  gets built, likely Session 9). Session 2's real-network verification was
+  done ad hoc, matching the old repo's own established pattern for this
+  kind of check, not committed as a permanent test yet.
 - No release/changesets infra yet (Session 9).
 - Icons/branding are still the WXT template defaults
-  (`assets/solid.svg`, `public/wxt.svg`, `public/icon/*.png`) — real Prism
-  branding work isn't scoped to a specific session yet in the plan; revisit
-  when it becomes a blocker (likely alongside UI-surface sessions).
+  (`public/icon/*.png`) — real Prism branding work isn't scoped to a
+  specific session yet in the plan; revisit when it becomes a blocker
+  (likely alongside UI-surface sessions).
