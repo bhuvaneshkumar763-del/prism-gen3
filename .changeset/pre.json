@@ -1,0 +1,8 @@
+{
+  "mode": "pre",
+  "tag": "beta",
+  "initialVersions": {
+    "prism-gen3": "0.2.1"
+  },
+  "changesets": ["enter-beta-prerelease"]
+}
