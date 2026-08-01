@@ -13,11 +13,20 @@ export default defineConfig({
   manifest: {
     name: 'Prism',
     description: 'Prism — AI Page Translator (Gen 3)',
-    // "storage" for provider config (src/platform/providerConfig.ts).
-    // Host permissions/broad access is a deliberate later-session decision
-    // (Session 7 — see the Gen 3 plan and CLAUDE.md's note on the old
-    // repo's storage.sync/permission-model incident history) — not
-    // decided yet, so nothing beyond "storage" is requested this session.
-    permissions: ['storage'],
+    // "storage" for provider/settings config. "contextMenus" and
+    // "activeTab" back Session 6's right-click translate/restore menu
+    // items and getActiveTabId()-based tab targeting — activeTab grants
+    // this without needing a broad host permission. Full <all_urls>-style
+    // access (for automatic/always-translate to work without a user
+    // gesture first) is still a deliberate later-session decision — see
+    // the Gen 3 plan and CLAUDE.md's note on the old repo's
+    // storage.sync/permission-model incident history.
+    permissions: ['storage', 'contextMenus', 'activeTab'],
+    commands: {
+      'toggle-translate-page': {
+        suggested_key: { default: 'Alt+Shift+T' },
+        description: 'Translate or restore the current page',
+      },
+    },
   },
 });

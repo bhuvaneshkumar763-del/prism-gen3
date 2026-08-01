@@ -1,4 +1,5 @@
 import type { PieceOutcome, TranslateBatchRequest, Translator } from '../engine/translator';
+import { sendMessage } from './messaging/protocol';
 
 /**
  * Implements the engine's `Translator` port by messaging the background
@@ -13,21 +14,10 @@ import type { PieceOutcome, TranslateBatchRequest, Translator } from '../engine/
  * here (e.g. one that calls a translation API directly) and reuse
  * `translateLoop.ts` unmodified.
  */
-
-export interface TranslatePiecesMessage extends TranslateBatchRequest {
-  type: 'translatePieces';
-}
-
-export function isTranslatePiecesMessage(message: unknown): message is TranslatePiecesMessage {
-  return typeof message === 'object' && message !== null && (message as { type?: unknown }).type === 'translatePieces';
-}
-
 export function createRemoteTranslator(): Translator {
   return {
     async translateBatch(request: TranslateBatchRequest): Promise<PieceOutcome[]> {
-      const message: TranslatePiecesMessage = { type: 'translatePieces', ...request };
-      const response = await browser.runtime.sendMessage(message);
-      return response as PieceOutcome[];
+      return sendMessage('translatePieces', request);
     },
   };
 }

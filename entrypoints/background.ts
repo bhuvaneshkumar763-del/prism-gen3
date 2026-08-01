@@ -1,36 +1,20 @@
 import { createProvider, type ProviderConfig } from '../src/engine/providers/registry';
 import { translateOne } from '../src/engine/translator';
 import { configStore } from '../src/platform/configStore';
-import { isTranslatePiecesMessage } from '../src/platform/remoteTranslator';
+import { onMessage, sendMessage } from '../src/platform/messaging/protocol';
+import { getActiveTabId } from '../src/platform/messaging/tabTarget';
 
 /**
- * Session 2's minimal vertical slice: exactly one message type
- * ("translateText"). A real typed messaging protocol (matching the old
- * repo's @webext-core/messaging pattern, but redesigned to fix its
- * tab-targeting duplication — see the Gen 3 plan) lands in Session 6 once
- * there are enough real message types to design well against.
- *
- * Session 4 update: provider selection now goes through
- * `registry.createProvider()` and the config store's real per-provider
- * fields (`pageTranslatorProvider` picks which one), instead of hardcoding
- * LibreTranslate.
- *
- * Session 5 update: a second message type, `translatePieces`, is the
- * backing for `src/platform/remoteTranslator.ts` — the real full-page
- * translation engine (`src/engine/pageTranslator/translateLoop.ts`) sends
- * its grouped/chunked pieces here and gets back one `PieceOutcome` per
- * piece, using the exact same provider-selection logic as `translateText`.
+ * Session 6 update: rewired onto the typed messaging protocol
+ * (`src/platform/messaging/protocol.ts`) — `translateText`/`translatePieces`
+ * handlers are unchanged in behavior, just declared via `onMessage()`
+ * instead of a hand-rolled `browser.runtime.onMessage` listener with type
+ * guards. Also adds the context-menu and keyboard-command entry points for
+ * full-page translate/restore, both going through `getActiveTabId()`
+ * (`tabTarget.ts`) — the same helper `popup/App.tsx` uses, so tab-lookup
+ * logic exists in exactly one place, not hand-duplicated per entry point
+ * (the exact smell the Gen 3 plan called out in the old repo).
  */
-interface TranslateTextMessage {
-  type: 'translateText';
-  text: string;
-  sourceLanguage: string;
-  targetLanguage: string;
-}
-
-function isTranslateTextMessage(message: unknown): message is TranslateTextMessage {
-  return typeof message === 'object' && message !== null && (message as { type?: unknown }).type === 'translateText';
-}
 
 function buildProviderConfig(): ProviderConfig {
   const llmBaseUrl = configStore.get('llmBaseUrl');
@@ -57,43 +41,66 @@ async function resolveActiveProvider() {
   return { providerId, provider };
 }
 
+const TRANSLATE_MENU_ID = 'prism-translate-page';
+const RESTORE_MENU_ID = 'prism-show-original';
+
+async function translateActiveTab(): Promise<void> {
+  await configStore.onReady();
+  const tabId = await getActiveTabId();
+  await sendMessage('pageTranslate', { targetLanguage: configStore.get('targetLanguage') }, tabId);
+}
+
+async function restoreActiveTab(): Promise<void> {
+  const tabId = await getActiveTabId();
+  await sendMessage('pageRestore', undefined, tabId);
+}
+
+/** Toggles based on the active tab's current state — used by the keyboard command, where there's no separate "translate" vs "restore" affordance to pick from. */
+async function toggleActiveTab(): Promise<void> {
+  const tabId = await getActiveTabId();
+  const state = await sendMessage('getPageState', undefined, tabId);
+  if (state === 'translated') {
+    await sendMessage('pageRestore', undefined, tabId);
+  } else {
+    await configStore.onReady();
+    await sendMessage('pageTranslate', { targetLanguage: configStore.get('targetLanguage') }, tabId);
+  }
+}
+
 export default defineBackground(() => {
-  browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (isTranslateTextMessage(message)) {
-      (async () => {
-        const { providerId, provider } = await resolveActiveProvider();
-        if (!provider) {
-          sendResponse({
-            ok: false,
-            error: { kind: 'network', message: `[${providerId}] not configured or unavailable` },
-          });
-          return;
-        }
-        const result = await translateOne(provider, message.text, message.sourceLanguage, message.targetLanguage);
-        sendResponse(result);
-      })();
-      return true; // keep the message channel open for the async sendResponse above
+  onMessage('translateText', async (message) => {
+    const { providerId, provider } = await resolveActiveProvider();
+    if (!provider) {
+      return { ok: false, error: { kind: 'network', message: `[${providerId}] not configured or unavailable` } };
     }
+    return translateOne(provider, message.data.text, message.data.sourceLanguage, message.data.targetLanguage);
+  });
 
-    if (isTranslatePiecesMessage(message)) {
-      (async () => {
-        const { providerId, provider } = await resolveActiveProvider();
-        if (!provider) {
-          const error = { kind: 'network' as const, message: `[${providerId}] not configured or unavailable` };
-          sendResponse(message.pieces.map(() => ({ ok: false, error })));
-          return;
-        }
-        const outcomes = await provider.translateBatch({
-          sourceLanguage: message.sourceLanguage,
-          targetLanguage: message.targetLanguage,
-          pieces: message.pieces,
-          dontSortResults: message.dontSortResults,
-        });
-        sendResponse(outcomes);
-      })();
-      return true;
+  onMessage('translatePieces', async (message) => {
+    const { providerId, provider } = await resolveActiveProvider();
+    if (!provider) {
+      const error = { kind: 'network' as const, message: `[${providerId}] not configured or unavailable` };
+      return message.data.pieces.map(() => ({ ok: false, error }));
     }
+    return provider.translateBatch(message.data);
+  });
 
-    return undefined;
+  browser.contextMenus.create({
+    id: TRANSLATE_MENU_ID,
+    title: 'Translate this page',
+    contexts: ['page'],
+  });
+  browser.contextMenus.create({
+    id: RESTORE_MENU_ID,
+    title: 'Show original text',
+    contexts: ['page'],
+  });
+  browser.contextMenus.onClicked.addListener((info) => {
+    if (info.menuItemId === TRANSLATE_MENU_ID) void translateActiveTab();
+    if (info.menuItemId === RESTORE_MENU_ID) void restoreActiveTab();
+  });
+
+  browser.commands.onCommand.addListener((command) => {
+    if (command === 'toggle-translate-page') void toggleActiveTab();
   });
 });

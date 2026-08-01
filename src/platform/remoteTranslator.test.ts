@@ -1,25 +1,30 @@
 import { fakeBrowser } from '@webext-core/fake-browser';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ok } from '../shared/result';
-import { createRemoteTranslator, isTranslatePiecesMessage } from './remoteTranslator';
+import { onMessage } from './messaging/protocol';
+import { createRemoteTranslator } from './remoteTranslator';
 
 describe('createRemoteTranslator', () => {
+  let unsubscribe: (() => void) | undefined;
+
   beforeEach(() => {
     fakeBrowser.reset();
   });
 
+  afterEach(() => {
+    // @webext-core/messaging only allows one listener per message type per
+    // JS context — the module-level messenger instance persists across
+    // tests in this file, so each test's onMessage() registration must be
+    // torn down or the next one throws "only one listener can be setup".
+    unsubscribe?.();
+    unsubscribe = undefined;
+  });
+
   it('sends a translatePieces message and returns the response as-is', async () => {
     let received: unknown;
-    // fake-browser mimics the classic sendResponse+`return true` async
-    // messaging pattern (same as entrypoints/background.ts's real
-    // listener), not a directly-returned Promise — see runtime.sendMessage
-    // in @webext-core/fake-browser: it only awaits the response if a
-    // listener's return value is literally `true`.
-    fakeBrowser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-      if (!isTranslatePiecesMessage(message)) return undefined;
-      received = message;
-      sendResponse([ok(['hola'])]);
-      return true;
+    unsubscribe = onMessage('translatePieces', (message) => {
+      received = message.data;
+      return [ok(['hola'])];
     });
 
     const translator = createRemoteTranslator();
@@ -31,7 +36,6 @@ describe('createRemoteTranslator', () => {
 
     expect(result).toEqual([{ ok: true, value: ['hola'] }]);
     expect(received).toMatchObject({
-      type: 'translatePieces',
       sourceLanguage: 'en',
       targetLanguage: 'es',
       pieces: [['hello']],
@@ -40,10 +44,9 @@ describe('createRemoteTranslator', () => {
 
   it('forwards dontSortResults through to the message', async () => {
     let received: unknown;
-    fakeBrowser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-      received = message;
-      sendResponse([]);
-      return true;
+    unsubscribe = onMessage('translatePieces', (message) => {
+      received = message.data;
+      return [];
     });
 
     const translator = createRemoteTranslator();
@@ -54,15 +57,6 @@ describe('createRemoteTranslator', () => {
       dontSortResults: true,
     });
 
-    expect(received).toMatchObject({ type: 'translatePieces', dontSortResults: true });
-  });
-});
-
-describe('isTranslatePiecesMessage', () => {
-  it('is true only for a translatePieces-typed object', () => {
-    expect(isTranslatePiecesMessage({ type: 'translatePieces' })).toBe(true);
-    expect(isTranslatePiecesMessage({ type: 'somethingElse' })).toBe(false);
-    expect(isTranslatePiecesMessage(null)).toBe(false);
-    expect(isTranslatePiecesMessage('translatePieces')).toBe(false);
+    expect(received).toMatchObject({ dontSortResults: true });
   });
 });

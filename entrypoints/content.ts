@@ -1,29 +1,35 @@
 import { shouldAutoTranslateOnLoad } from '../src/engine/pageTranslator/autoTranslateDecision';
-import { createPageTranslator, type PageLanguageState } from '../src/engine/pageTranslator/translateLoop';
+import { createPageTranslator } from '../src/engine/pageTranslator/translateLoop';
 import { getBatchingHint } from '../src/engine/providers/descriptors';
 import { configStore } from '../src/platform/configStore';
+import { onMessage } from '../src/platform/messaging/protocol';
 import { createOriginalLanguageTracker } from '../src/platform/originalLanguageTracker';
 import { createRemoteTranslator } from '../src/platform/remoteTranslator';
 
 /**
  * Wires the real page-translation engine (Session 5:
  * `src/engine/pageTranslator/translateLoop.ts`) into a live content
- * script. Replaces Session 2's single-hardcoded-`<p>` demo — this now
- * translates (and restores) the whole page, keeps watching for new/changed
- * content, and picks its chunking strategy per the active provider's
- * `batchingHint` (see `descriptors.ts`/`grouping.ts`).
+ * script. Translates (and restores) the whole page, keeps watching for
+ * new/changed content, and picks its chunking strategy per the active
+ * provider's `batchingHint` (see `descriptors.ts`/`grouping.ts`).
  *
  * The engine itself never touches `browser.*` — `createRemoteTranslator()`
  * (src/platform/remoteTranslator.ts) is the one adapter bridging it to
- * `browser.runtime.sendMessage`, and `configStore` supplies the current
+ * the typed messaging protocol, and `configStore` supplies the current
  * provider/source-language selection.
  *
- * Auto-translate-on-load (also Session 5): detects the page's language via
+ * Auto-translate-on-load: detects the page's language via
  * `originalLanguageTracker`, then defers the actual yes/no call to the pure
  * `shouldAutoTranslateOnLoad` decision function against the current
  * always/never-translate-sites/langs config lists. Main-frame only for now
  * — see `originalLanguageTracker.ts`'s header comment for why iframes are a
  * documented gap, not a silent one.
+ *
+ * Session 6: `pageTranslate`/`pageRestore`/`getPageState` are now declared
+ * via the typed protocol's `onMessage()` (`src/platform/messaging/protocol.ts`)
+ * instead of a hand-rolled `browser.runtime.onMessage` listener with
+ * manual type guards — both the popup and `background.ts`'s context-menu/
+ * keyboard-command handlers send these same 3 message types.
  */
 export default defineContentScript({
   matches: ['*://*/*'],
@@ -58,48 +64,15 @@ export default defineContentScript({
       })();
     }
 
-    interface PageTranslateMessage {
-      type: 'pageTranslate';
-      targetLanguage: string;
-    }
-    interface PageRestoreMessage {
-      type: 'pageRestore';
-    }
-    interface GetPageStateMessage {
-      type: 'getPageState';
-    }
-
-    function isPageTranslateMessage(message: unknown): message is PageTranslateMessage {
-      return (
-        typeof message === 'object' && message !== null && (message as { type?: unknown }).type === 'pageTranslate'
-      );
-    }
-    function isPageRestoreMessage(message: unknown): message is PageRestoreMessage {
-      return typeof message === 'object' && message !== null && (message as { type?: unknown }).type === 'pageRestore';
-    }
-    function isGetPageStateMessage(message: unknown): message is GetPageStateMessage {
-      return typeof message === 'object' && message !== null && (message as { type?: unknown }).type === 'getPageState';
-    }
-
-    browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-      if (isPageTranslateMessage(message)) {
-        (async () => {
-          await configStore.onReady();
-          await pageTranslator.translatePage(message.targetLanguage);
-          sendResponse(pageTranslator.getState() satisfies PageLanguageState);
-        })();
-        return true;
-      }
-      if (isPageRestoreMessage(message)) {
-        pageTranslator.restorePage();
-        sendResponse(pageTranslator.getState() satisfies PageLanguageState);
-        return false;
-      }
-      if (isGetPageStateMessage(message)) {
-        sendResponse(pageTranslator.getState() satisfies PageLanguageState);
-        return false;
-      }
-      return undefined;
+    onMessage('pageTranslate', async (message) => {
+      await configStore.onReady();
+      await pageTranslator.translatePage(message.data.targetLanguage);
+      return pageTranslator.getState();
     });
+    onMessage('pageRestore', () => {
+      pageTranslator.restorePage();
+      return pageTranslator.getState();
+    });
+    onMessage('getPageState', () => pageTranslator.getState());
   },
 });

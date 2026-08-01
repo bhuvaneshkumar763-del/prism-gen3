@@ -1,31 +1,30 @@
 import { createSignal, onMount, Show } from 'solid-js';
 import type { PageLanguageState } from '../../src/engine/pageTranslator/translateLoop';
 import { configStore } from '../../src/platform/configStore';
+import { sendMessage } from '../../src/platform/messaging/protocol';
+import { getActiveTabId } from '../../src/platform/messaging/tabTarget';
 import './App.css';
 
 /**
- * Session 5 update: triggers the real page-translation engine
+ * Triggers the real page-translation engine
  * (`src/engine/pageTranslator/translateLoop.ts`, wired into
- * `entrypoints/content.ts`) — translate/restore the whole active tab, not
- * just a demo `<p>`. Still not the real popup UI (language pickers,
- * service switcher, ... — that's Session 6); this is the minimal control
- * surface needed to exercise the real engine end to end.
+ * `entrypoints/content.ts`) — translate/restore the whole active tab.
+ * Session 6: rewired onto the typed messaging protocol and the shared
+ * `getActiveTabId()` helper (`src/platform/messaging/tabTarget.ts`), the
+ * same one `background.ts`'s context-menu/keyboard-command handlers use —
+ * no more hand-duplicated tab-lookup logic per entry point. Still not the
+ * fully polished popup UI (language pickers, service switcher, ... —
+ * options page lands this session; further popup polish is a follow-up).
  */
 function App() {
   const [status, setStatus] = createSignal<'idle' | 'busy' | 'error'>('idle');
   const [pageState, setPageState] = createSignal<PageLanguageState>('original');
   const [errorMessage, setErrorMessage] = createSignal<string | null>(null);
 
-  async function activeTabId(): Promise<number> {
-    const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
-    if (!tab?.id) throw new Error('No active tab');
-    return tab.id;
-  }
-
   onMount(async () => {
     try {
-      const tabId = await activeTabId();
-      const state = (await browser.tabs.sendMessage(tabId, { type: 'getPageState' })) as PageLanguageState;
+      const tabId = await getActiveTabId();
+      const state = await sendMessage('getPageState', undefined, tabId);
       setPageState(state);
     } catch {
       // No content script alive yet in this tab (e.g. a chrome:// page, or
@@ -40,11 +39,8 @@ function App() {
     try {
       await configStore.onReady();
       const targetLanguage = configStore.get('targetLanguage');
-      const tabId = await activeTabId();
-      const state = (await browser.tabs.sendMessage(tabId, {
-        type: 'pageTranslate',
-        targetLanguage,
-      })) as PageLanguageState;
+      const tabId = await getActiveTabId();
+      const state = await sendMessage('pageTranslate', { targetLanguage }, tabId);
       setPageState(state);
       setStatus('idle');
     } catch (e) {
@@ -57,8 +53,8 @@ function App() {
     setStatus('busy');
     setErrorMessage(null);
     try {
-      const tabId = await activeTabId();
-      const state = (await browser.tabs.sendMessage(tabId, { type: 'pageRestore' })) as PageLanguageState;
+      const tabId = await getActiveTabId();
+      const state = await sendMessage('pageRestore', undefined, tabId);
       setPageState(state);
       setStatus('idle');
     } catch (e) {

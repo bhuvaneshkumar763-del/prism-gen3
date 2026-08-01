@@ -391,6 +391,74 @@ slice) are complete.** What Session 2 landed:
     cut inherited from the plan — every text node still gets found and
     translated correctly, just without those extras.
 
+**Session 6 (messaging, options page, first content-script trigger
+surfaces) is in progress.** What's landed so far:
+- **Typed messaging protocol**: `src/platform/messaging/protocol.ts`
+  defines every message this extension sends as one `ProtocolMap`
+  interface, built on `@webext-core/messaging`'s
+  `defineExtensionMessaging()` — compile-time checked at both ends (payload
+  AND response shape), and unifies content-script/popup → background
+  (`runtime.sendMessage`) and popup/background → a specific tab's content
+  script (`tabs.sendMessage`) into one `sendMessage(type, data, tabId?)`
+  call, replacing the hand-rolled `isXMessage()` type-guard-per-message-type
+  pattern Sessions 2-5 used. Lives in `src/platform/` (not `src/shared/`)
+  even though `ProtocolMap` is just types — `defineExtensionMessaging()`
+  itself binds to `browser.runtime` at module-evaluation time, which
+  belongs behind the platform boundary.
+- **`src/platform/messaging/tabTarget.ts`**: the one place that knows how
+  to find "the tab a page-scoped message should go to"
+  (`getActiveTabId()`) — the exact duplication the plan called out in the
+  old repo (hand-copied between the messaging layer and `background.ts`)
+  doesn't exist here at all: `popup/App.tsx`'s translate/restore buttons
+  and `background.ts`'s new context-menu/keyboard-command handlers both
+  call this same function.
+- `remoteTranslator.ts`, `background.ts`, `content.ts`, `popup/App.tsx` all
+  rewired onto the typed protocol — behavior unchanged, verified with a
+  real Playwright round trip (popup translate → mock LLM → DOM update →
+  popup restore) against the rebuilt extension after the rewire.
+- **New trigger surfaces**, both routed through `getActiveTabId()` +
+  `sendMessage()`, no new tab-lookup logic: a right-click context menu
+  ("Translate this page" / "Show original text") and a keyboard command
+  (`Alt+Shift+T`, toggles translate/restore based on the tab's current
+  `getPageState()` result — the only one of the three trigger paths that
+  needs a toggle rather than two separate affordances, since a keyboard
+  shortcut has no separate "translate" vs. "restore" button to bind to).
+  `wxt.config.ts` gained the `contextMenus`/`activeTab` permissions and a
+  `commands` manifest entry for this.
+- **The options page** (`entrypoints/options/`) — Prism's biggest
+  functional gap before this: `googleCloudTranslateApiKey`, all 3 `llm*`
+  fields, and the 4 always/never-translate lists (added in Session 5) had
+  zero UI anywhere to set them. Scoped to the plan's explicit "start with
+  General + Translation services only" — 3 sections (General, Translation
+  service, Automatic translation), not the old repo's 6-tab layout, since
+  the other old-repo sections (Selection & hover, Voice, Dictionary,
+  Advanced/diagnostics) don't exist as features in Gen 3 yet at all.
+  Mirrors `configStore` into a local Solid store synced via
+  `configStore.onChanged` (the `createStore`-mirror pattern, not direct
+  `configStore.get()` reads inside JSX — a known Solid-reactivity foot-gun
+  in this codebase's lineage, avoided from the start here rather than hit
+  and fixed later). Verified for real against the built extension: field
+  edits persist to `chrome.storage.local` correctly, and a page reload
+  re-hydrates every field from storage (not just optimistic local state).
+- **Custom dictionary: explicitly not built this session**, not a silent
+  gap — no config keys, no UI. The plan's own guidance for this feature is
+  "wire it for real or don't build the UI/config for it yet at all," and
+  building it properly (exact-match substitution actually applied inside
+  `translateLoop.ts`'s translate path) is real scope on top of an already
+  large session; shipping a settings field with no effect would repeat the
+  exact non-functional-placeholder mistake the plan explicitly warns
+  against. Deferred to a dedicated follow-up, not silently dropped.
+- **Remaining UI surfaces intentionally not started this pass**: floating
+  bubble, selection translation, hover tooltips, mobile popup. Each is
+  genuinely new content-script UI work (shadow-DOM styling, the bubble's
+  drag/edge-docking math, ...) — the same category of scope the old repo
+  spent most of a dedicated session on. Rushing 4 of these in the tail end
+  of a session already covering messaging + options would risk the same
+  "half-built, non-functional" outcome the custom-dictionary call above is
+  explicitly avoiding. Popup itself also still has only the minimal
+  translate/restore button from Session 5 — language pickers and a service
+  switcher are unstarted. All of this is the next thing to pick up.
+
 ## Testing
 
 Run before considering any Gen 3 change done:
@@ -414,20 +482,30 @@ All of steps 1-4 run in CI (`.github/workflows/ci.yml`) on every push to
   deliberate Session 4 deferral, see
   `docs/decisions/0005-deepl-live-tab-bridge.md`.
 - No iframe support for auto-translate-on-load — main-frame only, see
-  `originalLanguageTracker.ts`'s header comment (needs Session 6's
-  messaging layer to relay the main frame's detected language into
-  same-origin iframes without each one detecting independently).
+  `originalLanguageTracker.ts`'s header comment. The typed messaging layer
+  this needs now exists (Session 6); relaying a main frame's detected
+  language into same-origin iframes is still unbuilt.
 - No element-attribute translation (placeholder/title/alt/aria-label) or
   custom-dictionary application — every text node still gets found and
   translated correctly, this is the same documented phase-2 scope cut the
-  plan calls out, not a regression.
-- No permission-model decision made yet — `wxt.config.ts` only requests
-  `"storage"` so far (needed for `configStore.ts`). Broad `<all_urls>`-
-  style access (matching the old repo's final, reverted-to state) is a
-  deliberate Session 7 decision, not decided by omission.
+  plan calls out, not a regression. Custom dictionary specifically:
+  deliberately not started in Session 6 either, see that session's writeup.
+- No floating bubble, selection translation, hover tooltips, or mobile
+  popup — deliberately not started in Session 6 (see that session's
+  writeup for why), a clean pickup for the next UI-focused session.
+- Popup is still minimal (one translate/restore button) — no language
+  pickers or service switcher yet; the options page is where those
+  settings live for now.
+- No permission-model decision made yet beyond `contextMenus`/`activeTab`
+  (Session 6, for the right-click menu and tab targeting). Broad
+  `<all_urls>`-style access (matching the old repo's final, reverted-to
+  state, needed for automatic/always-translate to work without a prior
+  user gesture) is still a deliberate later-session decision, not decided
+  by omission.
 - No options/backup UI wired to `configStore.export()`/`import()` yet —
-  Session 6/7 builds the UI surface; the storage mechanism itself is fully
-  tested (see the Session 3 writeup above).
+  the storage mechanism itself is fully tested (see the Session 3
+  writeup above); Session 6's options page covers General/Translation
+  service/Automatic-translation only, not backup/export.
 - No E2E test harness committed yet (the old repo's Playwright pattern —
   full Chrome with `--headless=new`, since `chrome-headless-shell` silently
   doesn't support extensions at all — is the reference to follow when this
