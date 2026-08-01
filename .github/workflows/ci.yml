@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run compile
+
+      # Gen 3 plan, design principle #3: the engine/browser-API boundary is
+      # mechanically enforced, not just conventional — see
+      # scripts/check-engine-purity.mjs and src/engine/README.md.
+      - name: Engine-purity guard
+        run: npm run guard:engine-purity
+
+      # Gen 3 plan, design principle #2: coverage is a CI gate from
+      # Session 1, not backfilled after the fact. Scoped to src/engine/ and
+      # src/shared/ — see vitest.config.ts's coverage.include/thresholds.
+      # Extension-UI coverage under entrypoints/ is a deliberate, documented
+      # carve-out, not a silent gap.
+      - name: Unit tests + coverage gate
+        run: npm run test:coverage
+
+      - name: Build extension
+        run: npm run build
