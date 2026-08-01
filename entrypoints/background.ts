@@ -1,19 +1,31 @@
 import { createProvider, type ProviderConfig } from '../src/engine/providers/registry';
+import type { PieceOutcome } from '../src/engine/translator';
 import { translateOne } from '../src/engine/translator';
+import { cacheKeyFor, translationCache } from '../src/platform/cache/translationCache';
 import { configStore } from '../src/platform/configStore';
 import { onMessage, sendMessage } from '../src/platform/messaging/protocol';
 import { getActiveTabId } from '../src/platform/messaging/tabTarget';
 
 /**
- * Session 6 update: rewired onto the typed messaging protocol
+ * Session 6: rewired onto the typed messaging protocol
  * (`src/platform/messaging/protocol.ts`) — `translateText`/`translatePieces`
- * handlers are unchanged in behavior, just declared via `onMessage()`
- * instead of a hand-rolled `browser.runtime.onMessage` listener with type
- * guards. Also adds the context-menu and keyboard-command entry points for
- * full-page translate/restore, both going through `getActiveTabId()`
- * (`tabTarget.ts`) — the same helper `popup/App.tsx` uses, so tab-lookup
- * logic exists in exactly one place, not hand-duplicated per entry point
- * (the exact smell the Gen 3 plan called out in the old repo).
+ * handlers declared via `onMessage()` instead of a hand-rolled
+ * `browser.runtime.onMessage` listener with type guards. Also adds the
+ * context-menu and keyboard-command entry points for full-page
+ * translate/restore, both going through `getActiveTabId()`
+ * (`tabTarget.ts`) — the same helper `popup/App.tsx` uses.
+ *
+ * Session 7: `translatePieces` checks `translationCache`
+ * (`src/platform/cache/translationCache.ts`) before hitting the provider —
+ * cache key is the provider + language pair + the piece's own text (a
+ * JSON-stringified string array, since a piece can hold more than one
+ * grouped string). Only the pieces that miss actually get sent to the
+ * provider; fresh results are written back for next time. `translateText`
+ * deliberately does NOT go through the cache — it backs the selection
+ * popup and title translator, both already have their own narrower
+ * caching (title translator: an in-memory 50-entry cache; selection: a
+ * one-off translation the user just asked for, no repeat-request pattern
+ * to optimize).
  */
 
 function buildProviderConfig(): ProviderConfig {
@@ -78,11 +90,52 @@ export default defineBackground(() => {
 
   onMessage('translatePieces', async (message) => {
     const { providerId, provider } = await resolveActiveProvider();
+    const { sourceLanguage, targetLanguage, pieces, dontSortResults } = message.data;
+
     if (!provider) {
       const error = { kind: 'network' as const, message: `[${providerId}] not configured or unavailable` };
-      return message.data.pieces.map(() => ({ ok: false, error }));
+      return pieces.map(() => ({ ok: false, error }));
     }
-    return provider.translateBatch(message.data);
+
+    const pieceKeys = pieces.map((piece) =>
+      cacheKeyFor(providerId, sourceLanguage, targetLanguage, JSON.stringify(piece)),
+    );
+    const cachedValues = await Promise.all(pieceKeys.map((key) => translationCache.get(key)));
+
+    const missingIndices: number[] = [];
+    pieces.forEach((_, i) => {
+      if (cachedValues[i] === null) missingIndices.push(i);
+    });
+
+    let freshOutcomes: PieceOutcome[] = [];
+    if (missingIndices.length > 0) {
+      const missingPieces = missingIndices
+        .map((i) => pieces[i])
+        .filter((p): p is (typeof pieces)[number] => p !== undefined);
+      freshOutcomes = await provider.translateBatch({
+        sourceLanguage,
+        targetLanguage,
+        pieces: missingPieces,
+        dontSortResults,
+      });
+    }
+
+    const outcomes: PieceOutcome[] = pieces.map((_, i) => {
+      const cached = cachedValues[i];
+      if (cached !== null && cached !== undefined) return { ok: true, value: JSON.parse(cached) };
+      const missingIdx = missingIndices.indexOf(i);
+      return freshOutcomes[missingIdx] ?? { ok: false, error: { kind: 'parse', message: 'no result for this piece' } };
+    });
+
+    await Promise.all(
+      missingIndices.map(async (i, idx) => {
+        const outcome = freshOutcomes[idx];
+        const key = pieceKeys[i];
+        if (outcome?.ok && key) await translationCache.set(key, JSON.stringify(outcome.value));
+      }),
+    );
+
+    return outcomes;
   });
 
   browser.contextMenus.create({

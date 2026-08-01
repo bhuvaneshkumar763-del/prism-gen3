@@ -7,3 +7,7 @@
 // @webext-core/fake-browser/auto sets globalThis.browser/chrome to a real
 // in-memory WebExtension API implementation.
 import '@webext-core/fake-browser/auto';
+// fake-indexeddb/auto polyfills indexedDB for the whole suite (Node has no
+// native IndexedDB) — needed by src/platform/cache/translationCache.ts and
+// anything that imports it transitively.
+import 'fake-indexeddb/auto';

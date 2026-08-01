@@ -550,6 +550,72 @@ complete.** What landed, across three passes in the same session:
   writeup above; nothing changed on that front in this session's later
   passes.
 
+**Session 7 (disk cache, diagnostics, permission model, dark mode, i18n
+decision) is complete.** What landed:
+- **Translation cache** (`src/platform/cache/translationCache.ts`): one
+  IndexedDB database/store (not the old repo's one-database-per-
+  provider/language-pair-triple design — a real, documented
+  simplification, see that file's header comment), byte-estimated size
+  tracking, and oldest-(least-recently-used)-first eviction once over a
+  configurable budget (default 5MB). `cacheKeyFor()` folds provider +
+  source + target language + text into one key. Wired into
+  `background.ts`'s `translatePieces` handler: pieces are checked against
+  the cache first, only cache misses go to the real provider, and fresh
+  results get written back. `translateText` (selection popup, title
+  translator) deliberately does NOT use this cache — see that handler's
+  comment for why. 10 unit tests (`fake-indexeddb`, added as a new
+  dependency + wired into `tests/setup.ts`).
+  - **Real Playwright verification against the built extension**:
+    translating a page hit the mock LLM server exactly once; restoring
+    and re-translating the same page hit it **zero** additional times —
+    the cached result was served and applied correctly.
+- **Diagnostics panel** (`src/platform/diagnostics.ts` +
+  a new "Diagnostics" section in the options page): a real
+  `chrome.storage.local` round-trip check, translation-cache size, live
+  capability checks (`i18n.detectLanguage`, `scripting`, `IndexedDB`), and
+  an effective-config dump with every `*ApiKey` field redacted. Built
+  proactively this time (the old repo added its equivalent only after two
+  separate real bug reports were each misdiagnosed more than once first —
+  see `diagnostics.ts`'s header comment). A real Playwright run against
+  the built extension caught a genuinely true fact, not a bug: this
+  extension doesn't request the `scripting` permission (nothing uses
+  `browser.scripting` anywhere in this codebase yet), and the panel
+  correctly reports that as unavailable rather than assuming it's there —
+  exactly the kind of "what actually works, not what's assumed" check
+  this panel exists for.
+- **Permission model** (`docs/decisions/0006-permission-model.md`):
+  confirmed, not changed. Gen 3's content script has used a *static*
+  `matches: ['*://*/*']` registration since Session 2 — the same
+  mechanism the old repo's Session 4 found grants injection independent
+  of `host_permissions`, and exactly the "broad access, no optional-grant
+  runtime-registration API with browser support gaps" state the old repo
+  reverted to after a real Orion/WebKit failure. Verified by inspecting
+  the real built `manifest.json`: no `host_permissions` key at all, and
+  the content script still runs on every page (already proven repeatedly
+  in Sessions 5-7's own Playwright verification runs). No code changes
+  were needed — Session 7 is where this got checked against the plan's
+  explicit requirement and written down as a real ADR, not left as an
+  unstated assumption.
+- **Dark mode**: `entrypoints/popup/` had a real, previously-unnoticed bug
+  — the WXT template's leftover `style.css` (dark-background-by-default,
+  light-mode-only override) was still being imported alongside the
+  Session 5/6-written `App.css` (light-only, no dark handling at all),
+  producing an inconsistent, half-styled result depending on system theme.
+  Deleted the unused template file and gave `App.css` real
+  `prefers-color-scheme: dark` handling, matching the pattern already
+  established in `entrypoints/options/App.css`. The bubble/hover-tooltip/
+  selection-popup shadow-DOM surfaces intentionally stay a fixed dark
+  theme regardless of system preference (same as this project's
+  established pattern for those small floating overlays — not a gap).
+- **i18n** (`docs/decisions/0007-i18n-corpus-deferred.md`): explicitly not
+  started. No `@wxt-dev/i18n` setup, no `_locales/`, every UI string
+  across every surface built in Sessions 2-7 is hardcoded English. Porting
+  the old repo's 43-language corpus (translated *values* only, fresh key
+  names, per the plan's Round 3 scoping) is real, substantial, mechanical
+  work deserving its own dedicated session — see that ADR for the concrete
+  handoff steps.
+- 251 tests (235 → 251), coverage gate still passing.
+
 ## Testing
 
 Run before considering any Gen 3 change done:
@@ -594,12 +660,9 @@ All of steps 1-4 run in CI (`.github/workflows/ci.yml`) on every push to
   translate-from-language quick shortcuts on it specifically (those live
   in the options page's Automatic Translation section for every
   viewport). See Session 6's writeup for the reasoning.
-- No permission-model decision made yet beyond `contextMenus`/`activeTab`
-  (Session 6, for the right-click menu and tab targeting). Broad
-  `<all_urls>`-style access (matching the old repo's final, reverted-to
-  state, needed for automatic/always-translate to work without a prior
-  user gesture) is still a deliberate later-session decision, not decided
-  by omission.
+- No i18n — every UI string is hardcoded English, see
+  `docs/decisions/0007-i18n-corpus-deferred.md` for the deferred corpus
+  port and the concrete handoff steps.
 - No options/backup UI wired to `configStore.export()`/`import()` yet —
   the storage mechanism itself is fully tested (see the Session 3
   writeup above); Session 6's options page covers General/Translation

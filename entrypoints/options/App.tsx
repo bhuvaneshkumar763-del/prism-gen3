@@ -1,7 +1,9 @@
 import { createSignal, For, onCleanup, onMount, Show } from 'solid-js';
 import { createStore } from 'solid-js/store';
 import { providerDescriptors } from '../../src/engine/providers/descriptors';
+import { translationCache } from '../../src/platform/cache/translationCache';
 import { configStore } from '../../src/platform/configStore';
+import { type DiagnosticsReport, runDiagnostics } from '../../src/platform/diagnostics';
 import { type Config, type ConfigKey, defaultConfig } from '../../src/shared/config/schema';
 import './App.css';
 
@@ -27,6 +29,22 @@ function App() {
   const [settings, setSettings] = createStore<Config>({} as Config);
   const [ready, setReady] = createSignal(false);
   const [savedField, setSavedField] = createSignal<ConfigKey | null>(null);
+  const [diagnostics, setDiagnostics] = createSignal<DiagnosticsReport | null>(null);
+  const [diagnosticsRunning, setDiagnosticsRunning] = createSignal(false);
+  const [cacheCleared, setCacheCleared] = createSignal(false);
+
+  async function handleRunDiagnostics(): Promise<void> {
+    setDiagnosticsRunning(true);
+    setDiagnostics(await runDiagnostics());
+    setDiagnosticsRunning(false);
+  }
+
+  async function handleClearCache(): Promise<void> {
+    await translationCache.clear();
+    setCacheCleared(true);
+    setTimeout(() => setCacheCleared(false), 1200);
+    if (diagnostics()) await handleRunDiagnostics();
+  }
 
   let savedTimeout: ReturnType<typeof setTimeout> | undefined;
   function flashSaved(key: ConfigKey): void {
@@ -202,6 +220,50 @@ function App() {
           <StringListField label="Never translate these sites" fieldKey="neverTranslateSites" />
           <StringListField label="Always translate from these languages" fieldKey="alwaysTranslateLangs" />
           <StringListField label="Never translate from these languages" fieldKey="neverTranslateLangs" />
+        </section>
+
+        <section class="section">
+          <h2>Diagnostics</h2>
+          <p class="hint">
+            Checks what actually works in this browser — a storage round trip, capability detection, and the translation
+            cache — rather than assuming.
+          </p>
+          <div class="diagnosticsActions">
+            <button type="button" disabled={diagnosticsRunning()} onClick={() => void handleRunDiagnostics()}>
+              {diagnosticsRunning() ? 'Running…' : 'Run diagnostics'}
+            </button>
+            <button type="button" onClick={() => void handleClearCache()}>
+              Clear translation cache
+            </button>
+            <Show when={cacheCleared()}>
+              <span class="saved inline">Cache cleared</span>
+            </Show>
+          </div>
+
+          <Show when={diagnostics()}>
+            {(report) => (
+              <dl class="diagnosticsList">
+                <dt>Storage round trip</dt>
+                <dd class={report().storageRoundTripOk ? 'ok' : 'fail'}>
+                  {report().storageRoundTripOk ? 'OK' : 'FAILED'}
+                </dd>
+                <dt>Translation cache size</dt>
+                <dd>{report().cacheSizeBytes === null ? 'unavailable' : `${report().cacheSizeBytes} bytes`}</dd>
+                <dt>i18n.detectLanguage available</dt>
+                <dd class={report().hasI18nDetectLanguage ? 'ok' : 'fail'}>
+                  {report().hasI18nDetectLanguage ? 'yes' : 'no'}
+                </dd>
+                <dt>scripting API available</dt>
+                <dd class={report().hasScriptingApi ? 'ok' : 'fail'}>{report().hasScriptingApi ? 'yes' : 'no'}</dd>
+                <dt>IndexedDB available</dt>
+                <dd class={report().hasIndexedDb ? 'ok' : 'fail'}>{report().hasIndexedDb ? 'yes' : 'no'}</dd>
+                <dt>Effective config (API keys redacted)</dt>
+                <dd>
+                  <pre class="configDump">{JSON.stringify(report().effectiveConfig, null, 2)}</pre>
+                </dd>
+              </dl>
+            )}
+          </Show>
         </section>
       </Show>
     </div>

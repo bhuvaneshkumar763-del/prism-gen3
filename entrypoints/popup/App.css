@@ -1,3 +1,20 @@
+:root {
+  color-scheme: light dark;
+}
+
+body {
+  margin: 0;
+  background: #f8fafc;
+  color: #0f172a;
+}
+
+@media (prefers-color-scheme: dark) {
+  body {
+    background: #0f172a;
+    color: #e2e8f0;
+  }
+}
+
 .app {
   min-width: 320px;
   padding: 1rem;
@@ -19,12 +36,27 @@
   margin-bottom: 0.6rem;
 }
 
+@media (prefers-color-scheme: dark) {
+  .quickField {
+    color: #cbd5e1;
+  }
+}
+
 .quickField select {
   font-size: 13px;
   padding: 0.4rem 0.5rem;
   border-radius: 6px;
   border: 1px solid #cbd5e1;
+  background: #fff;
+  color: inherit;
   font-family: inherit;
+}
+
+@media (prefers-color-scheme: dark) {
+  .quickField select {
+    background: #1e293b;
+    border-color: #475569;
+  }
 }
 
 .app button {
@@ -35,6 +67,7 @@
   background: #4f46e5;
   color: #fff;
   font-weight: 600;
+  font-family: inherit;
 }
 
 .app button:disabled {
@@ -50,4 +83,10 @@
 
 .app .error {
   color: #dc2626;
+}
+
+@media (prefers-color-scheme: dark) {
+  .app .error {
+    color: #f87171;
+  }
 }
