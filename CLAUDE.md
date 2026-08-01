@@ -784,6 +784,137 @@ through in order:
   Chromium from prior ad hoc verification work rather than a fresh
   download).
 
+**Session 10 (parity audit and launch readiness) is complete. Gen 3's
+10-session plan is now fully executed.** What landed:
+- **ADR index** (`docs/decisions/README.md`): a table of all 7 ADRs
+  written across Sessions 1, 3, 4, 6/7, with their session and one-line
+  outcome, plus a note on the two decisions (custom dictionary, DeepL
+  live-tab bridge) that were discussed but don't have their own ADR
+  because nothing was actually built to defend a choice about.
+- **Parity checklist** (below) — every feature/provider from the old
+  repo's audited inventory, marked Ported / Deliberately Improved /
+  Deliberately Dropped-or-Deferred, each with a reason. No blank rows.
+- **A real manual run-through**, not just re-running the existing E2E
+  suite — four scenarios the plan specifically calls out, against the
+  real built extension with a mock LLM server, that structural checks
+  alone wouldn't catch:
+  1. **SPA navigation**: a page using `history.pushState()` to swap
+     content without a real reload. Translated correctly both before and
+     after the in-page navigation — confirms `resweep.ts`'s href-polling
+     (not just `MutationObserver`, which a `pushState`-only, DOM-mutating
+     SPA transition can still fire correctly for, so this specifically
+     exercises the polling fallback's own value) picks up the new content.
+  2. **Shadow-DOM content**: a page that puts real text inside an *open*
+     shadow root (a third-party page's own shadow DOM — not this
+     extension's UI, which is a separate, unrelated set of shadow roots).
+     **Found a real, previously-undocumented gap**: this content is never
+     translated. `collectTextNodes.ts` walks `document.body` with a
+     `TreeWalker`, which does not descend into shadow roots — confirmed
+     by reading the file (no shadow-DOM-aware traversal exists) and by
+     this test showing the shadow-hosted paragraph completely unchanged
+     after a translate call that successfully translated everything else
+     on the same page. Recorded as a new "Known gaps" entry below, not
+     silently fixed — a correct fix needs recursively walking into every
+     open shadow root discovered while walking the light DOM (and
+     deciding what to do about closed shadow roots, which are simply
+     unreachable from outside), which is real scope, not a one-line
+     patch.
+  3. **Long/heavy page** (500 paragraphs): translated fully and correctly
+     in ~3.4s across 11 batched HTTP requests (not 500 — batching is
+     working). A resweep-triggering DOM touch afterward (appending an
+     unrelated empty `<div>`) produced **zero** additional translate
+     requests for the already-translated paragraphs — `dedupe.ts`'s
+     WeakSet correctly held. This is the one dedupe/performance claim in
+     the plan's Session 5 verification section that a unit test can
+     assert in isolation but can't prove end-to-end the way a real
+     500-node page + real resweep cycle does.
+  4. **Non-English source content**: a French-language page translated
+     correctly through the same pipeline — nothing in the engine is
+     English-source-specific (confirmed, not just assumed from the code
+     structure).
+- **Known gaps section updated**: the shadow-DOM finding added; two
+  entries that were accurate when written but are now stale removed ("no
+  E2E harness committed yet" and "no release/changesets infra yet" — both
+  Session 9). See below.
+- **Full pipeline re-verified green** at the end of this session:
+  `compile`, `lint`, `guard:engine-purity`, `guard:solid-reactivity`,
+  `test:coverage` (251 tests, same as Session 9 — this session found a
+  real gap but didn't write new source, so no new unit-testable logic),
+  `build`, `guard:bundle-size`, `test:e2e`, both browsers' `zip`/
+  `zip:firefox` — all run for real, all clean.
+- **What's explicitly out of scope for v1** — see the dedicated section
+  below, compiled from every session's own documented scope cuts rather
+  than re-derived from scratch.
+
+### Parity checklist — old repo inventory vs. Gen 3
+
+**Translation providers** (old repo had 7: google, bing, yandex, deepl,
+libretranslate, llm, builtin):
+
+| Provider | Status | Note |
+|---|---|---|
+| LibreTranslate | Ported | Session 2, the first vertical slice |
+| Google (free scraped `translateHtml`) | Ported | Session 4, independently re-engineered against live traffic — see `docs/decisions/0004-provider-scope.md` |
+| Google Cloud Translate | Deliberately Improved | New in Session 4, not in the old repo — added specifically because it's the real API Arc's own translate feature is built on, confirmed by investigation, not the free scrape's quality ceiling |
+| LLM (OpenAI-compatible) | Ported | Session 4 |
+| Builtin (on-device Gemini Nano) | Ported | Session 4 |
+| Bing (scraped) | Deliberately Dropped | Session 4 — see `docs/decisions/0004-provider-scope.md`; not a permanent rejection, a fresh decision if a real need surfaces |
+| Yandex (scraped) | Deliberately Dropped | Session 4 — same ADR, same reasoning |
+| DeepL Free API | Deliberately Deferred | Session 4 — see `docs/decisions/0005-deepl-live-tab-bridge.md`; a plausible cheap follow-up, just not done yet |
+| DeepL live-tab bridge | Deliberately Dropped for now | Same ADR — needs its own dedicated session (content-script UI automation + tab lifecycle, structurally unlike every other provider) |
+
+**Core engine / page-translation:**
+
+| Feature | Status | Note |
+|---|---|---|
+| Text-node collection + translation | Ported | Session 5, `collectTextNodes.ts` |
+| Dedupe (avoid re-translating already-handled nodes) | Ported | Session 5, WeakSet-based; re-verified this session with a real 500-node page |
+| Mutation watching (live DOM changes) | Ported | Session 5, `mutationWatcher.ts` |
+| Resweep (adaptive backoff + href polling for SPAs) | Ported | Session 5, `resweep.ts`; re-verified this session with a real `pushState` SPA |
+| Block-context grouping + sentence-boundary-aware chunking | Deliberately Improved | `grouping.ts` — cuts on a sentence boundary when possible (growing up to 1.5x `maxGroupChars` hunting for one) rather than always force-cutting at the char limit, for providers with `batchingHint` (`llm`, `google`) |
+| Tab-bar title translation | Ported | `titleTranslator.ts`, dual-write to `<title>` element + `document.title` |
+| Auto-translate-on-load decision | Ported | `autoTranslateDecision.ts`, pure/testable |
+| Original-language detection | Ported | `originalLanguageTracker.ts`, main-frame only (see Known gaps) |
+| Shadow-DOM content translation (third-party pages) | **Not ported — newly confirmed gap** | See this session's writeup above; `collectTextNodes.ts` doesn't descend into open shadow roots |
+| Iframe support (auto-translate/hover/selection) | Deliberately Deferred | Main-frame only since Session 5/6, documented in `originalLanguageTracker.ts` |
+| Element-attribute translation (placeholder/title/alt/aria-label) | Deliberately Deferred | Same phase-2 scope cut the plan calls out |
+| Custom dictionary | Deliberately Not Built | The old repo shipped a non-functional placeholder for this; the plan explicitly said not to repeat that. Gen 3 correctly has neither the UI nor the config for it — a real ADR-worthy decision only once actually attempted |
+
+**UI surfaces:**
+
+| Surface | Status | Note |
+|---|---|---|
+| Toolbar popup | Ported | Session 6, on design tokens |
+| Options page | Ported | Session 6/7, single-page (not the old repo's 6-tab structure — a simpler surface for Gen 3's smaller settings set so far) |
+| Floating bubble (post-translate control) | Ported | Session 6, no drag-to-reposition/edge-docking (deliberate scope cut) |
+| Mobile in-page translate trigger | Deliberately Improved | Folded into the floating bubble's `showTranslatePrompt` role instead of a separate `MobilePopup` component — one shadow-DOM surface instead of two |
+| Hover-to-see-original tooltip | Ported | Session 6 |
+| Selection-translation popup | Ported | Session 6, no drag/replace-in-place/listen-copy/per-selection pickers (deliberate scope cut) |
+| Context menus (translate/restore) | Ported | `background.ts` |
+| Keyboard command (toggle translate) | Ported | `background.ts` |
+| Standalone windows (improve-translation, translate-text, translate-document) | Deliberately Not Built | Never scoped into any Gen 3 session; not on the critical path the plan defined |
+| Diagnostics panel | Ported | Session 7, proactive (built before any real bug report, unlike the old repo) |
+| Dark mode | Ported | Session 7, `prefers-color-scheme` |
+| i18n / 43-locale UI-string corpus | Deliberately Deferred | `docs/decisions/0007-i18n-corpus-deferred.md` |
+| Backup export/import UI | Deliberately Not Built | `configStore.export()`/`import()` exist and are tested; no UI wired to them yet |
+| Release notes page | Deliberately Not Built | Never scoped into a Gen 3 session |
+| Toolbar icon translated/original state swap | Deliberately Not Built | Cosmetic, never scoped into a Gen 3 session |
+| Text-to-speech (offscreen document) | Deliberately Not Built | Never scoped into any Gen 3 session |
+
+**Infra:**
+
+| Feature | Status | Note |
+|---|---|---|
+| Config store (versioned, migratable) | Ported | Session 3 |
+| Settings sync (`chrome.storage.sync`) | Deliberately Deferred | `docs/decisions/0003-settings-sync-deferred.md` — local-only at launch |
+| Disk cache (IndexedDB) | Deliberately Improved | Session 7 — one database/store instead of the old repo's per-provider/language-pair-triple design |
+| Typed messaging | Ported | Session 6, with the tab-targeting duplication the old repo had explicitly fixed (one shared helper, not two copies) |
+| MV3 service-worker keepalive | Ported | Session 8, `chrome.alarms` |
+| Permission model (broad access) | Ported | Session 7/`docs/decisions/0006-permission-model.md` — starts from the old repo's own final, already-reverted-to state |
+| CI (typecheck/lint/guards/tests/build/bundle-size/E2E/zip) | Deliberately Improved | Session 9 — engine-purity and Solid-reactivity guards are structural checks the old repo only added reactively, after 3 incidents |
+| Release automation (Changesets + CI-triggered release workflow) | Ported | Session 9, fresh implementation of the old repo's "triggered by CI completion" pattern |
+| Firefox build | Ported (build-validation only) | Parallel CI job, Session 9; Chrome-only at launch per the plan's Round 2 scoping, same as the old repo's own equivalent-stage gap |
+
 ## Testing
 
 Run before considering any Gen 3 change done:
@@ -848,14 +979,53 @@ writes `CHANGELOG.md`) — once that lands on `main` and CI passes,
   the storage mechanism itself is fully tested (see the Session 3
   writeup above); Session 6's options page covers General/Translation
   service/Automatic-translation only, not backup/export.
-- No E2E test harness committed yet (the old repo's Playwright pattern —
-  full Chrome with `--headless=new`, since `chrome-headless-shell` silently
-  doesn't support extensions at all — is the reference to follow when this
-  gets built, likely Session 9). Session 2's real-network verification was
-  done ad hoc, matching the old repo's own established pattern for this
-  kind of check, not committed as a permanent test yet.
-- No release/changesets infra yet (Session 9).
+- **Shadow-DOM page content is never translated** (Session 10 — a real
+  gap found by manual verification, not a pre-existing documented cut).
+  `collectTextNodes.ts` walks `document.body` with a `TreeWalker`, which
+  does not descend into shadow roots. Confirmed with a real page: text
+  inside an *open* shadow root (a third-party page's own shadow DOM, not
+  this extension's UI) is completely untranslated while the rest of the
+  page translates correctly. A correct fix needs recursively discovering
+  and walking into every open shadow root encountered during the light-DOM
+  walk (closed shadow roots are unreachable from outside by design, no fix
+  possible there). Not attempted this session — real scope, not a
+  one-line patch.
+- Standalone auxiliary windows (improve-translation, translate-text,
+  translate-document), text-to-speech, a backup export/import UI, a
+  release-notes page, and the toolbar icon's translated/original state
+  swap were never scoped into any Gen 3 session — see the parity
+  checklist above for the full "Deliberately Not Built" list.
 - Icons/branding are still the WXT template defaults
   (`public/icon/*.png`) — real Prism branding work isn't scoped to a
   specific session yet in the plan; revisit when it becomes a blocker
   (likely alongside UI-surface sessions).
+
+## Explicitly out of scope for v1
+
+Compiled Session 10, per the plan's Session 10 requirement — a visible
+"not yet" list, not a silent gap. Everything here has a reason above (its
+ADR, its session writeup, or the "Known gaps" entries) — this is the
+compiled summary, not new information:
+
+- **Firefox as a shipped target** — build-validated in CI (Session 9) but
+  never manually run/verified as a real Firefox install; Chrome-only at
+  launch per the plan's Round 2 scoping.
+- **Bing and Yandex providers** — deliberately dropped, `docs/decisions/0004-provider-scope.md`.
+- **DeepL** (both the Free API and the live-tab bridge) — deliberately
+  deferred, `docs/decisions/0005-deepl-live-tab-bridge.md`.
+- **Shadow-DOM page content** — never discovered by `collectTextNodes.ts`,
+  see the Known gaps entry above (found this session).
+- **Iframe support** for auto-translate/hover/selection — main-frame only.
+- **Element-attribute translation** (placeholder/title/alt/aria-label) and
+  **custom dictionary** — neither built.
+- **`chrome.storage.sync` / cross-device settings sync** — deliberately
+  deferred with a concrete reconsideration test, `docs/decisions/0003-settings-sync-deferred.md`.
+- **i18n / UI-string translation** — every surface is hardcoded English,
+  `docs/decisions/0007-i18n-corpus-deferred.md`.
+- **Standalone auxiliary windows** (improve-translation, translate-text,
+  translate-document), **text-to-speech**, **backup export/import UI**,
+  **release-notes page**, **toolbar icon state swap** — never scoped into
+  any Gen 3 session.
+- **Floating-bubble drag-to-reposition/edge-docking** and
+  **selection-popup drag/replace-in-place/listen-copy/per-selection
+  pickers** — deliberate Session 6 scope cuts.
