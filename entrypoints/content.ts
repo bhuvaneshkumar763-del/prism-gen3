@@ -1,6 +1,8 @@
+import { shouldAutoTranslateOnLoad } from '../src/engine/pageTranslator/autoTranslateDecision';
 import { createPageTranslator, type PageLanguageState } from '../src/engine/pageTranslator/translateLoop';
 import { getBatchingHint } from '../src/engine/providers/descriptors';
 import { configStore } from '../src/platform/configStore';
+import { createOriginalLanguageTracker } from '../src/platform/originalLanguageTracker';
 import { createRemoteTranslator } from '../src/platform/remoteTranslator';
 
 /**
@@ -15,6 +17,13 @@ import { createRemoteTranslator } from '../src/platform/remoteTranslator';
  * (src/platform/remoteTranslator.ts) is the one adapter bridging it to
  * `browser.runtime.sendMessage`, and `configStore` supplies the current
  * provider/source-language selection.
+ *
+ * Auto-translate-on-load (also Session 5): detects the page's language via
+ * `originalLanguageTracker`, then defers the actual yes/no call to the pure
+ * `shouldAutoTranslateOnLoad` decision function against the current
+ * always/never-translate-sites/langs config lists. Main-frame only for now
+ * — see `originalLanguageTracker.ts`'s header comment for why iframes are a
+ * documented gap, not a silent one.
  */
 export default defineContentScript({
   matches: ['*://*/*'],
@@ -26,6 +35,28 @@ export default defineContentScript({
       getSourceLanguage: () => configStore.get('sourceLanguage'),
       getBatchingHint: () => getBatchingHint(configStore.get('pageTranslatorProvider')),
     });
+
+    if (window.self === window.top) {
+      void (async () => {
+        const originalLanguageTracker = createOriginalLanguageTracker();
+        await Promise.all([configStore.onReady(), originalLanguageTracker.start()]);
+
+        const shouldTranslate = shouldAutoTranslateOnLoad({
+          originalLanguage: originalLanguageTracker.get(),
+          hostname: location.hostname,
+          targetLanguage: configStore.get('targetLanguage'),
+          pageLanguageState: pageTranslator.getState(),
+          alwaysTranslateSites: configStore.get('alwaysTranslateSites'),
+          neverTranslateSites: configStore.get('neverTranslateSites'),
+          alwaysTranslateLangs: configStore.get('alwaysTranslateLangs'),
+          neverTranslateLangs: configStore.get('neverTranslateLangs'),
+          isIncognito: browser.extension?.inIncognitoContext ?? false,
+        });
+        if (shouldTranslate) {
+          await pageTranslator.translatePage(configStore.get('targetLanguage'));
+        }
+      })();
+    }
 
     interface PageTranslateMessage {
       type: 'pageTranslate';

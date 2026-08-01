@@ -18,6 +18,12 @@ import { z } from 'zod';
  * needs just a key; Google/Builtin need nothing) — the generic naming was
  * premature. Renamed to per-provider fields via a real migration
  * (`CONFIG_SCHEMA_VERSION` 2) rather than kept as a wrong abstraction.
+ *
+ * Session 5 (auto-translate-on-load) added the 4 site/language allow-deny
+ * list fields below — purely additive (new keys, no shape change to an
+ * existing one), so no migration entry was needed: `configStore.ts`'s
+ * `initConfig` already falls back to `defaultConfig`'s value (`[]`) for any
+ * key absent from an existing install's storage.
  */
 export const configSchema = z.object({
   targetLanguage: z.string(),
@@ -30,6 +36,12 @@ export const configSchema = z.object({
   llmBaseUrl: z.string(),
   llmApiKey: z.string(),
   llmModel: z.string(),
+  /** Hostnames the user has explicitly chosen to always/never auto-translate — takes priority over the language-based decision. */
+  alwaysTranslateSites: z.array(z.string()),
+  neverTranslateSites: z.array(z.string()),
+  /** Detected source-language codes to always/never auto-translate from. */
+  alwaysTranslateLangs: z.array(z.string()),
+  neverTranslateLangs: z.array(z.string()),
 });
 
 export type Config = z.infer<typeof configSchema>;
@@ -45,4 +57,8 @@ export const defaultConfig: Config = {
   llmBaseUrl: '',
   llmApiKey: '',
   llmModel: '',
+  alwaysTranslateSites: [],
+  neverTranslateSites: [],
+  alwaysTranslateLangs: [],
+  neverTranslateLangs: [],
 };

@@ -349,18 +349,47 @@ slice) are complete.** What Session 2 landed:
   (rather than opening a fresh tab, which becomes the active tab itself)
   was the fix this time — noted here as the specific variant so the next
   session doesn't rediscover it from scratch.
-- **Deliberately deferred, not silently dropped**: `originalLanguage.ts`
-  (auto-translate-on-load language detection) and `titleTranslator.ts`
-  (tab-bar title translation) — the plan's Session 5 also covered these,
-  but this session's scope was narrowed to the core translate/restore
-  engine plus the explicitly-requested chunking-quality work. Both are
-  small, self-contained modules (~170 and ~220 lines in the old repo) with
-  no dependency on anything built here beyond `configStore`/`registry` — a
-  clean pickup for a follow-up session. Element-attribute translation
-  (placeholder/title/alt/aria-label) and custom-dictionary application
-  remain the same documented phase-2 scope cut inherited from the plan —
-  every text node still gets found and translated correctly, just without
-  those extras.
+- **Session 5 follow-up (same day): the two deferred pieces landed too** —
+  `titleTranslator.ts` (tab-bar title translation) and
+  `autoTranslateDecision.ts` + `originalLanguageTracker.ts` (auto-translate-
+  on-load), closing out the rest of the plan's Session 5 scope.
+  - `titleTranslator.ts` lives in `src/engine/pageTranslator/` (engine-pure
+    — takes an injected `Translator`, same pattern as `translateLoop.ts`).
+    Ported the old repo's proven design as-is: the `[[title, ' ']]`
+    two-item batching workaround for Google's `arr.length > 1` quirk (see
+    that file's header comment), the dual-write to both `document.title`
+    and the `<title>` element, the own-write MutationObserver guard, the
+    ~1.5s polling fallback, and the 50-entry cache. Wired into
+    `translateLoop.ts`: `start()`/`restore()` on translate/restore,
+    `catchUp()` on tab refocus and on `resweep.ts`'s `onHrefChange` (SPA
+    navigation).
+  - The auto-translate decision is split across the engine/platform
+    boundary on purpose: `src/engine/pageTranslator/autoTranslateDecision.ts`
+    is the pure `shouldAutoTranslateOnLoad()` function (no browser APIs,
+    directly unit-tested), and `src/platform/originalLanguageTracker.ts` is
+    the one adapter that actually calls `browser.i18n.detectLanguage()`.
+    Wired into `content.ts`: on load (main-frame only — see that tracker's
+    header comment for why iframes are a documented gap, not silent),
+    detects the language, then calls the pure decision function against 4
+    new config fields (`alwaysTranslateSites`/`neverTranslateSites`/
+    `alwaysTranslateLangs`/`neverTranslateLangs`, purely additive to the
+    schema — no migration needed).
+  - 178 → 188 tests (net, across both the core Session 5 commit and this
+    follow-up), coverage gate still passing.
+  - **Real end-to-end verification caught a real bug in the test itself,
+    not the product**: a Playwright run seeding `alwaysTranslateSites`
+    with `localhost:<port>` (matching the test page's full origin) found
+    the page never auto-translated — turned out `location.hostname`
+    (what `content.ts` actually compares against) excludes the port,
+    while the seeded value didn't. Fixing the test data (not the source)
+    to `['localhost']` confirmed the real behavior: a fresh page load,
+    zero user gesture, correctly auto-translated the body text AND the
+    tab-bar title (both `document.title` and the `<title>` element)
+    purely from the always-translate-sites match.
+  - Element-attribute translation (placeholder/title/alt/aria-label) and
+    custom-dictionary application remain the same documented phase-2 scope
+    cut inherited from the plan — every text node still gets found and
+    translated correctly, just without those extras.
 
 ## Testing
 
@@ -384,10 +413,10 @@ All of steps 1-4 run in CI (`.github/workflows/ci.yml`) on every push to
 - No DeepL provider (neither the Free API nor the live-tab bridge) — a
   deliberate Session 4 deferral, see
   `docs/decisions/0005-deepl-live-tab-bridge.md`.
-- No auto-translate-on-load language detection (`originalLanguage.ts`) or
-  tab-bar title translation (`titleTranslator.ts`) — deliberately deferred
-  out of Session 5's scope, see that session's writeup above. Both are
-  small, self-contained, and a clean pickup for a follow-up session.
+- No iframe support for auto-translate-on-load — main-frame only, see
+  `originalLanguageTracker.ts`'s header comment (needs Session 6's
+  messaging layer to relay the main frame's detected language into
+  same-origin iframes without each one detecting independently).
 - No element-attribute translation (placeholder/title/alt/aria-label) or
   custom-dictionary application — every text node still gets found and
   translated correctly, this is the same documented phase-2 scope cut the
