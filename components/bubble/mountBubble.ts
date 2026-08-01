@@ -6,23 +6,29 @@ import { FloatingBubble } from './FloatingBubble';
 const HOST_ID = 'prism-bubble-host';
 
 export interface BubbleController {
-  update(pageState: PageLanguageState, busy: boolean): void;
+  update(pageState: PageLanguageState, busy: boolean, showTranslatePrompt: boolean): void;
   unmount(): void;
+}
+
+export interface MountBubbleCallbacks {
+  onTranslateClick: () => void;
+  onRestoreClick: () => void;
+  onClose: () => void;
 }
 
 /**
  * Creates the shadow-DOM host and mounts `FloatingBubble` into it. One
  * controller instance per page load — `content.ts` calls `update()` on
- * every `pageTranslator` state change and `unmount()` on restore/close.
+ * every `pageTranslator` state change (and viewport-width change, for the
+ * mobile translate-prompt role) and `unmount()` on restore/close.
  *
  * Re-renders the whole (small, static) component tree on every `update()`
  * rather than wiring a Solid signal through this plain-TS file — this
- * controller is a thin imperative adapter over `content.ts`'s own state
- * (`pageTranslator.getState()`), not a Solid component itself, so a fresh
- * render per update is simpler than threading reactivity through a
- * non-JSX file for a two-field prop set.
+ * controller is a thin imperative adapter over `content.ts`'s own state,
+ * not a Solid component itself, so a fresh render per update is simpler
+ * than threading reactivity through a non-JSX file for a small prop set.
  */
-export function mountBubble(onRestoreClick: () => void, onClose: () => void): BubbleController {
+export function mountBubble(callbacks: MountBubbleCallbacks): BubbleController {
   document.getElementById(HOST_ID)?.remove();
 
   const host = document.createElement('div');
@@ -45,16 +51,18 @@ export function mountBubble(onRestoreClick: () => void, onClose: () => void): Bu
 
   let dispose: (() => void) | null = null;
 
-  function renderNow(pageState: PageLanguageState, busy: boolean): void {
+  function renderNow(pageState: PageLanguageState, busy: boolean, showTranslatePrompt: boolean): void {
     dispose?.();
     dispose = render(
       () =>
         FloatingBubble({
           pageState,
           busy,
-          onRestoreClick,
+          showTranslatePrompt,
+          onTranslateClick: callbacks.onTranslateClick,
+          onRestoreClick: callbacks.onRestoreClick,
           onClose: () => {
-            onClose();
+            callbacks.onClose();
             host.remove();
           },
         }),
@@ -62,11 +70,11 @@ export function mountBubble(onRestoreClick: () => void, onClose: () => void): Bu
     );
   }
 
-  renderNow('original', false);
+  renderNow('original', false, false);
 
   return {
-    update(pageState, busy) {
-      renderNow(pageState, busy);
+    update(pageState, busy, showTranslatePrompt) {
+      renderNow(pageState, busy, showTranslatePrompt);
     },
     unmount() {
       dispose?.();

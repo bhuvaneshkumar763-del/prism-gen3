@@ -391,8 +391,8 @@ slice) are complete.** What Session 2 landed:
     cut inherited from the plan — every text node still gets found and
     translated correctly, just without those extras.
 
-**Session 6 (messaging, options page, first content-script trigger
-surfaces) is in progress.** What's landed so far:
+**Session 6 (messaging, options page, content-script UI surfaces) is
+complete.** What landed, across three passes in the same session:
 - **Typed messaging protocol**: `src/platform/messaging/protocol.ts`
   defines every message this extension sends as one `ProtocolMap`
   interface, built on `@webext-core/messaging`'s
@@ -489,12 +489,66 @@ surfaces) is in progress.** What's landed so far:
     directly on the page restored the original text and removed the
     bubble — the full real-DOM round trip, not just the isolated
     component tests.
-  - **Still not started**: selection translation, hover tooltips, mobile
-    popup. Each is genuinely new content-script UI work in its own right
-    (selection-anchored positioning, hover-debounce logic, a
-    narrow-viewport-specific layout) — the same category of scope the old
-    repo spent most of a dedicated session on, and a clean pickup for the
-    next session rather than rushed in behind the bubble.
+  - **Real Playwright verification against the built extension**: a
+    translated page showed the bubble with the correct "Translated" label
+    and "Show original" button (read by piercing the real shadow root,
+    not just asserted in unit tests), and clicking the bubble's button
+    directly on the page restored the original text and removed the
+    bubble — the full real-DOM round trip, not just the isolated
+    component tests.
+- **Final pass (same session): hover tooltip + selection translation +
+  the mobile trigger.** All three of what the writeup above had marked
+  "still not started."
+  - **Hover-to-see-original tooltip** (`components/hoverTooltip/`):
+    `HoverTooltip.tsx` (presentation) + `mountHoverTooltip.ts` (hover
+    detection, a 350ms show-delay debounce, cursor-follow while visible,
+    desktop-only via a user-agent check matching the old repo's
+    behavior). The actual "find the original text for this element" logic
+    is `src/engine/pageTranslator/hoverOriginalText.ts` — a small pure
+    function (engine-pure, directly unit-tested) built directly on
+    `pageTranslator.getTranslatedNodes()`, the exact same live node/
+    original-text list Session 5 already exposed for this. No new engine
+    state needed.
+  - **Translate-selected-text** (`components/selection/`):
+    `SelectionPopup.tsx` (presentation) + `mountSelectionPopup.ts`
+    (`mouseup`-based selection detection, positions a small trigger
+    button near the selection, translates via the same injected
+    `Translator`/`translateOne()` every other surface uses on click) +
+    `src/engine/selection/selectionInfo.ts` (pure `Selection`→
+    `{text, rect}` reader, engine-pure, unit-tested). Deliberately much
+    simpler than the old repo's ~1300-line `translateSelected.js`: no
+    drag-to-move, no editable replace-in-place, no listen/copy actions,
+    no cross-frame focus arbitration, no per-selection service/language
+    pickers — uses the page's already-configured provider/target
+    language. Real and functional, not a placeholder.
+  - **Mobile in-page translate trigger**: folded into the floating bubble
+    (`FloatingBubble.tsx`'s new `showTranslatePrompt` prop,
+    `content.ts`'s `matchMedia('(max-width: 480px)')` check) instead of
+    porting the old repo's separate ~326-line `MobilePopup.tsx` — one
+    component serving both "post-translate control" and "give mobile
+    users an in-page way to start translating since the toolbar icon may
+    be hard to reach," rather than two overlapping UI surfaces. The old
+    `MobilePopup`'s always/never-translate-from-language quick shortcuts
+    are not built here — the options page's Automatic Translation section
+    is where those lists live now, for every viewport.
+  - 22 new tests (from `hoverOriginalText.ts`, `selectionInfo.ts`, and the
+    5 new component/controller files), 235 total.
+  - **Real Playwright verification against the built extension, all
+    three**: selecting real text on a real page and clicking the trigger
+    produced a real translated result in the panel; hovering a translated
+    paragraph after a real translate showed the correct original text in
+    the tooltip; resizing to a 375px viewport surfaced the "Translate this
+    page" prompt on the bubble, and clicking it translated the page for
+    real. One real bug caught **in the verification script itself, not
+    the product** (again): `element.dispatchEvent(new MouseEvent('click'))`
+    intermittently didn't register with Solid's click handlers the same
+    way a real click does — switching to the native `element.click()`
+    method (already the established pattern from earlier sessions'
+    verification scripts) fixed it immediately. Noted here so a future
+    verification script reaches for `.click()` first, not `dispatchEvent`.
+- **Custom dictionary remains explicitly deferred** — see the first pass's
+  writeup above; nothing changed on that front in this session's later
+  passes.
 
 ## Testing
 
@@ -527,13 +581,19 @@ All of steps 1-4 run in CI (`.github/workflows/ci.yml`) on every push to
   translated correctly, this is the same documented phase-2 scope cut the
   plan calls out, not a regression. Custom dictionary specifically:
   deliberately not started in Session 6 either, see that session's writeup.
-- No selection translation, hover tooltips, or mobile popup — the
-  floating bubble landed in Session 6, but these three are still
-  unstarted (see that session's writeup), a clean pickup for the next
-  UI-focused session.
 - The floating bubble has no drag-to-reposition or edge-docking — fixed
   bottom-right only, a deliberate scope cut (see Session 6's writeup),
   not an oversight.
+- The selection-translation popup has no drag-to-move, editable
+  replace-in-place, listen/copy actions, cross-frame focus arbitration,
+  or per-selection service/language pickers — a deliberate scope cut
+  (see Session 6's writeup), not an oversight. It also only mounts in the
+  main frame, same as every other UI surface in this list.
+- The mobile in-page translate trigger is folded into the floating bubble
+  rather than a separate mobile-specific menu — no always/never-
+  translate-from-language quick shortcuts on it specifically (those live
+  in the options page's Automatic Translation section for every
+  viewport). See Session 6's writeup for the reasoning.
 - No permission-model decision made yet beyond `contextMenus`/`activeTab`
   (Session 6, for the right-click menu and tab targeting). Broad
   `<all_urls>`-style access (matching the old repo's final, reverted-to

@@ -8,21 +8,30 @@ function bubbleShadowRoot(): ShadowRoot {
   return host.shadowRoot;
 }
 
+function callbacks(overrides: Partial<Parameters<typeof mountBubble>[0]> = {}) {
+  return {
+    onTranslateClick: vi.fn(),
+    onRestoreClick: vi.fn(),
+    onClose: vi.fn(),
+    ...overrides,
+  };
+}
+
 describe('mountBubble', () => {
   afterEach(() => {
     document.getElementById('prism-bubble-host')?.remove();
   });
 
-  it('renders nothing visible until update() reports a translated state', () => {
-    const controller = mountBubble(vi.fn(), vi.fn());
+  it('renders nothing visible until update() reports a translated state or a translate prompt', () => {
+    const controller = mountBubble(callbacks());
     const shadow = bubbleShadowRoot();
     expect(shadow.querySelector('.action')).toBeNull();
     controller.unmount();
   });
 
   it('shows the "Show original" action once translated', () => {
-    const controller = mountBubble(vi.fn(), vi.fn());
-    controller.update('translated', false);
+    const controller = mountBubble(callbacks());
+    controller.update('translated', false, false);
 
     const shadow = bubbleShadowRoot();
     const action = shadow.querySelector('.action');
@@ -31,8 +40,8 @@ describe('mountBubble', () => {
   });
 
   it('shows a busy label and disables the action while restoring', () => {
-    const controller = mountBubble(vi.fn(), vi.fn());
-    controller.update('translated', true);
+    const controller = mountBubble(callbacks());
+    controller.update('translated', true, false);
 
     const shadow = bubbleShadowRoot();
     const action = shadow.querySelector('.action') as HTMLButtonElement;
@@ -43,8 +52,8 @@ describe('mountBubble', () => {
 
   it('calls onRestoreClick when the action button is clicked', () => {
     const onRestoreClick = vi.fn();
-    const controller = mountBubble(onRestoreClick, vi.fn());
-    controller.update('translated', false);
+    const controller = mountBubble(callbacks({ onRestoreClick }));
+    controller.update('translated', false, false);
 
     const shadow = bubbleShadowRoot();
     const action = shadow.querySelector('.action') as HTMLButtonElement;
@@ -56,8 +65,8 @@ describe('mountBubble', () => {
 
   it('calls onClose and removes the host when the close button is clicked', () => {
     const onClose = vi.fn();
-    const controller = mountBubble(vi.fn(), onClose);
-    controller.update('translated', false);
+    const controller = mountBubble(callbacks({ onClose }));
+    controller.update('translated', false, false);
 
     const shadow = bubbleShadowRoot();
     const closeButton = shadow.querySelector('.close') as HTMLButtonElement;
@@ -68,7 +77,7 @@ describe('mountBubble', () => {
   });
 
   it('unmount() removes the host element', () => {
-    const controller = mountBubble(vi.fn(), vi.fn());
+    const controller = mountBubble(callbacks());
     expect(document.getElementById('prism-bubble-host')).not.toBeNull();
 
     controller.unmount();
@@ -77,20 +86,41 @@ describe('mountBubble', () => {
   });
 
   it('replaces any existing host if called again (no duplicate bubbles)', () => {
-    const first = mountBubble(vi.fn(), vi.fn());
+    const first = mountBubble(callbacks());
     void first;
-    mountBubble(vi.fn(), vi.fn());
+    mountBubble(callbacks());
 
     expect(document.querySelectorAll('#prism-bubble-host')).toHaveLength(1);
   });
 
-  it('reverts to hidden when update() reports the original state again', () => {
-    const controller = mountBubble(vi.fn(), vi.fn());
-    controller.update('translated', false);
-    controller.update('original', false);
+  it('reverts to hidden when update() reports the original state again with no translate prompt', () => {
+    const controller = mountBubble(callbacks());
+    controller.update('translated', false, false);
+    controller.update('original', false, false);
 
     const shadow = bubbleShadowRoot();
     expect(shadow.querySelector('.action')).toBeNull();
+    controller.unmount();
+  });
+
+  it('shows the "Translate this page" prompt when showTranslatePrompt is true', () => {
+    const controller = mountBubble(callbacks());
+    controller.update('original', false, true);
+
+    const shadow = bubbleShadowRoot();
+    expect(shadow.querySelector('.action')?.textContent).toBe('Translate this page');
+    controller.unmount();
+  });
+
+  it('calls onTranslateClick when the translate-prompt action is clicked', () => {
+    const onTranslateClick = vi.fn();
+    const controller = mountBubble(callbacks({ onTranslateClick }));
+    controller.update('original', false, true);
+
+    const shadow = bubbleShadowRoot();
+    (shadow.querySelector('.action') as HTMLButtonElement).click();
+
+    expect(onTranslateClick).toHaveBeenCalledTimes(1);
     controller.unmount();
   });
 });

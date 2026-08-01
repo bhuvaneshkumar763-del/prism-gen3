@@ -1,4 +1,6 @@
 import { mountBubble } from '../components/bubble/mountBubble';
+import { mountHoverTooltip } from '../components/hoverTooltip/mountHoverTooltip';
+import { mountSelectionPopup } from '../components/selection/mountSelectionPopup';
 import { shouldAutoTranslateOnLoad } from '../src/engine/pageTranslator/autoTranslateDecision';
 import { createPageTranslator } from '../src/engine/pageTranslator/translateLoop';
 import { getBatchingHint } from '../src/engine/providers/descriptors';
@@ -6,6 +8,8 @@ import { configStore } from '../src/platform/configStore';
 import { onMessage } from '../src/platform/messaging/protocol';
 import { createOriginalLanguageTracker } from '../src/platform/originalLanguageTracker';
 import { createRemoteTranslator } from '../src/platform/remoteTranslator';
+
+const MOBILE_VIEWPORT_QUERY = '(max-width: 480px)';
 
 /**
  * Wires the real page-translation engine (Session 5:
@@ -22,15 +26,23 @@ import { createRemoteTranslator } from '../src/platform/remoteTranslator';
  * Auto-translate-on-load: detects the page's language via
  * `originalLanguageTracker`, then defers the actual yes/no call to the pure
  * `shouldAutoTranslateOnLoad` decision function against the current
- * always/never-translate-sites/langs config lists. Main-frame only for now
- * — see `originalLanguageTracker.ts`'s header comment for why iframes are a
- * documented gap, not a silent one.
+ * always/never-translate-sites/langs config lists.
  *
- * Session 6: `pageTranslate`/`pageRestore`/`getPageState` are now declared
- * via the typed protocol's `onMessage()` (`src/platform/messaging/protocol.ts`)
- * instead of a hand-rolled `browser.runtime.onMessage` listener with
- * manual type guards — both the popup and `background.ts`'s context-menu/
- * keyboard-command handlers send these same 3 message types.
+ * `pageTranslate`/`pageRestore`/`getPageState` are declared via the typed
+ * protocol's `onMessage()` (`src/platform/messaging/protocol.ts`) — the
+ * popup and `background.ts`'s context-menu/keyboard-command handlers send
+ * these same 3 message types.
+ *
+ * UI surfaces (Session 6), all main-frame only — an iframe translating
+ * independently doesn't get its own copy of any of these, a documented
+ * limitation shared with auto-translate-on-load, not a silent gap:
+ * - The floating bubble (`components/bubble/`): post-translate control,
+ *   AND (its `showTranslatePrompt` role) a mobile in-page translate
+ *   trigger on a narrow viewport — folding what the old repo built as a
+ *   separate `MobilePopup.tsx` into the bubble that already exists for
+ *   the post-translate case, see `FloatingBubble.tsx`'s header comment.
+ * - The hover-to-see-original tooltip (`components/hoverTooltip/`).
+ * - Translate-selected-text (`components/selection/`).
  */
 export default defineContentScript({
   matches: ['*://*/*'],
@@ -43,29 +55,56 @@ export default defineContentScript({
       getBatchingHint: () => getBatchingHint(configStore.get('pageTranslatorProvider')),
     });
 
-    // The floating bubble (components/bubble/) only makes sense in the
-    // main frame — an iframe translating independently doesn't need its
-    // own bubble UI stacked on top of the main page's. Reopens on every
-    // translate (including a re-translate over a manually-closed bubble)
-    // — closing is a per-translation dismissal, not a permanent opt-out;
-    // a persistent "don't show again" preference is a documented
-    // follow-up, not built here.
     if (window.self === window.top) {
+      const mobileViewportQuery = window.matchMedia(MOBILE_VIEWPORT_QUERY);
       let bubble: ReturnType<typeof mountBubble> | null = null;
+      let translateBusy = false;
 
-      pageTranslator.onStateChange((state) => {
-        if (state === 'translated') {
-          bubble ??= mountBubble(
-            () => pageTranslator.restorePage(),
-            () => {
-              bubble = null;
-            },
-          );
-          bubble.update('translated', false);
-        } else {
+      function syncBubble(): void {
+        const state = pageTranslator.getState();
+        const showTranslatePrompt = state === 'original' && mobileViewportQuery.matches;
+        const shouldShow = state === 'translated' || showTranslatePrompt;
+
+        if (!shouldShow) {
           bubble?.unmount();
           bubble = null;
+          return;
         }
+        bubble ??= mountBubble({
+          onTranslateClick: () => void handleTranslateClick(),
+          onRestoreClick: () => pageTranslator.restorePage(),
+          onClose: () => {
+            bubble = null;
+          },
+        });
+        bubble.update(state, translateBusy, showTranslatePrompt);
+      }
+
+      async function handleTranslateClick(): Promise<void> {
+        translateBusy = true;
+        syncBubble();
+        await configStore.onReady();
+        await pageTranslator.translatePage(configStore.get('targetLanguage'));
+        translateBusy = false;
+        syncBubble();
+      }
+
+      // Reopens on every translate (including a re-translate over a
+      // manually-closed bubble) — closing is a per-view dismissal, not a
+      // permanent opt-out; a persistent "don't show again" preference is
+      // a documented follow-up, not built here.
+      pageTranslator.onStateChange(() => {
+        translateBusy = false;
+        syncBubble();
+      });
+      mobileViewportQuery.addEventListener('change', syncBubble);
+      syncBubble();
+
+      mountHoverTooltip(pageTranslator);
+      mountSelectionPopup({
+        translator: createRemoteTranslator(),
+        getSourceLanguage: () => configStore.get('sourceLanguage'),
+        getTargetLanguage: () => configStore.get('targetLanguage'),
       });
     }
 
