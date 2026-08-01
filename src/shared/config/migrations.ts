@@ -13,6 +13,15 @@
  * them into the real schema's field names (`providerBaseUrl`/
  * `providerApiKey`) instead of leaving them orphaned or silently losing a
  * dev profile's settings the first time the real config store loads.
+ *
+ * Version 2 (Session 4): the generic `providerBaseUrl`/`providerApiKey`
+ * fields from version 1 turned out to be the wrong shape once more than
+ * one provider existed (LLM needs a model name too; Google Cloud needs
+ * just a key; Google/Builtin need nothing) — a real, not contrived,
+ * course correction. Renames them back to a provider-specific name
+ * (`libreTranslateBaseUrl`/`libreTranslateApiKey`, since that's what they
+ * were actually holding — the store only ever configured LibreTranslate
+ * before Session 4 added the others).
  */
 
 export interface ConfigMigration {
@@ -27,7 +36,7 @@ export interface ConfigMigration {
   migrate(rawEntries: Record<string, unknown>): Record<string, unknown>;
 }
 
-export const CONFIG_SCHEMA_VERSION = 1;
+export const CONFIG_SCHEMA_VERSION = 2;
 
 export const configMigrations: ConfigMigration[] = [
   {
@@ -41,6 +50,21 @@ export const configMigrations: ConfigMigration[] = [
       if (typeof next.libreTranslateApiKey === 'string') {
         next.providerApiKey = next.libreTranslateApiKey;
         delete next.libreTranslateApiKey;
+      }
+      return next;
+    },
+  },
+  {
+    toVersion: 2,
+    migrate(rawEntries) {
+      const next = { ...rawEntries };
+      if (typeof next.providerBaseUrl === 'string') {
+        next.libreTranslateBaseUrl = next.providerBaseUrl;
+        delete next.providerBaseUrl;
+      }
+      if (typeof next.providerApiKey === 'string') {
+        next.libreTranslateApiKey = next.providerApiKey;
+        delete next.providerApiKey;
       }
       return next;
     },

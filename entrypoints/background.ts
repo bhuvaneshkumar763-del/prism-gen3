@@ -1,4 +1,5 @@
-import { createLibreTranslateProvider } from '../src/engine/providers/libretranslate';
+import { createProvider, type ProviderConfig } from '../src/engine/providers/registry';
+import { translateOne } from '../src/engine/translator';
 import { configStore } from '../src/platform/configStore';
 
 /**
@@ -7,6 +8,12 @@ import { configStore } from '../src/platform/configStore';
  * repo's @webext-core/messaging pattern, but redesigned to fix its
  * tab-targeting duplication — see the Gen 3 plan) lands in Session 6 once
  * there are enough real message types to design well against.
+ *
+ * Session 4 update: provider selection now goes through
+ * `registry.createProvider()` and the config store's real per-provider
+ * fields (`pageTranslatorProvider` picks which one), instead of hardcoding
+ * LibreTranslate — this is the same seam the eventual page-translation
+ * engine (Session 5) and the real popup UI will use.
  */
 interface TranslateTextMessage {
   type: 'translateText';
@@ -19,21 +26,40 @@ function isTranslateTextMessage(message: unknown): message is TranslateTextMessa
   return typeof message === 'object' && message !== null && (message as { type?: unknown }).type === 'translateText';
 }
 
+function buildProviderConfig(): ProviderConfig {
+  const llmBaseUrl = configStore.get('llmBaseUrl');
+  const llmApiKey = configStore.get('llmApiKey');
+  const llmModel = configStore.get('llmModel');
+  const googleCloudTranslateApiKey = configStore.get('googleCloudTranslateApiKey');
+
+  return {
+    libretranslate: {
+      baseUrl: configStore.get('libreTranslateBaseUrl'),
+      apiKey: configStore.get('libreTranslateApiKey') || undefined,
+    },
+    google: {},
+    googleCloudTranslate: googleCloudTranslateApiKey ? { apiKey: googleCloudTranslateApiKey } : undefined,
+    llm: llmBaseUrl && llmApiKey && llmModel ? { baseUrl: llmBaseUrl, apiKey: llmApiKey, model: llmModel } : undefined,
+    builtin: {},
+  };
+}
+
 export default defineBackground(() => {
   browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!isTranslateTextMessage(message)) return undefined;
 
     (async () => {
       await configStore.onReady();
-      const provider = createLibreTranslateProvider({
-        baseUrl: configStore.get('providerBaseUrl'),
-        apiKey: configStore.get('providerApiKey') || undefined,
-      });
-      const result = await provider.translate({
-        text: message.text,
-        sourceLanguage: message.sourceLanguage,
-        targetLanguage: message.targetLanguage,
-      });
+      const providerId = configStore.get('pageTranslatorProvider');
+      const provider = createProvider(providerId, buildProviderConfig());
+      if (!provider) {
+        sendResponse({
+          ok: false,
+          error: { kind: 'network', message: `[${providerId}] not configured or unavailable` },
+        });
+        return;
+      }
+      const result = await translateOne(provider, message.text, message.sourceLanguage, message.targetLanguage);
       sendResponse(result);
     })();
 

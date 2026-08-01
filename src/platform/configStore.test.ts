@@ -27,7 +27,7 @@ describe('configStore', () => {
     const store = await freshStore();
     await store.onReady();
     expect(store.get('targetLanguage')).toBe(defaultConfig.targetLanguage);
-    expect(store.get('providerBaseUrl')).toBe(defaultConfig.providerBaseUrl);
+    expect(store.get('libreTranslateBaseUrl')).toBe(defaultConfig.libreTranslateBaseUrl);
   });
 
   it('set() persists to browser.storage.local under the plain field name', async () => {
@@ -78,13 +78,13 @@ describe('configStore', () => {
     const store = await freshStore();
     await store.onReady();
 
-    await store.import(JSON.stringify({ targetLanguage: 'zh', providerApiKey: 'abc123' }));
+    await store.import(JSON.stringify({ targetLanguage: 'zh', libreTranslateApiKey: 'abc123' }));
 
     expect(store.get('targetLanguage')).toBe('zh');
-    expect(store.get('providerApiKey')).toBe('abc123');
+    expect(store.get('libreTranslateApiKey')).toBe('abc123');
     const raw = await fakeBrowser.storage.local.get(null);
     expect(raw.targetLanguage).toBe('zh');
-    expect(raw.providerApiKey).toBe('abc123');
+    expect(raw.libreTranslateApiKey).toBe('abc123');
   });
 
   it('import() rejects a value of the wrong type instead of silently corrupting storage', async () => {
@@ -102,12 +102,12 @@ describe('configStore', () => {
   });
 });
 
-describe('configStore — migration (CONFIG_SCHEMA_VERSION 1)', () => {
+describe('configStore — migration (CONFIG_SCHEMA_VERSION 2)', () => {
   beforeEach(() => {
     fakeBrowser.reset();
   });
 
-  it('adopts Session 2s ad hoc libreTranslate* keys into the real schema field names on first load', async () => {
+  it('a fresh (version 0) profile with Session 2s ad hoc keys round-trips through both migrations, ending back at the same field names', async () => {
     await fakeBrowser.storage.local.set({
       libreTranslateBaseUrl: 'https://my-instance.example',
       libreTranslateApiKey: 'old-key',
@@ -116,24 +116,38 @@ describe('configStore — migration (CONFIG_SCHEMA_VERSION 1)', () => {
     const store = await freshStore();
     await store.onReady();
 
-    expect(store.get('providerBaseUrl')).toBe('https://my-instance.example');
-    expect(store.get('providerApiKey')).toBe('old-key');
+    expect(store.get('libreTranslateBaseUrl')).toBe('https://my-instance.example');
+    expect(store.get('libreTranslateApiKey')).toBe('old-key');
+    expect((await fakeBrowser.storage.local.get(null)).__configSchemaVersion).toBe(2);
+  });
 
+  it('a profile stuck at version 1 (generic providerBaseUrl/providerApiKey) migrates to the provider-specific names', async () => {
+    await fakeBrowser.storage.local.set({
+      providerBaseUrl: 'https://v1-instance.example',
+      providerApiKey: 'v1-key',
+      __configSchemaVersion: 1,
+    });
+
+    const store = await freshStore();
+    await store.onReady();
+
+    expect(store.get('libreTranslateBaseUrl')).toBe('https://v1-instance.example');
+    expect(store.get('libreTranslateApiKey')).toBe('v1-key');
     const raw = await fakeBrowser.storage.local.get(null);
-    expect(Object.hasOwn(raw, 'libreTranslateBaseUrl')).toBe(false);
-    expect(Object.hasOwn(raw, 'libreTranslateApiKey')).toBe(false);
-    expect(raw.__configSchemaVersion).toBe(1);
+    expect(Object.hasOwn(raw, 'providerBaseUrl')).toBe(false);
+    expect(Object.hasOwn(raw, 'providerApiKey')).toBe(false);
+    expect(raw.__configSchemaVersion).toBe(2);
   });
 
   it('is idempotent on a second load', async () => {
     await fakeBrowser.storage.local.set({ libreTranslateBaseUrl: 'https://x.example' });
     const first = await freshStore();
     await first.onReady();
-    expect((await fakeBrowser.storage.local.get(null)).__configSchemaVersion).toBe(1);
+    expect((await fakeBrowser.storage.local.get(null)).__configSchemaVersion).toBe(2);
 
     const second = await freshStore();
     await expect(second.onReady()).resolves.toBeUndefined();
-    expect(second.get('providerBaseUrl')).toBe('https://x.example');
+    expect(second.get('libreTranslateBaseUrl')).toBe('https://x.example');
   });
 });
 

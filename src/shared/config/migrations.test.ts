@@ -7,20 +7,44 @@ describe('applyConfigMigrations', () => {
     expect(applyConfigMigrations(raw, CONFIG_SCHEMA_VERSION)).toEqual(raw);
   });
 
-  it('toVersion 1 adopts Session 2s ad hoc provider keys into the real schema field names', () => {
+  it('toVersion 1 adopts Session 2s ad hoc provider keys into the version-1 field names', () => {
+    const raw = {
+      libreTranslateBaseUrl: 'https://libretranslate.com',
+      libreTranslateApiKey: 'secret',
+      targetLanguage: 'fr',
+    };
+    // Simulate only toVersion:1 running by starting from version 0 and
+    // checking the intermediate shape a real profile stuck at version 1
+    // would have had (before toVersion:2 renamed it back) — the full 0->2
+    // round trip is covered by the next test below.
+    const afterV1 = configMigrations.find((m) => m.toVersion === 1)?.migrate(raw);
+    expect(afterV1).toEqual({
+      providerBaseUrl: 'https://libretranslate.com',
+      providerApiKey: 'secret',
+      targetLanguage: 'fr',
+    });
+  });
+
+  it('toVersion 2 renames the version-1 generic provider fields to provider-specific ones', () => {
+    const raw = { providerBaseUrl: 'https://libretranslate.com', providerApiKey: 'secret', targetLanguage: 'fr' };
+    const migrated = applyConfigMigrations(raw, 1);
+    expect(migrated).toEqual({
+      libreTranslateBaseUrl: 'https://libretranslate.com',
+      libreTranslateApiKey: 'secret',
+      targetLanguage: 'fr',
+    });
+    expect(Object.hasOwn(migrated, 'providerBaseUrl')).toBe(false);
+    expect(Object.hasOwn(migrated, 'providerApiKey')).toBe(false);
+  });
+
+  it('a fresh (version 0) install with Session 2s ad hoc keys round-trips through both migrations back to the original field names', () => {
     const raw = {
       libreTranslateBaseUrl: 'https://libretranslate.com',
       libreTranslateApiKey: 'secret',
       targetLanguage: 'fr',
     };
     const migrated = applyConfigMigrations(raw, 0);
-    expect(migrated).toEqual({
-      providerBaseUrl: 'https://libretranslate.com',
-      providerApiKey: 'secret',
-      targetLanguage: 'fr',
-    });
-    expect(Object.hasOwn(migrated, 'libreTranslateBaseUrl')).toBe(false);
-    expect(Object.hasOwn(migrated, 'libreTranslateApiKey')).toBe(false);
+    expect(migrated).toEqual(raw);
   });
 
   it('leaves storage untouched when the legacy keys are absent (a fresh install)', () => {
