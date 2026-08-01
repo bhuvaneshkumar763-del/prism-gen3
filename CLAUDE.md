@@ -448,16 +448,53 @@ surfaces) is in progress.** What's landed so far:
   large session; shipping a settings field with no effect would repeat the
   exact non-functional-placeholder mistake the plan explicitly warns
   against. Deferred to a dedicated follow-up, not silently dropped.
-- **Remaining UI surfaces intentionally not started this pass**: floating
-  bubble, selection translation, hover tooltips, mobile popup. Each is
-  genuinely new content-script UI work (shadow-DOM styling, the bubble's
-  drag/edge-docking math, ...) — the same category of scope the old repo
-  spent most of a dedicated session on. Rushing 4 of these in the tail end
-  of a session already covering messaging + options would risk the same
-  "half-built, non-functional" outcome the custom-dictionary call above is
-  explicitly avoiding. Popup itself also still has only the minimal
-  translate/restore button from Session 5 — language pickers and a service
-  switcher are unstarted. All of this is the next thing to pick up.
+- **Follow-up pass (same session): popup polish + the floating bubble
+  landed too.**
+  - `src/shared/languages.ts`: a small curated `COMMON_LANGUAGES` list (~34
+    entries) for quick-pick dropdowns — explicitly NOT the full generated
+    language-name table Session 7 schedules (derived from what each
+    provider actually supports, plus the old repo's 43 locale files'
+    translated string values as a bootstrap corpus). Scoped to today's
+    dropdown-instead-of-bare-text-input polish only.
+  - `popup/App.tsx` gained a target-language quick-pick and a provider
+    quick-switch, both writing straight to `configStore` (kept in sync
+    with the options page via `configStore.onChanged`, same
+    never-read-`configStore.get()`-in-JSX discipline as the options page).
+  - **The floating bubble** (`components/bubble/`): `FloatingBubble.tsx`
+    (the Solid component) + `mountBubble.ts` (the imperative shadow-DOM
+    host adapter `content.ts` calls) + `bubbleStyles.ts` (inline CSS,
+    since a shadow root on an arbitrary page can't `@import` this
+    extension's own stylesheets). Appears once a page is translated
+    (wired to `pageTranslator.onStateChange`), offers "Show original," and
+    a close button. **Deliberately simpler than the old repo's bubble**:
+    fixed bottom-right position, no drag-to-reposition or edge-docking
+    math, no per-host remembered position — that old behavior is real,
+    hard-won engineering documented at length in the old repo's history,
+    and porting it properly deserves its own focused pass rather than a
+    rushed tail-end addition here. What shipped is real and functional
+    (not a placeholder): it shows, toggles, and closes, backed by 13 unit
+    tests (`vitest.config.ts` gained `vite-plugin-solid` + a
+    `components/**/*.test.tsx` glob so `.tsx` component tests compile
+    under Vitest's own Vite instance — separate from the real extension
+    build's Solid JSX support, which still comes from
+    `@wxt-dev/module-solid`). Uses an **open** shadow root (not the old
+    repo's closed one) — deliberate: the bubble holds no sensitive data,
+    just a toggle button, so the isolation benefit of closed mode is
+    marginal here and open keeps it testable from outside
+    (`host.shadowRoot`).
+  - **Real Playwright verification against the built extension**: a
+    translated page showed the bubble with the correct "Translated" label
+    and "Show original" button (read by piercing the real shadow root,
+    not just asserted in unit tests), and clicking the bubble's button
+    directly on the page restored the original text and removed the
+    bubble — the full real-DOM round trip, not just the isolated
+    component tests.
+  - **Still not started**: selection translation, hover tooltips, mobile
+    popup. Each is genuinely new content-script UI work in its own right
+    (selection-anchored positioning, hover-debounce logic, a
+    narrow-viewport-specific layout) — the same category of scope the old
+    repo spent most of a dedicated session on, and a clean pickup for the
+    next session rather than rushed in behind the bubble.
 
 ## Testing
 
@@ -490,12 +527,13 @@ All of steps 1-4 run in CI (`.github/workflows/ci.yml`) on every push to
   translated correctly, this is the same documented phase-2 scope cut the
   plan calls out, not a regression. Custom dictionary specifically:
   deliberately not started in Session 6 either, see that session's writeup.
-- No floating bubble, selection translation, hover tooltips, or mobile
-  popup — deliberately not started in Session 6 (see that session's
-  writeup for why), a clean pickup for the next UI-focused session.
-- Popup is still minimal (one translate/restore button) — no language
-  pickers or service switcher yet; the options page is where those
-  settings live for now.
+- No selection translation, hover tooltips, or mobile popup — the
+  floating bubble landed in Session 6, but these three are still
+  unstarted (see that session's writeup), a clean pickup for the next
+  UI-focused session.
+- The floating bubble has no drag-to-reposition or edge-docking — fixed
+  bottom-right only, a deliberate scope cut (see Session 6's writeup),
+  not an oversight.
 - No permission-model decision made yet beyond `contextMenus`/`activeTab`
   (Session 6, for the right-click menu and tab targeting). Broad
   `<all_urls>`-style access (matching the old repo's final, reverted-to

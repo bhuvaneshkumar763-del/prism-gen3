@@ -1,3 +1,4 @@
+import { mountBubble } from '../components/bubble/mountBubble';
 import { shouldAutoTranslateOnLoad } from '../src/engine/pageTranslator/autoTranslateDecision';
 import { createPageTranslator } from '../src/engine/pageTranslator/translateLoop';
 import { getBatchingHint } from '../src/engine/providers/descriptors';
@@ -41,6 +42,32 @@ export default defineContentScript({
       getSourceLanguage: () => configStore.get('sourceLanguage'),
       getBatchingHint: () => getBatchingHint(configStore.get('pageTranslatorProvider')),
     });
+
+    // The floating bubble (components/bubble/) only makes sense in the
+    // main frame — an iframe translating independently doesn't need its
+    // own bubble UI stacked on top of the main page's. Reopens on every
+    // translate (including a re-translate over a manually-closed bubble)
+    // — closing is a per-translation dismissal, not a permanent opt-out;
+    // a persistent "don't show again" preference is a documented
+    // follow-up, not built here.
+    if (window.self === window.top) {
+      let bubble: ReturnType<typeof mountBubble> | null = null;
+
+      pageTranslator.onStateChange((state) => {
+        if (state === 'translated') {
+          bubble ??= mountBubble(
+            () => pageTranslator.restorePage(),
+            () => {
+              bubble = null;
+            },
+          );
+          bubble.update('translated', false);
+        } else {
+          bubble?.unmount();
+          bubble = null;
+        }
+      });
+    }
 
     if (window.self === window.top) {
       void (async () => {
