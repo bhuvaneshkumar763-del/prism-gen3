@@ -28,6 +28,13 @@ jobs:
       - name: Engine-purity guard
         run: npm run guard:engine-purity
 
+      # Gen 3 plan, Session 8 hardening pass: the old repo shipped the
+      # identical "reads a plain configStore.get() value directly inside
+      # JSX, never re-renders" bug three separate times before a guard
+      # existed for it — see scripts/check-solid-reactivity.mjs.
+      - name: Solid-reactivity guard
+        run: npm run guard:solid-reactivity
+
       # Gen 3 plan, design principle #2: coverage is a CI gate from
       # Session 1, not backfilled after the fact. Scoped to src/engine/ and
       # src/shared/ — see vitest.config.ts's coverage.include/thresholds.

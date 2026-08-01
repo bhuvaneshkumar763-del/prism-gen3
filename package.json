@@ -18,6 +18,7 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "guard:engine-purity": "node scripts/check-engine-purity.mjs",
+    "guard:solid-reactivity": "node scripts/check-solid-reactivity.mjs",
     "postinstall": "wxt prepare"
   },
   "dependencies": {

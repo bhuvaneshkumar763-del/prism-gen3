@@ -21,7 +21,13 @@ export default defineConfig({
     // gesture first) is still a deliberate later-session decision — see
     // the Gen 3 plan and CLAUDE.md's note on the old repo's
     // storage.sync/permission-model incident history.
-    permissions: ['storage', 'contextMenus', 'activeTab'],
+    // "alarms" (Session 8 hardening pass): the MV3 service worker this
+    // background entrypoint runs in is aggressively suspended by Chrome
+    // after ~30s of inactivity — a recurring chrome.alarms alarm is the
+    // documented way to keep it from being torn down mid-batch during a
+    // long page-translation run. See entrypoints/background.ts's keepalive
+    // setup for the full rationale.
+    permissions: ['storage', 'contextMenus', 'activeTab', 'alarms'],
     commands: {
       'toggle-translate-page': {
         suggested_key: { default: 'Alt+Shift+T' },

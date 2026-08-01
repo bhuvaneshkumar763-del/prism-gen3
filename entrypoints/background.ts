@@ -26,7 +26,32 @@ import { getActiveTabId } from '../src/platform/messaging/tabTarget';
  * caching (title translator: an in-memory 50-entry cache; selection: a
  * one-off translation the user just asked for, no repeat-request pattern
  * to optimize).
+ *
+ * Session 8 (hardening pass): MV3 keepalive via chrome.alarms. A service
+ * worker with no pending listener callback is eligible for suspension by
+ * Chrome after ~30s of idle time — a translatePieces call involving
+ * several provider round trips (retries/backoff in
+ * batchedHttpProvider.ts) can outlast that window, which would kill the
+ * in-flight request with no error surfaced to the page. A recurring
+ * chrome.alarms alarm is the standard MV3 workaround: alarms fire even on
+ * a suspended worker (Chrome wakes it to deliver the event), and simply
+ * having a live alarms.onAlarm listener keeps the worker classified as
+ * active in between. The interval is deliberately short (under the ~30s
+ * idle threshold) — a longer period would let the worker suspend in the
+ * gap anyway, defeating the point.
  */
+const KEEPALIVE_ALARM_NAME = 'prism-keepalive';
+const KEEPALIVE_INTERVAL_MINUTES = 0.4; // 24s — under Chrome's ~30s idle-suspend window
+
+function setupKeepalive(): void {
+  browser.alarms.create(KEEPALIVE_ALARM_NAME, { periodInMinutes: KEEPALIVE_INTERVAL_MINUTES });
+  browser.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === KEEPALIVE_ALARM_NAME) {
+      // Intentionally a no-op body — the listener's mere existence, and
+      // Chrome waking the worker to invoke it, is the keepalive mechanism.
+    }
+  });
+}
 
 function buildProviderConfig(): ProviderConfig {
   const llmBaseUrl = configStore.get('llmBaseUrl');
@@ -80,6 +105,8 @@ async function toggleActiveTab(): Promise<void> {
 }
 
 export default defineBackground(() => {
+  setupKeepalive();
+
   onMessage('translateText', async (message) => {
     const { providerId, provider } = await resolveActiveProvider();
     if (!provider) {

@@ -616,6 +616,86 @@ decision) is complete.** What landed:
   handoff steps.
 - 251 tests (235 → 251), coverage gate still passing.
 
+**Session 8 (hardening pass — structural guards for old-repo gotchas) is
+complete.** The point of this session, per the plan: every "fixed once and
+remembered" lesson from the old repo becomes a CI-enforced guard here, not
+a comment someone has to recall. Four items from the plan's list, worked
+through in order:
+
+- **Headers-object copying** — audited, not built. The old repo's incident
+  was `Object.assign({}, headersObject)` silently copying nothing (a
+  `Headers` instance's fields aren't own-enumerable properties), breaking
+  `Retry-After` handling. `grep -rn "Object.assign.*[Hh]eaders\|\.headers\b"`
+  across `src/`, `entrypoints/`, `components/` (excluding tests) turns up
+  exactly one hit: `src/engine/providers/batchedHttpProvider.ts`'s
+  `response.headers.get('retry-after')` — a direct `.get()` read, never a
+  copy. This codebase doesn't have the bug class, confirmed by reading the
+  code rather than assumed from the old repo's history — so no
+  `copyHeaders()` utility was built for a problem that doesn't occur here;
+  adding one anyway would be exactly the kind of speculative abstraction
+  this project's conventions rule out.
+- **Solid-reactivity CI guard** (`scripts/check-solid-reactivity.mjs`,
+  wired into `package.json` as `guard:solid-reactivity` and into
+  `.github/workflows/ci.yml` right after the engine-purity guard): fails
+  the build if any `.tsx` file under `entrypoints/`/`components/` reads
+  `configStore.get(...)` directly inside a JSX interpolation — the exact
+  non-reactive-read bug class the old repo shipped three separate times
+  (see that repo's Session 5/Phase 2 writeups) before a guard existed.
+  Deliberately narrow (matches only `configStore.get(` in a JSX
+  interpolation prefix, not a general "no property reads in JSX" rule) —
+  `configStore` is the one non-reactive store this codebase has, and a
+  broader regex-based rule risks false positives on legitimate reactive
+  signal calls without a real JSX/TSX parser. **Proven to actually catch
+  the bug, not just configured and trusted**: temporarily injected
+  `configStore.get('targetLanguage')` into a JSX expression in
+  `entrypoints/popup/App.tsx`, confirmed the guard failed with the correct
+  file/line/message, then restored the original file and re-confirmed a
+  clean pass — same "prove the guard fails" bar `check-engine-purity.mjs`
+  was held to in Session 1.
+- **MV3 service-worker keepalive via `chrome.alarms`**
+  (`entrypoints/background.ts`'s `setupKeepalive()`, called once at the top
+  of `defineBackground()`): the old repo's `background.ts` had no keepalive
+  at all until one was added as a deliberate improvement over the
+  pre-rewrite fork; Gen 3 hadn't rebuilt it yet. A service worker with no
+  pending listener callback is eligible for suspension by Chrome after
+  roughly 30s of idle time — a `translatePieces` call that hits several
+  provider round trips (retry/backoff in `batchedHttpProvider.ts`) can run
+  long enough to lose the worker mid-request with no error surfaced to the
+  page. `browser.alarms.create('prism-keepalive', { periodInMinutes: 0.4
+  })` (24s — deliberately under the ~30s idle threshold, since a longer
+  period would let the worker suspend in the gap anyway) plus a live
+  `alarms.onAlarm` listener; `"alarms"` added to `wxt.config.ts`'s
+  manifest permissions. The listener body is intentionally a no-op — the
+  mechanism is Chrome waking a suspended worker to deliver the alarm event
+  and the listener's mere existence keeping the worker classified active
+  in between, not anything the handler needs to compute.
+  **Verified against the real built extension**, not just "the code
+  compiles": loaded `.output/chrome-mv3` in real Chrome (via
+  `playwright-core` pointed at a cached Chromium binary, installed
+  ad hoc with `--no-save` and removed after — this repo doesn't have a
+  Playwright dependency yet, that's Session 9's job) and called
+  `chrome.alarms.getAll()` directly against the live service worker;
+  confirmed `[{"name":"prism-keepalive","periodInMinutes":0.4}]` is
+  actually registered. A full "survives a simulated suspension" test needs
+  the real E2E harness Session 9 builds (this session had no persistent
+  Playwright setup to build that into) — noted honestly as scoped to
+  registration-is-correct verification, not the full suspension-survival
+  claim.
+- **`chrome-headless-shell` has zero extension support** — the guard for
+  this is "the E2E runner launches full Chrome with `--headless=new`,
+  verified by a positive assertion." This repo has no E2E harness yet
+  (Session 5's plan reference to Playwright was about ad hoc scratch
+  verification scripts, not a committed suite — unlike the old repo, which
+  had already formalized `tests/e2e/run.mjs` by its own Session 1). Building
+  that harness is explicitly Session 9's task; the guard lands there, not
+  here, so it isn't invented against a harness that doesn't exist yet.
+- 251 tests, unchanged — this session added guard scripts and a background
+  keepalive, no new unit-testable pure logic. Full verification chain
+  (`compile`, `guard:engine-purity`, `guard:solid-reactivity`,
+  `test:coverage`, `build`, `lint`, `npm audit`) run clean; manifest of the
+  real build inspected directly to confirm `"alarms"` actually landed in
+  `permissions`.
+
 ## Testing
 
 Run before considering any Gen 3 change done:
@@ -623,14 +703,17 @@ Run before considering any Gen 3 change done:
 2. `npm run guard:engine-purity` — must pass. If it doesn't, the fix is
    almost always "move this to `src/platform/` and inject it as a port,"
    not "add an exception to the script."
-3. `npm run test:coverage` (Vitest + v8 coverage) — unit tests for
+3. `npm run guard:solid-reactivity` (Session 8) — must pass. Fails if any
+   `.tsx` under `entrypoints/`/`components/` reads `configStore.get(...)`
+   directly inside JSX; mirror the value into a signal/store instead.
+4. `npm run test:coverage` (Vitest + v8 coverage) — unit tests for
    `src/engine/`/`src/shared/` logic must pass AND meet the coverage
    thresholds in `vitest.config.ts`.
-4. `npm run build` — must succeed.
-5. `npm run lint` — not CI-gated yet, but run it and fix genuine findings
+5. `npm run build` — must succeed.
+6. `npm run lint` — not CI-gated yet, but run it and fix genuine findings
    in files you're touching.
 
-All of steps 1-4 run in CI (`.github/workflows/ci.yml`) on every push to
+All of steps 1-5 run in CI (`.github/workflows/ci.yml`) on every push to
 `main` and every PR.
 
 ## Known gaps (expected at this stage, not oversights)
