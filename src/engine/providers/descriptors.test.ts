@@ -17,9 +17,11 @@ describe('descriptors', () => {
     expect(getProviderDescriptor('nope')).toBeUndefined();
   });
 
-  it('getBatchingHint returns the llm provider’s grouping hint and undefined for providers without one', () => {
+  it('getBatchingHint returns grouping hints for llm and google, and undefined for providers without one', () => {
     expect(getBatchingHint('llm')).toEqual({ groupByBlock: true, maxGroupChars: 2000 });
+    expect(getBatchingHint('google')).toEqual({ groupByBlock: true, maxGroupChars: 800 });
     expect(getBatchingHint('libretranslate')).toBeUndefined();
+    expect(getBatchingHint('googleCloudTranslate')).toBeUndefined();
     expect(getBatchingHint('nope')).toBeUndefined();
   });
 

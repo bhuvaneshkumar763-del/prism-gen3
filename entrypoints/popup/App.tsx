@@ -1,42 +1,66 @@
-import { createSignal, Show } from 'solid-js';
+import { createSignal, onMount, Show } from 'solid-js';
+import type { PageLanguageState } from '../../src/engine/pageTranslator/translateLoop';
+import { configStore } from '../../src/platform/configStore';
 import './App.css';
 
 /**
- * Session 2's minimal vertical slice popup: click "Translate" to fetch the
- * active tab's first <p> text, translate it via the background script's
- * LibreTranslate provider, and write the result back onto the page. Not
- * the real popup UI (that's a later session) — just enough to prove the
- * pipeline works end to end with a real network call.
+ * Session 5 update: triggers the real page-translation engine
+ * (`src/engine/pageTranslator/translateLoop.ts`, wired into
+ * `entrypoints/content.ts`) — translate/restore the whole active tab, not
+ * just a demo `<p>`. Still not the real popup UI (language pickers,
+ * service switcher, ... — that's Session 6); this is the minimal control
+ * surface needed to exercise the real engine end to end.
  */
 function App() {
-  const [status, setStatus] = createSignal<'idle' | 'translating' | 'done' | 'error'>('idle');
-  const [original, setOriginal] = createSignal<string | null>(null);
-  const [translated, setTranslated] = createSignal<string | null>(null);
+  const [status, setStatus] = createSignal<'idle' | 'busy' | 'error'>('idle');
+  const [pageState, setPageState] = createSignal<PageLanguageState>('original');
   const [errorMessage, setErrorMessage] = createSignal<string | null>(null);
 
+  async function activeTabId(): Promise<number> {
+    const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id) throw new Error('No active tab');
+    return tab.id;
+  }
+
+  onMount(async () => {
+    try {
+      const tabId = await activeTabId();
+      const state = (await browser.tabs.sendMessage(tabId, { type: 'getPageState' })) as PageLanguageState;
+      setPageState(state);
+    } catch {
+      // No content script alive yet in this tab (e.g. a chrome:// page, or
+      // a tab that predates install) — leave the default 'original' state;
+      // the translate button below will still surface any real failure.
+    }
+  });
+
   async function onTranslateClick() {
-    setStatus('translating');
+    setStatus('busy');
     setErrorMessage(null);
     try {
-      const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
-      if (!tab?.id) throw new Error('No active tab');
+      await configStore.onReady();
+      const targetLanguage = configStore.get('targetLanguage');
+      const tabId = await activeTabId();
+      const state = (await browser.tabs.sendMessage(tabId, {
+        type: 'pageTranslate',
+        targetLanguage,
+      })) as PageLanguageState;
+      setPageState(state);
+      setStatus('idle');
+    } catch (e) {
+      setErrorMessage(e instanceof Error ? e.message : String(e));
+      setStatus('error');
+    }
+  }
 
-      const sampleText = (await browser.tabs.sendMessage(tab.id, { type: 'getSampleText' })) as string | null;
-      if (!sampleText) throw new Error('No <p> found on this page');
-      setOriginal(sampleText);
-
-      const result = (await browser.runtime.sendMessage({
-        type: 'translateText',
-        text: sampleText,
-        sourceLanguage: 'en',
-        targetLanguage: 'es',
-      })) as { ok: true; value: string } | { ok: false; error: { message: string } };
-
-      if (!result.ok) throw new Error(result.error.message);
-      setTranslated(result.value);
-
-      await browser.tabs.sendMessage(tab.id, { type: 'applyTranslatedText', text: result.value });
-      setStatus('done');
+  async function onRestoreClick() {
+    setStatus('busy');
+    setErrorMessage(null);
+    try {
+      const tabId = await activeTabId();
+      const state = (await browser.tabs.sendMessage(tabId, { type: 'pageRestore' })) as PageLanguageState;
+      setPageState(state);
+      setStatus('idle');
     } catch (e) {
       setErrorMessage(e instanceof Error ? e.message : String(e));
       setStatus('error');
@@ -46,20 +70,19 @@ function App() {
   return (
     <div class="app">
       <h1>Prism (Gen 3)</h1>
-      <button type="button" disabled={status() === 'translating'} onClick={onTranslateClick}>
-        {status() === 'translating' ? 'Translating…' : 'Translate first paragraph'}
-      </button>
+      <Show
+        when={pageState() === 'translated'}
+        fallback={
+          <button type="button" disabled={status() === 'busy'} onClick={onTranslateClick}>
+            {status() === 'busy' ? 'Translating…' : 'Translate this page'}
+          </button>
+        }
+      >
+        <button type="button" disabled={status() === 'busy'} onClick={onRestoreClick}>
+          {status() === 'busy' ? 'Restoring…' : 'Show original'}
+        </button>
+      </Show>
 
-      <Show when={original()}>
-        <p>
-          <strong>Original:</strong> {original()}
-        </p>
-      </Show>
-      <Show when={translated()}>
-        <p>
-          <strong>Translated:</strong> {translated()}
-        </p>
-      </Show>
       <Show when={status() === 'error'}>
         <p class="error">Error: {errorMessage()}</p>
       </Show>

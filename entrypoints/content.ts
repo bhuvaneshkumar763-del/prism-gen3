@@ -1,50 +1,71 @@
+import { createPageTranslator, type PageLanguageState } from '../src/engine/pageTranslator/translateLoop';
+import { getBatchingHint } from '../src/engine/providers/descriptors';
+import { configStore } from '../src/platform/configStore';
+import { createRemoteTranslator } from '../src/platform/remoteTranslator';
+
 /**
- * Session 2's minimal vertical slice: find the page's first <p>, expose
- * its text to the popup, and apply a translated replacement back onto it.
- * This is NOT the real page-translation engine (that's Session 5's
- * dedupe/mutationWatcher/resweep/grouping/translateLoop machinery,
- * redesigned fresh from the old repo's lessons) — just enough DOM
- * plumbing to prove the whole pipeline (popup click -> background ->
- * engine -> real network call -> back to a real page) works end to end.
+ * Wires the real page-translation engine (Session 5:
+ * `src/engine/pageTranslator/translateLoop.ts`) into a live content
+ * script. Replaces Session 2's single-hardcoded-`<p>` demo — this now
+ * translates (and restores) the whole page, keeps watching for new/changed
+ * content, and picks its chunking strategy per the active provider's
+ * `batchingHint` (see `descriptors.ts`/`grouping.ts`).
+ *
+ * The engine itself never touches `browser.*` — `createRemoteTranslator()`
+ * (src/platform/remoteTranslator.ts) is the one adapter bridging it to
+ * `browser.runtime.sendMessage`, and `configStore` supplies the current
+ * provider/source-language selection.
  */
 export default defineContentScript({
   matches: ['*://*/*'],
   main() {
-    interface GetSampleTextMessage {
-      type: 'getSampleText';
+    void configStore.onReady();
+
+    const pageTranslator = createPageTranslator({
+      translator: createRemoteTranslator(),
+      getSourceLanguage: () => configStore.get('sourceLanguage'),
+      getBatchingHint: () => getBatchingHint(configStore.get('pageTranslatorProvider')),
+    });
+
+    interface PageTranslateMessage {
+      type: 'pageTranslate';
+      targetLanguage: string;
     }
-    interface ApplyTranslatedTextMessage {
-      type: 'applyTranslatedText';
-      text: string;
+    interface PageRestoreMessage {
+      type: 'pageRestore';
+    }
+    interface GetPageStateMessage {
+      type: 'getPageState';
     }
 
-    function isGetSampleTextMessage(message: unknown): message is GetSampleTextMessage {
+    function isPageTranslateMessage(message: unknown): message is PageTranslateMessage {
       return (
-        typeof message === 'object' && message !== null && (message as { type?: unknown }).type === 'getSampleText'
+        typeof message === 'object' && message !== null && (message as { type?: unknown }).type === 'pageTranslate'
       );
     }
-    function isApplyTranslatedTextMessage(message: unknown): message is ApplyTranslatedTextMessage {
-      return (
-        typeof message === 'object' &&
-        message !== null &&
-        (message as { type?: unknown }).type === 'applyTranslatedText'
-      );
+    function isPageRestoreMessage(message: unknown): message is PageRestoreMessage {
+      return typeof message === 'object' && message !== null && (message as { type?: unknown }).type === 'pageRestore';
     }
-
-    function firstParagraph(): HTMLParagraphElement | null {
-      return document.querySelector('p');
+    function isGetPageStateMessage(message: unknown): message is GetPageStateMessage {
+      return typeof message === 'object' && message !== null && (message as { type?: unknown }).type === 'getPageState';
     }
 
     browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-      if (isGetSampleTextMessage(message)) {
-        const p = firstParagraph();
-        sendResponse(p ? p.textContent : null);
+      if (isPageTranslateMessage(message)) {
+        (async () => {
+          await configStore.onReady();
+          await pageTranslator.translatePage(message.targetLanguage);
+          sendResponse(pageTranslator.getState() satisfies PageLanguageState);
+        })();
+        return true;
+      }
+      if (isPageRestoreMessage(message)) {
+        pageTranslator.restorePage();
+        sendResponse(pageTranslator.getState() satisfies PageLanguageState);
         return false;
       }
-      if (isApplyTranslatedTextMessage(message)) {
-        const p = firstParagraph();
-        if (p) p.textContent = message.text;
-        sendResponse(true);
+      if (isGetPageStateMessage(message)) {
+        sendResponse(pageTranslator.getState() satisfies PageLanguageState);
         return false;
       }
       return undefined;

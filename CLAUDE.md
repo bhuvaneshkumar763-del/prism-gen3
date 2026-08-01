@@ -274,6 +274,94 @@ slice) are complete.** What Session 2 landed:
   .bringToFront()` before triggering the popup click, so the real active
   tab matches what `popup/App.tsx` expects.
 
+**Session 5 (page-translation engine) is complete.** What it landed:
+- `src/engine/pageTranslator/`: `collectTextNodes.ts` (DOM walk, skips
+  script/style/noscript/textarea + contenteditable), `dedupe.ts`
+  (WeakSet-based O(1) identity tracking), `mutationWatcher.ts`
+  (childList + characterData observation, with an own-write guard so the
+  engine never re-translates its own output), `resweep.ts` (adaptive
+  backoff safety re-sweep — catches shadow-DOM/detached-subtree content a
+  MutationObserver structurally can't see), and `translateLoop.ts` (the
+  orchestrator tying them together). All of it lives in `src/engine/`
+  under the purity guard — only standard Web APIs
+  (`MutationObserver`/`setTimeout`/`location`), zero `chrome`/`browser`.
+- **The chunking logic (`grouping.ts`) — explicitly improved, not just
+  ported, per direct user request.** Beyond simple block-ancestor grouping
+  (kept from the old repo's version), this adds sentence-boundary-aware
+  cutting: once a group exceeds `maxGroupChars`, it only cuts immediately
+  if the group's last-added node completed a sentence; otherwise it lets
+  the group grow past budget (bounded by `maxGroupChars * 1.5`) hunting for
+  the real sentence end, so inline formatting (`<b>`, `<a>`, ...) splitting
+  one sentence across several text nodes — e.g. `"Hello <b>world</b>."` as
+  3 nodes — can't get cut mid-sentence (which would send a lone `"."` as
+  its own translation piece and sever "world" from the context that would
+  help translate it). A pathological node stream with no punctuation at
+  all still terminates in bounded pieces via the hard cap. 8 unit tests
+  covering block cuts, sentence-boundary cuts, bounded overflow, the
+  hard-cap fallback, and context-carrying across a cut.
+- **The chunking improvement extended to a second provider, not just kept
+  at one.** `descriptors.ts`'s `batchingHint` previously only covered
+  `llm`; this session added it to `google` too — its endpoint has a real
+  native multi-item marker scheme (`<a i=N>`, see `google.ts`), so grouping
+  sibling text nodes into one piece gives the model genuine paragraph
+  context with no separator-ambiguity risk (unlike `libretranslate`/
+  `googleCloudTranslate`, deliberately left ungrouped — see the descriptor
+  file's inline comments for why the separator-join scheme there carries a
+  real, if modest, cross-segment-translation risk that wasn't taken without
+  observing it against real traffic first).
+- `Translator`-port reuse across the engine/platform boundary: rather than
+  inventing a separate messaging contract, `translateLoop.ts` takes a
+  `Translator` (the exact same interface every provider in
+  `src/engine/providers/` implements) as a constructor argument.
+  `src/platform/remoteTranslator.ts` is the one adapter implementing that
+  interface via `browser.runtime.sendMessage` to a new `translatePieces`
+  background message (added to `entrypoints/background.ts`, reusing the
+  same `registry.createProvider()`/`buildProviderConfig()` selection logic
+  `translateText` already used). This makes the concrete
+  cross-surface-reuse case real, not aspirational: a future non-extension
+  surface would supply a different `Translator` here and reuse
+  `translateLoop.ts` completely unmodified.
+- `entrypoints/content.ts` rewritten from Session 2's single-hardcoded-`<p>`
+  demo onto the real engine — full-page translate/restore, watching for
+  new/changed content, chunking per the active provider's `batchingHint`.
+  `entrypoints/popup/App.tsx` now triggers real `pageTranslate`/
+  `pageRestore`/`getPageState` messages instead of the old demo flow.
+- 141 unit tests (87 at end of Session 4 → 141), coverage gate passing
+  (95.22% stmt / 87.35% branch / 95.88% func / 97.49% line, against the
+  90/85/90/90 thresholds).
+- **Real end-to-end verification against the actual built extension**: a
+  Playwright run against a 3-paragraph test page (2 separate `<p>` blocks
+  that must stay separate pieces, plus one paragraph with a sentence split
+  across inline-formatted text nodes that must stay grouped) confirmed the
+  full pipeline for real — every paragraph translated, and the mock LLM
+  server's received prompt confirmed the inline-formatted sentence really
+  was sent as ONE segment (`"Hello ␟world␟. This should stay grouped."`),
+  not three isolated fragments — concrete proof the chunking improvement
+  works against the real built extension, not just in unit tests. Restore
+  was verified too, bringing back the exact original text. Also
+  incidentally exercised the "short response repair" retry machinery for
+  real (the throwaway mock server didn't preserve the piece-part separator
+  in its fake translations, which correctly triggered the missing-result
+  repair/requeue path) — not the goal of the test, but a nice confirmation
+  that path also works end to end. Hit the by-now-familiar
+  self-referential-active-tab Playwright gotcha a third time, in a new
+  shape: reusing the *same* popup page instance for the restore click
+  (rather than opening a fresh tab, which becomes the active tab itself)
+  was the fix this time — noted here as the specific variant so the next
+  session doesn't rediscover it from scratch.
+- **Deliberately deferred, not silently dropped**: `originalLanguage.ts`
+  (auto-translate-on-load language detection) and `titleTranslator.ts`
+  (tab-bar title translation) — the plan's Session 5 also covered these,
+  but this session's scope was narrowed to the core translate/restore
+  engine plus the explicitly-requested chunking-quality work. Both are
+  small, self-contained modules (~170 and ~220 lines in the old repo) with
+  no dependency on anything built here beyond `configStore`/`registry` — a
+  clean pickup for a follow-up session. Element-attribute translation
+  (placeholder/title/alt/aria-label) and custom-dictionary application
+  remain the same documented phase-2 scope cut inherited from the plan —
+  every text node still gets found and translated correctly, just without
+  those extras.
+
 ## Testing
 
 Run before considering any Gen 3 change done:
@@ -296,12 +384,14 @@ All of steps 1-4 run in CI (`.github/workflows/ci.yml`) on every push to
 - No DeepL provider (neither the Free API nor the live-tab bridge) — a
   deliberate Session 4 deferral, see
   `docs/decisions/0005-deepl-live-tab-bridge.md`.
-- No real page-translation engine yet — `entrypoints/content.ts` only
-  handles one hardcoded `<p>`, and `entrypoints/background.ts` only
-  handles the single `translateText` message type. Session 5 builds
-  dedupe/mutationWatcher/resweep/grouping/translateLoop and wires
-  `descriptors.ts`'s `batchingHint` (currently just `llm`) into real DOM
-  grouping.
+- No auto-translate-on-load language detection (`originalLanguage.ts`) or
+  tab-bar title translation (`titleTranslator.ts`) — deliberately deferred
+  out of Session 5's scope, see that session's writeup above. Both are
+  small, self-contained, and a clean pickup for a follow-up session.
+- No element-attribute translation (placeholder/title/alt/aria-label) or
+  custom-dictionary application — every text node still gets found and
+  translated correctly, this is the same documented phase-2 scope cut the
+  plan calls out, not a regression.
 - No permission-model decision made yet — `wxt.config.ts` only requests
   `"storage"` so far (needed for `configStore.ts`). Broad `<all_urls>`-
   style access (matching the old repo's final, reverted-to state) is a

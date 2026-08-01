@@ -40,11 +40,37 @@ export const providerDescriptors: ProviderDescriptor[] = [
   // Free, no signup, but a real quality ceiling — see
   // docs/decisions/0004-provider-scope.md. Kept as the no-setup fallback,
   // not the recommended default.
-  { id: 'libretranslate', displayName: 'LibreTranslate', requiresKey: false },
-  { id: 'google', displayName: 'Google (free)', requiresKey: false },
+  {
+    id: 'libretranslate',
+    displayName: 'LibreTranslate',
+    requiresKey: false,
+    // No batchingHint: multi-string pieces here are joined with a plain
+    // separator character (see libretranslate.ts) and sent as one text
+    // blob — the model has no structural marker distinguishing the joined
+    // segments, so there's a real (if modest) risk of it translating
+    // across the separator inconsistently. Session 5 (page-translator
+    // grouping.ts) chose not to take that risk without first observing it
+    // against real traffic; revisit if per-node requests turn out to be
+    // the bigger quality problem in practice.
+  },
+  {
+    id: 'google',
+    displayName: 'Google (free)',
+    requiresKey: false,
+    // Unlike the separator-joined providers above, Google's endpoint has
+    // its own real multi-item marker scheme (`<a i=N>`, see google.ts) —
+    // grouping sibling text nodes into one piece here gives the model
+    // genuine sentence/paragraph context while still reliably splitting
+    // back into the original per-node strings, no separator-ambiguity
+    // risk. A smaller budget than the LLM provider's (this is a scraped
+    // "lite" endpoint, not a chat completion — keeping requests modest
+    // avoids stressing an endpoint this project doesn't control).
+    batchingHint: { groupByBlock: true, maxGroupChars: 800 },
+  },
   // The real, official Google Cloud API (user's own key/billing) — the
   // closest match to what Arc's browser translate feature actually uses,
-  // confirmed live (see the ADR above).
+  // confirmed live (see the ADR above). No batchingHint, same
+  // separator-joining risk as LibreTranslate above.
   { id: 'googleCloudTranslate', displayName: 'Google Cloud Translation API', requiresKey: true },
   {
     id: 'llm',

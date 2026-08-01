@@ -1,6 +1,7 @@
 import { createProvider, type ProviderConfig } from '../src/engine/providers/registry';
 import { translateOne } from '../src/engine/translator';
 import { configStore } from '../src/platform/configStore';
+import { isTranslatePiecesMessage } from '../src/platform/remoteTranslator';
 
 /**
  * Session 2's minimal vertical slice: exactly one message type
@@ -12,8 +13,13 @@ import { configStore } from '../src/platform/configStore';
  * Session 4 update: provider selection now goes through
  * `registry.createProvider()` and the config store's real per-provider
  * fields (`pageTranslatorProvider` picks which one), instead of hardcoding
- * LibreTranslate — this is the same seam the eventual page-translation
- * engine (Session 5) and the real popup UI will use.
+ * LibreTranslate.
+ *
+ * Session 5 update: a second message type, `translatePieces`, is the
+ * backing for `src/platform/remoteTranslator.ts` — the real full-page
+ * translation engine (`src/engine/pageTranslator/translateLoop.ts`) sends
+ * its grouped/chunked pieces here and gets back one `PieceOutcome` per
+ * piece, using the exact same provider-selection logic as `translateText`.
  */
 interface TranslateTextMessage {
   type: 'translateText';
@@ -44,25 +50,50 @@ function buildProviderConfig(): ProviderConfig {
   };
 }
 
+async function resolveActiveProvider() {
+  await configStore.onReady();
+  const providerId = configStore.get('pageTranslatorProvider');
+  const provider = createProvider(providerId, buildProviderConfig());
+  return { providerId, provider };
+}
+
 export default defineBackground(() => {
   browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (!isTranslateTextMessage(message)) return undefined;
+    if (isTranslateTextMessage(message)) {
+      (async () => {
+        const { providerId, provider } = await resolveActiveProvider();
+        if (!provider) {
+          sendResponse({
+            ok: false,
+            error: { kind: 'network', message: `[${providerId}] not configured or unavailable` },
+          });
+          return;
+        }
+        const result = await translateOne(provider, message.text, message.sourceLanguage, message.targetLanguage);
+        sendResponse(result);
+      })();
+      return true; // keep the message channel open for the async sendResponse above
+    }
 
-    (async () => {
-      await configStore.onReady();
-      const providerId = configStore.get('pageTranslatorProvider');
-      const provider = createProvider(providerId, buildProviderConfig());
-      if (!provider) {
-        sendResponse({
-          ok: false,
-          error: { kind: 'network', message: `[${providerId}] not configured or unavailable` },
+    if (isTranslatePiecesMessage(message)) {
+      (async () => {
+        const { providerId, provider } = await resolveActiveProvider();
+        if (!provider) {
+          const error = { kind: 'network' as const, message: `[${providerId}] not configured or unavailable` };
+          sendResponse(message.pieces.map(() => ({ ok: false, error })));
+          return;
+        }
+        const outcomes = await provider.translateBatch({
+          sourceLanguage: message.sourceLanguage,
+          targetLanguage: message.targetLanguage,
+          pieces: message.pieces,
+          dontSortResults: message.dontSortResults,
         });
-        return;
-      }
-      const result = await translateOne(provider, message.text, message.sourceLanguage, message.targetLanguage);
-      sendResponse(result);
-    })();
+        sendResponse(outcomes);
+      })();
+      return true;
+    }
 
-    return true; // keep the message channel open for the async sendResponse above
+    return undefined;
   });
 });
