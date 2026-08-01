@@ -81,20 +81,23 @@ scripts/
 - **Chrome-only at launch**, but every build script accepts a browser
   target parameter (`build:firefox`/`zip:firefox` already work) — adding
   Firefox back later is a config change, not a migration.
-- **No settings-sync mechanism yet, and won't be added casually** — the old
+- **No settings-sync mechanism, and won't be added casually** — the old
   repo shipped `chrome.storage.sync`, then fully removed it after a real,
   hard-to-diagnose split-brain bug on WebKit-based browsers (feature
   detection proved the API *existed*, not that it *worked* — see the old
-  repo's `CLAUDE.md`, "storage.sync removed," for the full incident). When
-  Session 3 builds the storage adapter, sync is deferred with a concrete
-  test precondition for reconsidering it later, not blindly avoided or
-  blindly re-attempted.
+  repo's `CLAUDE.md`, "storage.sync removed," for the full incident).
+  Session 3's storage adapter (`src/platform/storage/`) is built behind a
+  swappable `StorageBackend` port specifically so this doesn't require a
+  redesign later — but sync itself is deferred with a concrete test
+  precondition, not blindly avoided or blindly re-attempted. See
+  `docs/decisions/0003-settings-sync-deferred.md`.
 - **Coverage is a CI gate, not an aspiration**: `vitest.config.ts` enforces
-  90%+ statement/function/line coverage (85%+ branch) on `src/engine/**`
-  and `src/shared/**` specifically — proven to actually fail (not just
-  configured and hoped) via a throwaway violation during Session 1 setup.
-  `entrypoints/`-layer UI coverage is a deliberate, documented carve-out
-  (real UI test infra is a later session), not a silent gap.
+  90%+ statement/function/line coverage (85%+ branch) on `src/engine/**`,
+  `src/shared/**`, and (as of Session 3) `src/platform/**` — proven to
+  actually fail (not just configured and hoped) via a throwaway violation
+  during Session 1 setup. `entrypoints/`-layer UI coverage is a deliberate,
+  documented carve-out (real UI test infra is a later session), not a
+  silent gap.
 - **Lint is not yet a CI gate** (Biome is configured, `npm run lint`
   works) — same explicit, non-oversight choice the old repo made
   repeatedly: fix meaningful findings as you touch files, don't block on
@@ -152,6 +155,41 @@ slice) are complete.** What Session 2 landed:
   rediscovered as "the messaging is broken" in a future session's
   real-round-trip verification.
 
+**Session 3 (config/storage layer) is complete.** What it landed:
+- `src/shared/config/schema.ts` + `migrations.ts`: fresh config schema (5
+  fields so far — grows incrementally as later sessions add features, not
+  a guess at the eventual full list) and a versioned migration system
+  (pure functions, ascending, gated on a stored version marker) — the
+  *pattern* kept from the old repo on purpose (real engineering win), the
+  key names and schema shape entirely fresh.
+- **A real first migration, not a contrived one**: `CONFIG_SCHEMA_VERSION`
+  starts at 1, and that migration adopts Session 2's ad hoc,
+  un-versioned `libreTranslateBaseUrl`/`libreTranslateApiKey` storage keys
+  into the real schema's `providerBaseUrl`/`providerApiKey` fields — a
+  genuine need, not a demo. Verified against fake-browser (unit) and the
+  real built extension via Playwright (a seeded profile with the old keys,
+  loaded for real, confirms the adoption and key removal).
+- `src/platform/storage/`: a `StorageBackend` port + `localStorageBackend`
+  (the only implementation that ships). `configStore.ts` depends only on
+  the port, never on `browser.storage` directly.
+- **`docs/decisions/0003-settings-sync-deferred.md`**: no sync backend
+  ships. Not "avoid it forever" — the ADR names a concrete precondition
+  (`configStore.test.ts`'s cross-context consistency test) any future sync
+  backend must pass before it's reconsidered, directly targeting the exact
+  class of bug (a write visible in one context, invisible in another) that
+  made the old repo remove `chrome.storage.sync` after a real WebKit
+  incident.
+- `src/platform/configStore.ts`: `get`/`set`/`onReady`/`onChanged`/
+  `export`/`import` — the *shape* kept from the old repo's `twpConfig` on
+  purpose (proven surface), everything else fresh. Session 2's ad hoc
+  `providerConfig.ts` is deleted; `background.ts` now reads provider
+  config through the real store.
+- No options/backup UI wired to `export`/`import` yet (no such UI surface
+  exists until Session 6/7) — the mechanism itself is fully tested (unit
+  tests including the "rejects the wrong type," "ignores unknown fields"
+  cases) and shares the same real-storage code path already verified by
+  the migration checks above.
+
 ## Testing
 
 Run before considering any Gen 3 change done:
@@ -174,17 +212,16 @@ All of steps 1-4 run in CI (`.github/workflows/ci.yml`) on every push to
 - Only one provider (LibreTranslate) and one message type exist. Google/
   Bing/Yandex/LLM/Builtin providers, the shared retry/batching/concurrency
   machinery, and the DeepL-live-tab-bridge decision are Session 4.
-- No real config schema/store yet — `src/platform/providerConfig.ts` is a
-  deliberately minimal placeholder. Session 3 builds the real thing
-  (versioned migrations, the settings-sync deferral decision, export/
-  import).
 - No real page-translation engine yet — `entrypoints/content.ts` only
   handles one hardcoded `<p>`. Session 5 builds dedupe/mutationWatcher/
   resweep/grouping/translateLoop.
 - No permission-model decision made yet — `wxt.config.ts` only requests
-  `"storage"` so far (needed for `providerConfig.ts`). Broad `<all_urls>`-
+  `"storage"` so far (needed for `configStore.ts`). Broad `<all_urls>`-
   style access (matching the old repo's final, reverted-to state) is a
   deliberate Session 7 decision, not decided by omission.
+- No options/backup UI wired to `configStore.export()`/`import()` yet —
+  Session 6/7 builds the UI surface; the storage mechanism itself is fully
+  tested (see the Session 3 writeup above).
 - No E2E test harness committed yet (the old repo's Playwright pattern —
   full Chrome with `--headless=new`, since `chrome-headless-shell` silently
   doesn't support extensions at all — is the reference to follow when this

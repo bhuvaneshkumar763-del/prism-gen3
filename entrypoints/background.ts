@@ -1,5 +1,5 @@
 import { createLibreTranslateProvider } from '../src/engine/providers/libretranslate';
-import { getLibreTranslateConfig } from '../src/platform/providerConfig';
+import { configStore } from '../src/platform/configStore';
 
 /**
  * Session 2's minimal vertical slice: exactly one message type
@@ -24,8 +24,11 @@ export default defineBackground(() => {
     if (!isTranslateTextMessage(message)) return undefined;
 
     (async () => {
-      const config = await getLibreTranslateConfig();
-      const provider = createLibreTranslateProvider(config);
+      await configStore.onReady();
+      const provider = createLibreTranslateProvider({
+        baseUrl: configStore.get('providerBaseUrl'),
+        apiKey: configStore.get('providerApiKey') || undefined,
+      });
       const result = await provider.translate({
         text: message.text,
         sourceLanguage: message.sourceLanguage,

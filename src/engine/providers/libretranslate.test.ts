@@ -60,7 +60,10 @@ describe('createLibreTranslateProvider', () => {
   });
 
   it('returns an http error result on a non-2xx response', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({}, 503)));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => jsonResponse({}, 503)),
+    );
 
     const provider = createLibreTranslateProvider({ baseUrl: 'https://example.com' });
     const result = await provider.translate({ text: 'hello', sourceLanguage: 'en', targetLanguage: 'es' });
@@ -70,7 +73,10 @@ describe('createLibreTranslateProvider', () => {
   });
 
   it('returns an http error result when the API responds 200 with an error field', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ error: 'Slow down' })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => jsonResponse({ error: 'Slow down' })),
+    );
 
     const provider = createLibreTranslateProvider({ baseUrl: 'https://example.com' });
     const result = await provider.translate({ text: 'hello', sourceLanguage: 'en', targetLanguage: 'es' });
@@ -96,7 +102,10 @@ describe('createLibreTranslateProvider', () => {
   });
 
   it('returns a parse error result when translatedText is missing', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ someOtherField: true })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => jsonResponse({ someOtherField: true })),
+    );
 
     const provider = createLibreTranslateProvider({ baseUrl: 'https://example.com' });
     const result = await provider.translate({ text: 'hello', sourceLanguage: 'en', targetLanguage: 'es' });

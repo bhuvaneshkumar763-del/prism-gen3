@@ -45,12 +45,41 @@ for (const dir of GUARDED_DIRS) {
   for (const file of files) {
     const content = readFileSync(file, 'utf8');
     const lines = content.split('\n');
-    lines.forEach((line, i) => {
+    let inBlockComment = false;
+    lines.forEach((rawLine, i) => {
+      // Strip comments before matching — a doc comment mentioning
+      // "browser.storage" as prose (e.g. explaining why a module DOESN'T
+      // use it) must not trip this check. Simple line-based stripping:
+      // good enough for this codebase's style (no comment syntax inside
+      // string literals containing "chrome."/"browser." expressions,
+      // which would be unusual and easy to spot in review anyway).
+      let line = rawLine;
+      if (inBlockComment) {
+        const end = line.indexOf('*/');
+        if (end === -1) return; // whole line is inside the block comment
+        line = line.slice(end + 2);
+        inBlockComment = false;
+      }
+      const blockStart = line.indexOf('/*');
+      if (blockStart !== -1) {
+        const blockEnd = line.indexOf('*/', blockStart);
+        if (blockEnd === -1) {
+          line = line.slice(0, blockStart);
+          inBlockComment = true;
+        } else {
+          line = line.slice(0, blockStart) + line.slice(blockEnd + 2);
+        }
+      }
+      const lineCommentStart = line.indexOf('//');
+      if (lineCommentStart !== -1) line = line.slice(0, lineCommentStart);
+      // Also skip lines that are purely a jsdoc-style " * ..." continuation.
+      if (/^\s*\*/.test(rawLine) && !/^\s*\*\//.test(rawLine)) return;
+
       if (DISALLOWED_IMPORT_PATTERN.test(line)) {
-        violations.push(`${file}:${i + 1}: imports a browser-extension/framework module — ${line.trim()}`);
+        violations.push(`${file}:${i + 1}: imports a browser-extension/framework module — ${rawLine.trim()}`);
       }
       if (BARE_GLOBAL_PATTERN.test(line)) {
-        violations.push(`${file}:${i + 1}: uses the ambient chrome/browser extension API global — ${line.trim()}`);
+        violations.push(`${file}:${i + 1}: uses the ambient chrome/browser extension API global — ${rawLine.trim()}`);
       }
     });
   }
