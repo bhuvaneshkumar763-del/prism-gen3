@@ -696,25 +696,123 @@ through in order:
   real build inspected directly to confirm `"alarms"` actually landed in
   `permissions`.
 
+**Session 9 (release infrastructure) is complete.** What landed:
+- **A committed E2E harness** (`tests/e2e/run.mjs`, `npm run test:e2e`) —
+  this repo's first permanent one; every prior session's real-browser
+  verification was an ad hoc scratch script written fresh and deleted
+  after. References the old repo's `tests/e2e/run.mjs` for the
+  `--headless=new`-with-full-Chrome pattern (the plan's explicit gotcha:
+  `headless:true` launches `chrome-headless-shell`, which has zero
+  extension support), rebuilt fresh for this repo's smaller surface (just
+  `popup.html`/`options.html`, no bubble/hover-tooltip/standalone-window
+  entrypoints to check yet). Beyond structural "did it render" checks, two
+  *positive* assertions specific to this repo: `chrome.alarms.getAll()`
+  against the live service worker confirms Session 8's keepalive alarm is
+  actually registered (not just declared in the manifest), and a real
+  `getPageState` message round trip (via `chrome.tabs.sendMessage` using
+  `@webext-core/messaging`'s actual wire format, read directly from
+  `node_modules/@webext-core/messaging/dist/*.mjs` rather than guessed)
+  confirms the content script really attached to a freshly-navigated local
+  test page, not just that `manifest.json` declares `content_scripts`.
+  **Actually run, not just written**: caught and fixed two real bugs in
+  the harness itself before it passed — a `chrome.tabs.query({url: ...})`
+  call that silently returns no match because this extension has no
+  `"tabs"` permission or `host_permissions` (fixed by querying
+  `{active: true}` instead, after `page.bringToFront()` — the same
+  "self-referential active tab" Playwright gotcha this project's testing
+  history already knew about), and expected-noise console errors from
+  `popup.html` opened as a plain tab (its own `chrome.tabs.query({active:
+  true})`-based calls resolve to no real content script in that context —
+  filtered with the same regex the old repo's harness uses, for the same
+  documented reason).
+- **Bundle-size guardrail** (`scripts/check-bundle-size.mjs`,
+  `guard:bundle-size`): 1MB threshold, picked from a real measurement (the
+  actual build is ~286KB, so this is ~3.5x headroom) rather than a round
+  number — mirrors the old repo's "tightened to ~1.3x the real build"
+  precedent instead of re-copying its old repo's absolute number, which
+  was calibrated for a much larger, more-feature-complete codebase.
+- **Finalized CI pipeline order**
+  (`.github/workflows/ci.yml`): typecheck → lint → engine-purity guard →
+  Solid-reactivity guard → unit tests + coverage gate → build →
+  bundle-size guardrail → E2E → zip, matching the plan's Session 9 spec
+  exactly. **Lint is now a real CI gate**, not deferred — checked first
+  that it's actually exit-0-clean (2 pre-existing `noNonNullAssertion`
+  warnings in `entrypoints/{popup,options}/main.tsx`, 0 errors) before
+  wiring it in, so this doesn't silently break the build on pre-existing
+  debt. A parallel `build-firefox` job (build + zip, no E2E — this repo's
+  harness only drives Chromium) validates the Firefox target still builds,
+  same purpose as the old repo's equivalent job, kept minimal since Gen 3
+  is Chrome-only at launch by the plan's own Round 2 scoping. Chrome +
+  Firefox zips upload as CI artifacts.
+- **Changesets wired up** (`@changesets/cli`, `.changeset/config.json`,
+  `npm run changeset` / `npm run version`) — used for real this session,
+  not just scaffolded: added `.changeset/session-9-release-infra.md`
+  describing this session's own work, ran `npm run version`, and it
+  correctly bumped `package.json` from `0.1.0` → `0.2.0` (a genuine minor
+  bump, matching the changeset's declared bump type) and generated
+  `CHANGELOG.md`'s first entry. Not entering changesets' prerelease/beta
+  mode here — the plan's Session 9 scoping is "start version numbering
+  clean," and 0.x is already a clear enough "not yet stable" signal
+  without a `-beta.N` suffix layered on top; that's a call to revisit
+  once Gen 3 approaches a real v1.
+- **Release workflow** (`.github/workflows/release.yml`): fresh file
+  referencing the old repo's `release.yml` for the pattern (not copied) —
+  triggered by CI's own `workflow_run` completion rather than
+  independently on push (so a broken build can never auto-release just
+  because `package.json` changed), restricted to the `push`-triggered CI
+  run specifically (avoids two Release jobs racing when a PR is
+  simultaneously open against `main`), idempotent via `gh release view`
+  before doing any real work, and auto-detects a semver prerelease suffix
+  to mark the GitHub Release itself as a prerelease. Packages and attaches
+  both browsers' zips (Firefox's sources zip too, since AMO review needs
+  it). Not yet actually triggered in real GitHub Actions from this
+  session (that requires an actual push to `main`, which is the user's
+  call, not something to do unprompted) — verified as far as this session
+  can: the underlying `npm run zip`/`zip:firefox` commands the workflow
+  calls were run for real locally at the bumped `0.2.0` version and
+  produced correct, correctly-named zips.
+- **Real, local, end-to-end pipeline verification**: `compile` → `lint` →
+  `guard:engine-purity` → `guard:solid-reactivity` → `test:coverage` →
+  `build` → `guard:bundle-size` → `test:e2e` → `zip` + `zip:firefox`, all
+  run in sequence against the real repo, all green, culminating in a real
+  `npm run version` producing `package.json@0.2.0` and a populated
+  `CHANGELOG.md` — the same sequence CI now runs on every push, exercised
+  by hand once end-to-end before trusting it to CI.
+- `playwright` and `@changesets/cli` added as devDependencies (Chromium
+  browser binary fetched via `npx playwright install --with-deps
+  chromium` in CI — this session's local runs reused an already-cached
+  Chromium from prior ad hoc verification work rather than a fresh
+  download).
+
 ## Testing
 
 Run before considering any Gen 3 change done:
 1. `npm run compile` (`tsc --noEmit`) — must be clean.
-2. `npm run guard:engine-purity` — must pass. If it doesn't, the fix is
+2. `npm run lint` (Session 9: now CI-gated) — must exit 0. Warnings are
+   fine (2 pre-existing `noNonNullAssertion` ones as of this writing);
+   errors are not.
+3. `npm run guard:engine-purity` — must pass. If it doesn't, the fix is
    almost always "move this to `src/platform/` and inject it as a port,"
    not "add an exception to the script."
-3. `npm run guard:solid-reactivity` (Session 8) — must pass. Fails if any
+4. `npm run guard:solid-reactivity` (Session 8) — must pass. Fails if any
    `.tsx` under `entrypoints/`/`components/` reads `configStore.get(...)`
    directly inside JSX; mirror the value into a signal/store instead.
-4. `npm run test:coverage` (Vitest + v8 coverage) — unit tests for
+5. `npm run test:coverage` (Vitest + v8 coverage) — unit tests for
    `src/engine/`/`src/shared/` logic must pass AND meet the coverage
    thresholds in `vitest.config.ts`.
-5. `npm run build` — must succeed.
-6. `npm run lint` — not CI-gated yet, but run it and fix genuine findings
-   in files you're touching.
+6. `npm run build` — must succeed.
+7. `npm run guard:bundle-size` (Session 9) — must pass; requires step 6
+   first.
+8. `npm run test:e2e` (Session 9) — real-Chrome Playwright smoke test;
+   requires step 6 first and a Chromium binary (`npx playwright install
+   chromium` if you don't already have one cached).
 
-All of steps 1-5 run in CI (`.github/workflows/ci.yml`) on every push to
-`main` and every PR.
+All of steps 1-8 run in CI (`.github/workflows/ci.yml`) on every push to
+`main` and every PR, in that order, followed by `npm run zip` and an
+artifact upload. Releasing: `npm run changeset` to record a change,
+`npm run version` to apply pending changesets (bumps `package.json`,
+writes `CHANGELOG.md`) — once that lands on `main` and CI passes,
+`.github/workflows/release.yml` takes over automatically.
 
 ## Known gaps (expected at this stage, not oversights)
 

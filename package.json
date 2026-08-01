@@ -2,7 +2,7 @@
   "name": "prism-gen3",
   "description": "Prism — AI Page Translator (Gen 3, ground-up rewrite)",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "wxt",
@@ -17,8 +17,12 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "test:e2e": "node tests/e2e/run.mjs",
     "guard:engine-purity": "node scripts/check-engine-purity.mjs",
     "guard:solid-reactivity": "node scripts/check-solid-reactivity.mjs",
+    "guard:bundle-size": "node scripts/check-bundle-size.mjs",
+    "changeset": "changeset",
+    "version": "changeset version",
     "postinstall": "wxt prepare"
   },
   "dependencies": {
@@ -28,11 +32,13 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.6",
+    "@changesets/cli": "^2.31.1",
     "@vitest/coverage-v8": "^4.1.10",
     "@webext-core/fake-browser": "^2.0.1",
     "@wxt-dev/module-solid": "^1.1.4",
     "fake-indexeddb": "^6.2.5",
     "happy-dom": "^20.11.1",
+    "playwright": "^1.62.1",
     "typescript": "^5.9.3",
     "vite": "^8.1.5",
     "vite-plugin-solid": "^2.11.14",

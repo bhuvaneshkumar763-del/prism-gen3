@@ -19,8 +19,20 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      # Gen 3 plan, Session 9: finalized CI order — typecheck → lint →
+      # engine-purity → foot-gun guards → tests+coverage → build →
+      # bundle-size guardrail → E2E → zip artifact. Each step is a real
+      # gate (not advisory) except lint, which is exit-0-clean as of this
+      # session (2 pre-existing noNonNullAssertion warnings, 0 errors) —
+      # see CLAUDE.md's Testing section for why warnings don't block.
       - name: Typecheck
         run: npm run compile
+
+      - name: Lint
+        run: npm run lint
 
       # Gen 3 plan, design principle #3: the engine/browser-API boundary is
       # mechanically enforced, not just conventional — see
@@ -45,3 +57,51 @@ jobs:
 
       - name: Build extension
         run: npm run build
+
+      # Gen 3 plan, Session 9: catches accidental dependency bloat before
+      # it ships — see scripts/check-bundle-size.mjs for the threshold and
+      # why it was picked from a real measurement, not a round number.
+      - name: Bundle-size guardrail
+        run: npm run guard:bundle-size
+
+      # Gen 3 plan, Session 9: the first committed E2E harness in this
+      # repo — see tests/e2e/run.mjs's header comment for what it checks
+      # and why it launches full Chrome with --headless=new rather than
+      # relying on Playwright's default chrome-headless-shell (which has
+      # zero extension support).
+      - name: E2E smoke test
+        run: npm run test:e2e
+
+      - name: Zip extension
+        run: npm run zip
+
+      - name: Upload Chrome zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: prism-gen3-chrome
+          path: .output/*-chrome.zip
+
+  build-firefox:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Firefox extension
+        run: npm run build:firefox
+
+      - name: Zip Firefox extension
+        run: npm run zip:firefox
+
+      - name: Upload Firefox zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: prism-gen3-firefox
+          path: .output/*-firefox.zip
