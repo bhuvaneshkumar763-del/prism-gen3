@@ -1,11 +1,21 @@
 // @vitest-environment happy-dom
 import { render } from 'solid-js/web';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { configStore } from '../../src/platform/configStore';
 import { FloatingBubble } from './FloatingBubble';
 
 describe('FloatingBubble', () => {
   let container: HTMLDivElement | undefined;
   let dispose: (() => void) | undefined;
+
+  beforeEach(async () => {
+    await configStore.onReady();
+    await configStore.set('alwaysTranslateSites', []);
+    await configStore.set('sourceLanguageByHost', {});
+    await configStore.set('bubbleByHost', {});
+    await configStore.set('targetLanguage', 'es');
+    await configStore.set('pageTranslatorProvider', 'google');
+  });
 
   afterEach(() => {
     dispose?.();
@@ -14,90 +24,124 @@ describe('FloatingBubble', () => {
     dispose = undefined;
   });
 
-  function mount(props: Parameters<typeof FloatingBubble>[0]) {
+  function mount(overrides: Partial<Parameters<typeof FloatingBubble>[0]> = {}) {
     container = document.createElement('div');
     document.body.append(container);
+    const props = {
+      state: { pageState: 'original' as const, busy: false, errorMessage: null as string | null },
+      hostname: 'example.com',
+      shadowHost: container,
+      onTranslate: vi.fn(),
+      onRestore: vi.fn(),
+      onClose: vi.fn(),
+      ...overrides,
+    };
     dispose = render(() => FloatingBubble(props), container);
-    return container;
+    return { el: container, props };
   }
 
-  const base = {
-    pageState: 'original' as const,
-    busy: false,
-    showTranslatePrompt: false,
-    errorMessage: null,
-    onTranslateClick: vi.fn(),
-    onRestoreClick: vi.fn(),
-    onClose: vi.fn(),
-  };
-
-  it('renders nothing when the page is original and no translate prompt is requested', () => {
-    const el = mount(base);
-    expect(el.querySelector('.action')).toBeNull();
-    expect(el.querySelector('.label')).toBeNull();
+  it('renders the ball and panel primary button', () => {
+    const { el } = mount();
+    expect(el.querySelector('.ball')).not.toBeNull();
+    expect(el.querySelector('.primary')).not.toBeNull();
   });
 
-  it('shows the "Translated" label and action button once translated', () => {
-    const el = mount({ ...base, pageState: 'translated' });
-    expect(el.querySelector('.label')?.textContent).toBe('Translated');
-    expect(el.querySelector('.action')?.textContent).toBe('Show original');
+  it('shows "Translate page" before translation', () => {
+    const { el } = mount();
+    expect(el.querySelector('.primary')?.textContent).toBe('Translate page');
   });
 
-  it('disables the action and shows a busy label while restoring', () => {
-    const el = mount({ ...base, pageState: 'translated', busy: true });
-    const action = el.querySelector('.action') as HTMLButtonElement;
-    expect(action.textContent).toBe('Restoring…');
-    expect(action.disabled).toBe(true);
+  it('shows "Show original" once translated', () => {
+    const { el } = mount({ state: { pageState: 'translated', busy: false, errorMessage: null } });
+    expect(el.querySelector('.primary')?.textContent).toBe('Show original');
   });
 
-  it('invokes onRestoreClick when the action button is clicked', () => {
-    const onRestoreClick = vi.fn();
-    const el = mount({ ...base, pageState: 'translated', onRestoreClick });
-    (el.querySelector('.action') as HTMLButtonElement).click();
-    expect(onRestoreClick).toHaveBeenCalledTimes(1);
+  it('disables the primary button and shows a busy label while busy', () => {
+    const { el } = mount({ state: { pageState: 'translated', busy: true, errorMessage: null } });
+    const primary = el.querySelector('.primary') as HTMLButtonElement;
+    expect(primary.textContent).toBe('Restoring…');
+    expect(primary.disabled).toBe(true);
   });
 
-  it('invokes onClose when the close button is clicked (translated state)', () => {
+  it('invokes onRestore when the primary button is clicked while translated', () => {
+    const onRestore = vi.fn();
+    const { el } = mount({ state: { pageState: 'translated', busy: false, errorMessage: null }, onRestore });
+    (el.querySelector('.primary') as HTMLButtonElement).click();
+    expect(onRestore).toHaveBeenCalledTimes(1);
+  });
+
+  it('invokes onTranslate with the current target language when the primary button is clicked while original', () => {
+    const onTranslate = vi.fn();
+    const { el } = mount({ onTranslate });
+    (el.querySelector('.primary') as HTMLButtonElement).click();
+    expect(onTranslate).toHaveBeenCalledWith('es');
+  });
+
+  it('shows a real error instead of the normal "Translated" success, even in the translated state', () => {
+    const { el } = mount({ state: { pageState: 'translated', busy: false, errorMessage: 'HTTP 429' } });
+    expect(el.querySelector('.htitle')?.textContent).toBe('Translation failed');
+    expect(el.querySelector('.errorText')?.textContent).toBe('HTTP 429');
+    expect(el.querySelector('.primary')?.textContent).not.toBe('Show original');
+  });
+
+  it("the error state's primary button retries via onTranslate, not onRestore", () => {
+    const onTranslate = vi.fn();
+    const onRestore = vi.fn();
+    const { el } = mount({
+      state: { pageState: 'translated', busy: false, errorMessage: 'HTTP 429' },
+      onTranslate,
+      onRestore,
+    });
+    expect(el.querySelector('.primary')?.textContent).toBe('Retry');
+    (el.querySelector('.primary') as HTMLButtonElement).click();
+    expect(onTranslate).toHaveBeenCalledTimes(1);
+    expect(onRestore).not.toHaveBeenCalled();
+  });
+
+  it('invokes onClose when the Hide chip is clicked', () => {
     const onClose = vi.fn();
-    const el = mount({ ...base, pageState: 'translated', onClose });
-    (el.querySelector('.close') as HTMLButtonElement).click();
+    const { el } = mount({ onClose });
+    const hideChip = Array.from(el.querySelectorAll('.chip')).find((chip) => chip.textContent?.includes('Hide'));
+    (hideChip as HTMLElement).click();
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it('shows the "Translate this page" prompt on a narrow viewport before translation', () => {
-    const el = mount({ ...base, showTranslatePrompt: true });
-    expect(el.querySelector('.action')?.textContent).toBe('Translate this page');
+  it('the Always chip reflects an existing alwaysTranslateSites entry for this host', async () => {
+    await configStore.set('alwaysTranslateSites', ['example.com']);
+    const { el } = mount();
+    const alwaysChip = Array.from(el.querySelectorAll('.chip')).find((chip) => chip.textContent?.includes('Always'));
+    expect(alwaysChip?.className).toContain('on');
   });
 
-  it('does not show the translate prompt once already translated', () => {
-    const el = mount({ ...base, pageState: 'translated', showTranslatePrompt: true });
-    expect(el.querySelector('.action')?.textContent).toBe('Show original');
+  it('clicking the Always chip immediately triggers a translate when the page is still original', () => {
+    const onTranslate = vi.fn();
+    const { el } = mount({ onTranslate });
+    const alwaysChip = Array.from(el.querySelectorAll('.chip')).find((chip) => chip.textContent?.includes('Always'));
+    (alwaysChip as HTMLElement).click();
+    expect(onTranslate).toHaveBeenCalledWith('es');
   });
 
-  it('invokes onTranslateClick when the translate-prompt button is clicked', () => {
-    const onTranslateClick = vi.fn();
-    const el = mount({ ...base, showTranslatePrompt: true, onTranslateClick });
-    (el.querySelector('.action') as HTMLButtonElement).click();
-    expect(onTranslateClick).toHaveBeenCalledTimes(1);
+  it('renders From/To/Service selects with the current values selected', () => {
+    const { el } = mount();
+    const selects = el.querySelectorAll('.selrow select');
+    expect(selects).toHaveLength(3);
+    const [fromSelect, toSelect, serviceSelect] = Array.from(selects) as [
+      HTMLSelectElement,
+      HTMLSelectElement,
+      HTMLSelectElement,
+    ];
+    expect(fromSelect.value).toBe('auto');
+    expect(toSelect.value).toBe('es');
+    expect(serviceSelect.value).toBe('google');
   });
 
-  it('disables the translate-prompt button and shows a busy label while translating', () => {
-    const el = mount({ ...base, showTranslatePrompt: true, busy: true });
-    const action = el.querySelector('.action') as HTMLButtonElement;
-    expect(action.textContent).toBe('Translating…');
-    expect(action.disabled).toBe(true);
-  });
-
-  it('invokes onClose when the close button is clicked (translate-prompt state)', () => {
-    const onClose = vi.fn();
-    const el = mount({ ...base, showTranslatePrompt: true, onClose });
-    (el.querySelector('.close') as HTMLButtonElement).click();
-    expect(onClose).toHaveBeenCalledTimes(1);
-  });
-
-  it('shows a real error and never the "Translated" success once errorMessage is set, even in the translated state', () => {
-    const el = mount({ ...base, pageState: 'translated', errorMessage: 'HTTP 429' });
-    expect(el.querySelector('.label')?.textContent).toBe('Translation failed');
-    expect(el.querySelector('.action')).toBeNull();
+  it('changing the To select calls onTranslate with the newly picked code', () => {
+    const onTranslate = vi.fn();
+    const { el } = mount({ onTranslate });
+    const selects = el.querySelectorAll('.selrow select');
+    const toSelect = selects[1] as HTMLSelectElement;
+    toSelect.value = 'ja';
+    toSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(onTranslate).toHaveBeenCalledWith('ja');
   });
 });

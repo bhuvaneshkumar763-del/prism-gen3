@@ -4,5 +4,5 @@
   "initialVersions": {
     "prism-gen3": "0.2.1"
   },
-  "changesets": ["enter-beta-prerelease", "fix-broken-default-and-silent-failure"]
+  "changesets": ["bubble-full-parity", "enter-beta-prerelease", "fix-broken-default-and-silent-failure"]
 }

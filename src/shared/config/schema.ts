@@ -24,6 +24,14 @@ import { z } from 'zod';
  * existing one), so no migration entry was needed: `configStore.ts`'s
  * `initConfig` already falls back to `defaultConfig`'s value (`[]`) for any
  * key absent from an existing install's storage.
+ *
+ * Post-launch UI-parity pass (bubble/popup/settings depth) added the four
+ * `bubble*`/`sourceLanguageByHost` fields below — also purely additive, same
+ * reasoning as Session 5's note above: an existing install missing these
+ * keys just gets `defaultConfig`'s value until it writes one. No migration,
+ * no version bump. Booleans, not the old pre-rewrite fork's `'yes'|'no'`
+ * string enum — that enum only existed to match that fork's legacy
+ * `chrome.storage.local` data, which this codebase never had.
  */
 export const configSchema = z.object({
   targetLanguage: z.string(),
@@ -42,6 +50,14 @@ export const configSchema = z.object({
   /** Detected source-language codes to always/never auto-translate from. */
   alwaysTranslateLangs: z.array(z.string()),
   neverTranslateLangs: z.array(z.string()),
+  /** Global default for whether the floating bubble shows at all. Per-site overrides live in `bubbleByHost`. */
+  bubbleEnabled: z.boolean(),
+  /** Per-hostname override of `bubbleEnabled` — present means override, absent means "use the global default" (see `src/shared/config/siteOverrides.ts`). */
+  bubbleByHost: z.record(z.string(), z.boolean()),
+  /** Remembered edge-docked position, `null` until the user drags it once. */
+  bubblePosition: z.object({ side: z.enum(['left', 'right']), yFrac: z.number() }).nullable(),
+  /** Per-hostname source-language override, set via the bubble's "From" select. Absent means auto-detect. */
+  sourceLanguageByHost: z.record(z.string(), z.string()),
 });
 
 export type Config = z.infer<typeof configSchema>;
@@ -68,4 +84,8 @@ export const defaultConfig: Config = {
   neverTranslateSites: [],
   alwaysTranslateLangs: [],
   neverTranslateLangs: [],
+  bubbleEnabled: true,
+  bubbleByHost: {},
+  bubblePosition: null,
+  sourceLanguageByHost: {},
 };

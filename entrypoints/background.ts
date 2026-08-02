@@ -183,4 +183,8 @@ export default defineBackground(() => {
   browser.commands.onCommand.addListener((command) => {
     if (command === 'toggle-translate-page') void toggleActiveTab();
   });
+
+  onMessage('openOptionsPage', () => {
+    void browser.runtime.openOptionsPage();
+  });
 });

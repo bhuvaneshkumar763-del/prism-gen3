@@ -886,8 +886,8 @@ libretranslate, llm, builtin):
 |---|---|---|
 | Toolbar popup | Ported | Session 6, on design tokens |
 | Options page | Ported | Session 6/7, single-page (not the old repo's 6-tab structure — a simpler surface for Gen 3's smaller settings set so far) |
-| Floating bubble (post-translate control) | Ported | Session 6, no drag-to-reposition/edge-docking (deliberate scope cut) |
-| Mobile in-page translate trigger | Deliberately Improved | Folded into the floating bubble's `showTranslatePrompt` role instead of a separate `MobilePopup` component — one shadow-DOM surface instead of two |
+| Floating bubble (always-on translate control) | Full parity | Session 6 shipped a post-translate-only, fixed-position version; the post-launch UI-depth pass (see that section above) brought it to full fork parity — always visible, draggable with edge-docking + remembered position, From/To/Service panel, Always/Settings/Hide chips |
+| Mobile in-page translate trigger | Ported | Folded into the floating bubble (now always-on, so it's the same surface on mobile and desktop) rather than a separate `MobilePopup` component — one shadow-DOM surface instead of two |
 | Hover-to-see-original tooltip | Ported | Session 6 |
 | Selection-translation popup | Ported | Session 6, no drag/replace-in-place/listen-copy/per-selection pickers (deliberate scope cut) |
 | Context menus (translate/restore) | Ported | `background.ts` |
@@ -959,19 +959,25 @@ writes `CHANGELOG.md`) — once that lands on `main` and CI passes,
   translated correctly, this is the same documented phase-2 scope cut the
   plan calls out, not a regression. Custom dictionary specifically:
   deliberately not started in Session 6 either, see that session's writeup.
-- The floating bubble has no drag-to-reposition or edge-docking — fixed
-  bottom-right only, a deliberate scope cut (see Session 6's writeup),
-  not an oversight.
+- ~~The floating bubble has no drag-to-reposition or edge-docking~~
+  **Resolved** by the post-launch UI-depth pass's Phase 1 (see that section
+  above) — the bubble is now always-on, draggable, edge-docked, with a
+  remembered position and a full From/To/Service/Always/Settings/Hide
+  panel, at parity with the pre-rewrite fork.
 - The selection-translation popup has no drag-to-move, editable
   replace-in-place, listen/copy actions, cross-frame focus arbitration,
   or per-selection service/language pickers — a deliberate scope cut
   (see Session 6's writeup), not an oversight. It also only mounts in the
-  main frame, same as every other UI surface in this list.
+  main frame, same as every other UI surface in this list. (Not part of
+  the bubble/popup/settings UI-depth pass — that pass's scope was
+  explicitly limited to the bubble, popup, and settings surfaces.)
 - The mobile in-page translate trigger is folded into the floating bubble
   rather than a separate mobile-specific menu — no always/never-
   translate-from-language quick shortcuts on it specifically (those live
   in the options page's Automatic Translation section for every
-  viewport). See Session 6's writeup for the reasoning.
+  viewport). See Session 6's writeup for the reasoning; the trigger itself
+  is now just the same always-on bubble every other viewport gets, not a
+  narrow-viewport-only prompt (see the post-launch UI-depth pass above).
 - No i18n — every UI string is hardcoded English, see
   `docs/decisions/0007-i18n-corpus-deferred.md` for the deferred corpus
   port and the concrete handoff steps.
@@ -1091,6 +1097,134 @@ later fails silently shows nothing wrong. Given the popup already reads
 works, wiring the popup up the same way (or via a new message type) is a
 reasonable near-term follow-up, not filed as its own numbered plan item.
 
+## Post-launch UI-depth pass: bubble/popup/settings restored toward the pre-rewrite fork's feature set (Phase 1: bubble)
+
+A real user compared this rewrite's popup/bubble/options against the
+pre-rewrite fork (`bhuvaneshkumar763-del/prism-translate`, the Gen 2
+WXT+Solid rewrite of the original vanilla-JS extension) and reported all
+three as noticeably thinner — specifically the bubble, which "only shows up
+when translated... and disappears when I remove translation," making it
+useless as a primary translate control. A deep-cut comparison confirmed the
+gap for real (config keys 13 vs. ~45, popup controls 4 vs. 19, bubble
+controls 2 vs. 9+drag/dock, settings 4 sections/13 fields vs. 6 tabs/~39).
+Scoped with the user into three phases — bubble, then popup, then
+settings — keeping the 5 supported providers as-is (ADRs 0004/0005 dropped
+Bing/Yandex/DeepL deliberately; not reversed) and explicitly not rebuilding
+TTS or the custom dictionary (those engine subsystems don't exist in Gen 3).
+This section covers **Phase 1 (bubble)**; Phase 2 (popup) and Phase 3
+(settings) are separate follow-ups.
+
+**What changed**: the bubble is now always visible on every page (not
+gated on `pageState === 'translated'`), draggable with edge-docking and a
+remembered `{side, yFrac}` position (ported faithfully from the fork's
+`applyState`/`previewAt`/`positionPanel` math, including its two
+deliberately-different `maxY` formulas), and its hover/long-press panel
+carries real From/To/Service pickers plus Always/Settings/Hide chips — full
+parity with the fork's bubble, plus the "Translation failed" state this
+repo's own post-launch incident (above) added, which the fork never had.
+
+**New config keys** (`src/shared/config/schema.ts`, purely additive, no
+migration): `bubbleEnabled` (bool, default `true`), `bubbleByHost`
+(`Record<host, bool>`), `bubblePosition` (`{side, yFrac} | null`),
+`sourceLanguageByHost` (`Record<host, string>`). Booleans, not the fork's
+`'yes'|'no'` string enum — that only existed to match the fork's legacy
+storage data, which this codebase never had.
+
+**Where the logic lives**: `src/shared/bubble/bubblePosition.ts` (pure drag/
+dock/panel-placement geometry, DOM-free so it's actually unit-testable —
+happy-dom has no `visualViewport` and stubs `getBoundingClientRect`/
+`setPointerCapture`, so a DOM-level drag test would be theatre),
+`src/shared/config/siteOverrides.ts` (per-host visibility/source-language
+resolution — the fork duplicated this "override if present else global
+default" check in three places, one tested home here instead),
+`src/shared/config/listMutations.ts` (cross-list always/never-translate
+cleanup as pure snapshot→patch — **fixes a real fork inconsistency**: its
+popup removed a site from "never" when adding it to "always," but its
+options page's list editors didn't, so a site could end up in both lists
+depending which surface you used last), and `src/platform/configMutations.ts`
+(the one place that applies a list-mutation patch to the real store — every
+UI surface goes through this, never a raw `configStore.set()` on those four
+keys directly).
+
+**The `mountBubble.ts` architecture had to change.** It used to `dispose()`
+and fully `render()` again on every `update()` — fine for a static
+translated/not-translated label, fatal for a draggable bubble (the element
+drag math writes `style.left/top` onto would be destroyed and recreated
+mid-drag, every pointer/config listener torn down and re-added, pointer
+capture lost). Fixed: it now renders **once**, backed by a Solid store
+(`components/bubble/bubbleState.ts`); `update(patch)` just calls the
+store's setter, and `FloatingBubble.tsx` reads the store directly in JSX so
+Solid's own fine-grained reactivity handles the redraw.
+
+**A real bug found only by testing the built extension**, not caught by
+unit tests or `tsc`: on a fresh content-script load, `FloatingBubble.tsx`
+seeds its target/source-language, service, and remembered-position signals
+from a single synchronous `configStore.get()` call at construction —
+correct once storage has loaded, but `content.ts`'s bubble-mounting code
+used to run before `configStore.onReady()` resolved (fire-and-forgotten,
+not awaited), so a dragged-to-the-left bubble would render briefly docked
+right again on every reload before snapping back once a later config-change
+listener caught up. Confirmed with a real Playwright run against the built
+extension (drag left → reload → assert the rendered class), not assumed.
+Fixed by awaiting `configStore.onReady()` before the first
+`syncBubbleVisibility()` call in `entrypoints/content.ts`.
+
+**A real bug found while writing the mountBubble tests**: `mountBubble.ts`
+originally passed the shared module-level `DEFAULT_BUBBLE_VIEW_STATE`
+constant as `createStore()`'s initial value on every call. Solid's
+`createStore` mutates its target object in place, so reusing the same
+object reference across multiple `mountBubble()` calls let one instance's
+`update()` bleed into the next instance's initial state — concretely, a
+test that set `busy: true` left the *next* test's fresh bubble permanently
+disabled. Fixed by passing a fresh object literal (`{ ...DEFAULT_BUBBLE_VIEW_STATE }`)
+per call. Real production impact too, not just a test artifact: without
+this fix, a second `mountBubble()` call on the same page (e.g. after a
+`document.documentElement`-wiping SPA navigation) would have inherited
+whatever `busy`/`errorMessage` the previous instance last had.
+
+**The busy spinner** (both this repo's and the fork's) shows for
+approximately zero frames, because `translatePage()` in
+`translateLoop.ts` sets `pageState: 'translated'` **synchronously**, and
+the old code cleared `busy` from that same `onStateChange` callback —
+clearing it before the caller's own `await` had even resolved. Fixed by
+decoupling: only the caller (`handleTranslateClick` in `content.ts`) clears
+`busy`, in a `finally`, after `pageTranslator.translatePage()`'s own await
+resolves; `onStateChange` no longer touches `busy` at all. `translatePage()`
+itself still returns before the network round trip finishes (it kicks off
+the queue and returns), so `busy` is still short-lived — that's the
+engine's own fire-and-forget design, not a bug this phase tries to fix.
+
+**`lint` is a real CI gate in this repo** (unlike the older TWP/Gen-2 repo,
+where a documented a11y backlog is deliberately left unfixed) — every
+`a11y/useButtonType`/`useFocusableInteractive`/`noSvgWithoutTitle` finding
+introduced by the new panel/chips was fixed for real, not deferred: the
+primary button and the three panel chips are real `<button type="button">`
+elements (not `<div role="button">`), and every decorative chip/ball SVG
+icon got `aria-hidden="true"`.
+
+**Verified against the real built extension** (Playwright, mock content
+served from a local static page, same pattern this repo's `tests/e2e/`
+harness already uses): bubble visible on a fresh untranslated page (the
+headline complaint — also now a permanent assertion in `tests/e2e/run.mjs`),
+hovering reveals the panel with all three selects populated, the Always
+chip writes `alwaysTranslateSites` for the real hostname, translating then
+restoring leaves the bubble visible, dragging to the left edge persists
+`bubblePosition` and survives a reload with the correct docked side, and
+the Hide chip removes the bubble and stays hidden for that host across a
+reload. Full verification chain (`compile`, `lint`, both CI guards,
+`test:coverage`, `build` ×2 browsers, `guard:bundle-size`, `test:e2e`,
+`npm audit`) clean throughout.
+
+**Recommended next step**: Phase 2 (popup) — bring back the fork's
+per-site/per-language quick actions (always/never-translate this site,
+always translate from {detected language}, show-bubble-on-this-site) and
+close the still-open popup error-surface gap noted just above, since Phase
+1's `pageTranslator.getLastError()` plumbing is already proven working.
+Then Phase 3 (settings): a multi-tab options page covering the new
+`bubble*`/`sourceLanguageByHost` keys, plus backup export/import and
+restore-defaults (the `configStore.export()`/`import()` functions already
+exist and are already tested, just not wired to any UI yet).
+
 ## Explicitly out of scope for v1
 
 Compiled Session 10, per the plan's Session 10 requirement — a visible
@@ -1117,6 +1251,9 @@ compiled summary, not new information:
   translate-document), **text-to-speech**, **backup export/import UI**,
   **release-notes page**, **toolbar icon state swap** — never scoped into
   any Gen 3 session.
-- **Floating-bubble drag-to-reposition/edge-docking** and
-  **selection-popup drag/replace-in-place/listen-copy/per-selection
-  pickers** — deliberate Session 6 scope cuts.
+- **Selection-popup drag/replace-in-place/listen-copy/per-selection
+  pickers** — deliberate Session 6 scope cut, not part of the post-launch
+  UI-depth pass (that pass's scope was limited to the bubble, popup, and
+  settings surfaces — see that section above).
+- ~~Floating-bubble drag-to-reposition/edge-docking~~ **Resolved** by the
+  post-launch UI-depth pass's Phase 1, see that section above.

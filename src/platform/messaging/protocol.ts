@@ -32,6 +32,8 @@ export interface ProtocolMap {
   pageRestore(): PageLanguageState;
   /** Popup/background → a tab's content script: query the current translate/original state. */
   getPageState(): PageLanguageState;
+  /** Content script (bubble's Settings chip) → background: a content script can't call `browser.runtime.openOptionsPage()` itself. */
+  openOptionsPage(): void;
 }
 
 export const { sendMessage, onMessage } = defineExtensionMessaging<ProtocolMap>();

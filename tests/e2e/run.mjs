@@ -183,6 +183,19 @@ try {
     } else {
       console.log('pass content-script injection — real getPageState round trip on a navigated page');
     }
+
+    // The bubble is now always-on (not gated on translated state) — see
+    // FloatingBubble.tsx's header comment for why that changed post-launch.
+    // Confirming it's present on a fresh, untranslated page is the direct
+    // regression test for the bug that motivated the change.
+    const hasBubbleHost = (await page.locator('#prism-bubble-host').count()) > 0;
+    if (!hasBubbleHost) {
+      console.error('FAIL floating bubble: expected #prism-bubble-host to be present on an untranslated page');
+      failures++;
+    } else {
+      console.log('pass floating bubble present on an untranslated page');
+    }
+
     await page.close();
   } finally {
     server.close();
