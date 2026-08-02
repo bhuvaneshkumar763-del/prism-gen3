@@ -2,17 +2,23 @@
   color-scheme: light dark;
 }
 
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}
+
 body {
   margin: 0;
   background: #f8fafc;
   color: #0f172a;
 }
 
-@media (prefers-color-scheme: dark) {
-  body {
-    background: #0f172a;
-    color: #e2e8f0;
-  }
+:root[data-theme="dark"] body {
+  background: #0f172a;
+  color: #e2e8f0;
 }
 
 .app {
@@ -49,15 +55,14 @@ body {
   color: #15803d;
 }
 
-@media (prefers-color-scheme: dark) {
-  .statusPill {
-    background: #1e293b;
-    color: #cbd5e1;
-  }
-  .statusPill.on {
-    background: #14532d;
-    color: #86efac;
-  }
+:root[data-theme="dark"] .statusPill {
+  background: #1e293b;
+  color: #cbd5e1;
+}
+
+:root[data-theme="dark"] .statusPill.on {
+  background: #14532d;
+  color: #86efac;
 }
 
 .primaryBtn {
@@ -104,16 +109,15 @@ body {
   background: rgba(79, 70, 229, 0.08);
 }
 
-@media (prefers-color-scheme: dark) {
-  .pill {
-    background: #1e293b;
-    border-color: #475569;
-  }
-  .pill.on {
-    border-color: #818cf8;
-    color: #a5b4fc;
-    background: rgba(129, 140, 248, 0.15);
-  }
+:root[data-theme="dark"] .pill {
+  background: #1e293b;
+  border-color: #475569;
+}
+
+:root[data-theme="dark"] .pill.on {
+  border-color: #818cf8;
+  color: #a5b4fc;
+  background: rgba(129, 140, 248, 0.15);
 }
 
 .quickField {
@@ -126,10 +130,8 @@ body {
   margin-bottom: 0.6rem;
 }
 
-@media (prefers-color-scheme: dark) {
-  .quickField {
-    color: #cbd5e1;
-  }
+:root[data-theme="dark"] .quickField {
+  color: #cbd5e1;
 }
 
 .quickField select {
@@ -142,11 +144,9 @@ body {
   font-family: inherit;
 }
 
-@media (prefers-color-scheme: dark) {
-  .quickField select {
-    background: #1e293b;
-    border-color: #475569;
-  }
+:root[data-theme="dark"] .quickField select {
+  background: #1e293b;
+  border-color: #475569;
 }
 
 .toggleList {
@@ -169,10 +169,8 @@ body {
   background: rgba(79, 70, 229, 0.08);
 }
 
-@media (prefers-color-scheme: dark) {
-  .toggleRow.accent {
-    background: rgba(129, 140, 248, 0.15);
-  }
+:root[data-theme="dark"] .toggleRow.accent {
+  background: rgba(129, 140, 248, 0.15);
 }
 
 .toggleRow input {
@@ -193,10 +191,8 @@ body {
   text-align: left;
 }
 
-@media (prefers-color-scheme: dark) {
-  .moreToggle {
-    color: #a5b4fc;
-  }
+:root[data-theme="dark"] .moreToggle {
+  color: #a5b4fc;
 }
 
 .menuList {
@@ -207,10 +203,8 @@ body {
   padding-top: 0.4rem;
 }
 
-@media (prefers-color-scheme: dark) {
-  .menuList {
-    border-color: #334155;
-  }
+:root[data-theme="dark"] .menuList {
+  border-color: #334155;
 }
 
 .menuItem {
@@ -234,13 +228,12 @@ body {
   font-weight: 600;
 }
 
-@media (prefers-color-scheme: dark) {
-  .menuItem:hover {
-    background: #1e293b;
-  }
-  .menuItem.on {
-    color: #a5b4fc;
-  }
+:root[data-theme="dark"] .menuItem:hover {
+  background: #1e293b;
+}
+
+:root[data-theme="dark"] .menuItem.on {
+  color: #a5b4fc;
 }
 
 .app p {
@@ -253,8 +246,6 @@ body {
   color: #dc2626;
 }
 
-@media (prefers-color-scheme: dark) {
-  .app .error {
-    color: #f87171;
-  }
+:root[data-theme="dark"] .app .error {
+  color: #f87171;
 }

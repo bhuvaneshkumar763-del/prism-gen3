@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   clearBubbleOverrideForHost,
+  clearSourceLanguageOverrideForHost,
   resolveBubbleVisibility,
   resolveSourceLanguageForHost,
   setBubbleVisibilityForHost,
@@ -71,5 +72,17 @@ describe('setSourceLanguageForHost', () => {
   });
   it('setting "auto" with no existing override is a no-op', () => {
     expect(setSourceLanguageForHost({}, 'example.com', 'auto')).toEqual({});
+  });
+});
+
+describe('clearSourceLanguageOverrideForHost', () => {
+  it('removes an override without mutating the input map', () => {
+    const input = { 'example.com': 'ja', 'other.com': 'fr' };
+    const next = clearSourceLanguageOverrideForHost(input, 'example.com');
+    expect(next).toEqual({ 'other.com': 'fr' });
+    expect(input).toEqual({ 'example.com': 'ja', 'other.com': 'fr' });
+  });
+  it('is a no-op when the host has no override', () => {
+    expect(clearSourceLanguageOverrideForHost({ 'other.com': 'fr' }, 'example.com')).toEqual({ 'other.com': 'fr' });
   });
 });

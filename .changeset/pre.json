@@ -8,6 +8,7 @@
     "bubble-full-parity",
     "enter-beta-prerelease",
     "fix-broken-default-and-silent-failure",
-    "popup-full-parity"
+    "popup-full-parity",
+    "settings-full-parity"
   ]
 }

@@ -68,6 +68,26 @@ export function createConfigStore(backend: StorageBackend = localStorageBackend)
     }
   });
 
+  /** Shared by `import()` and `restoreToDefault()` — not called via `this` so neither depends on how the returned object is invoked. */
+  async function applyValidatedConfig(json: string): Promise<void> {
+    const parsed: unknown = JSON.parse(json);
+    const validated = configSchema.partial().parse(parsed);
+    await Promise.all(
+      (Object.keys(validated) as ConfigKey[]).map((key) => {
+        const value = validated[key];
+        return value === undefined ? Promise.resolve() : backend.set({ [key]: value });
+      }),
+    );
+    // Reflect the change immediately in this instance's own state too — the
+    // onChanged round trip above will also eventually update it, but
+    // callers that read get() right after shouldn't see stale values while
+    // waiting on that.
+    for (const key of Object.keys(validated) as ConfigKey[]) {
+      const value = validated[key];
+      if (value !== undefined) (state as Record<ConfigKey, unknown>)[key] = value;
+    }
+  }
+
   return {
     onReady(): Promise<void> {
       if (!readyPromise) readyPromise = initConfig();
@@ -95,22 +115,20 @@ export function createConfigStore(backend: StorageBackend = localStorageBackend)
       return JSON.stringify(state, null, 2);
     },
     async import(json: string): Promise<void> {
-      const parsed: unknown = JSON.parse(json);
-      const validated = configSchema.partial().parse(parsed);
-      await Promise.all(
-        (Object.keys(validated) as ConfigKey[]).map((key) => {
-          const value = validated[key];
-          return value === undefined ? Promise.resolve() : backend.set({ [key]: value });
-        }),
-      );
-      // Reflect the import immediately in this instance's own state too —
-      // the onChanged round trip above will also eventually update it, but
-      // callers that read get() right after import() shouldn't see stale
-      // values while waiting on that.
-      for (const key of Object.keys(validated) as ConfigKey[]) {
-        const value = validated[key];
-        if (value !== undefined) (state as Record<ConfigKey, unknown>)[key] = value;
-      }
+      await applyValidatedConfig(json);
+    },
+    /**
+     * Writes every key back to `defaultConfig`'s value. Implemented as
+     * `import(JSON.stringify(defaultConfig))` — deliberately NOT followed by
+     * a `browser.runtime.reload()` the way the pre-rewrite fork's equivalent
+     * did: this store's `import()` already updates in-memory state and
+     * fires `onChanged` on its own, and reloading the extension mid-write
+     * from inside the options page that called this would just kill the
+     * page. Callers that want a visible "defaults restored" confirmation
+     * show it themselves (see `entrypoints/options/App.tsx`).
+     */
+    async restoreToDefault(): Promise<void> {
+      await applyValidatedConfig(JSON.stringify(defaultConfig));
     },
   };
 }

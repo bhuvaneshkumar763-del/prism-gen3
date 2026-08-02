@@ -55,3 +55,13 @@ export function setSourceLanguageForHost(
   }
   return { ...sourceLanguageByHost, [hostname]: code };
 }
+
+/** Removes a saved override outright — the options page's per-host table uses this for its remove button, distinct from `setSourceLanguageForHost(..., 'auto')` only because that name is specific to the bubble's "From" select semantics. */
+export function clearSourceLanguageOverrideForHost(
+  sourceLanguageByHost: Record<string, string>,
+  hostname: string,
+): Record<string, string> {
+  const next = { ...sourceLanguageByHost };
+  delete next[hostname];
+  return next;
+}

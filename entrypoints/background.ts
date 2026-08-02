@@ -27,6 +27,10 @@ import { getActiveTabId } from '../src/platform/messaging/tabTarget';
  * one-off translation the user just asked for, no repeat-request pattern
  * to optimize).
  *
+ * Post-launch UI-depth pass, Phase 3: `translationCacheEnabled` (settings
+ * page toggle) actually skips both the cache read and the cache write when
+ * off — not a checkbox with no wiring behind it.
+ *
  * Session 8 (hardening pass): MV3 keepalive via chrome.alarms. A service
  * worker with no pending listener callback is eligible for suspension by
  * Chrome after ~30s of idle time — a translatePieces call involving
@@ -124,10 +128,13 @@ export default defineBackground(() => {
       return pieces.map(() => ({ ok: false, error }));
     }
 
+    const cacheEnabled = configStore.get('translationCacheEnabled');
     const pieceKeys = pieces.map((piece) =>
       cacheKeyFor(providerId, sourceLanguage, targetLanguage, JSON.stringify(piece)),
     );
-    const cachedValues = await Promise.all(pieceKeys.map((key) => translationCache.get(key)));
+    const cachedValues = cacheEnabled
+      ? await Promise.all(pieceKeys.map((key) => translationCache.get(key)))
+      : pieces.map(() => null);
 
     const missingIndices: number[] = [];
     pieces.forEach((_, i) => {
@@ -154,13 +161,15 @@ export default defineBackground(() => {
       return freshOutcomes[missingIdx] ?? { ok: false, error: { kind: 'parse', message: 'no result for this piece' } };
     });
 
-    await Promise.all(
-      missingIndices.map(async (i, idx) => {
-        const outcome = freshOutcomes[idx];
-        const key = pieceKeys[i];
-        if (outcome?.ok && key) await translationCache.set(key, JSON.stringify(outcome.value));
-      }),
-    );
+    if (cacheEnabled) {
+      await Promise.all(
+        missingIndices.map(async (i, idx) => {
+          const outcome = freshOutcomes[idx];
+          const key = pieceKeys[i];
+          if (outcome?.ok && key) await translationCache.set(key, JSON.stringify(outcome.value));
+        }),
+      );
+    }
 
     return outcomes;
   });

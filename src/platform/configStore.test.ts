@@ -100,6 +100,33 @@ describe('configStore', () => {
 
     await expect(store.import(JSON.stringify({ notARealField: 'x' }))).resolves.toBeUndefined();
   });
+
+  it('restoreToDefault() writes every key back to defaultConfig, in memory and in storage', async () => {
+    const store = await freshStore();
+    await store.onReady();
+    await store.set('targetLanguage', 'zh');
+    await store.set('alwaysTranslateSites', ['example.com']);
+
+    await store.restoreToDefault();
+
+    expect(store.get('targetLanguage')).toBe(defaultConfig.targetLanguage);
+    expect(store.get('alwaysTranslateSites')).toEqual(defaultConfig.alwaysTranslateSites);
+    const raw = await fakeBrowser.storage.local.get(null);
+    expect(raw.targetLanguage).toBe(defaultConfig.targetLanguage);
+  });
+
+  it('restoreToDefault() notifies onChanged listeners', async () => {
+    const store = await freshStore();
+    await store.onReady();
+    await store.set('targetLanguage', 'zh');
+    const seen: Array<[string, unknown]> = [];
+    const unsub = store.onChanged((name, value) => seen.push([name, value]));
+
+    await store.restoreToDefault();
+
+    expect(seen).toContainEqual(['targetLanguage', defaultConfig.targetLanguage]);
+    unsub();
+  });
 });
 
 describe('configStore — migration (CONFIG_SCHEMA_VERSION 2)', () => {

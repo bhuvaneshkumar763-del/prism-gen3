@@ -57,6 +57,13 @@ const candidateEntrypoints = [
     async check(page) {
       const hasDiagnostics = (await page.locator('button', { hasText: 'Run diagnostics' }).count()) > 0;
       if (!hasDiagnostics) return 'expected the "Run diagnostics" button to be present';
+      const tabCount = await page.locator('[role="tab"]').count();
+      if (tabCount !== 5)
+        return `expected 5 role="tab" elements (General/Page translation/Bubble/Selection & hover/Advanced), found ${tabCount}`;
+      const panelCount = await page.locator('[role="tabpanel"]').count();
+      if (panelCount !== 5) return `expected 5 role="tabpanel" elements, found ${panelCount}`;
+      const hasBackup = (await page.locator('button', { hasText: 'Export settings' }).count()) > 0;
+      if (!hasBackup) return 'expected the "Export settings" button to be present';
     },
   },
 ];

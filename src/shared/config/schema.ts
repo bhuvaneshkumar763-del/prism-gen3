@@ -38,6 +38,13 @@ import { z } from 'zod';
  * `addRecentTargetLanguage`) and `hoverTooltipEnabled`/`selectionPopupEnabled`
  * (both previously hardcoded-on in `entrypoints/content.ts` with no config
  * at all — now real togglable settings). Also purely additive.
+ *
+ * Same pass, Phase 3 (settings): `theme` and `translationCacheEnabled`.
+ * `translationCacheEnabled` isn't decorative — `entrypoints/background.ts`'s
+ * `translatePieces` handler actually skips the cache read/write when it's
+ * off, not just a checkbox with no effect (the exact "shipped a settings
+ * field with no effect" mistake this codebase's own custom-dictionary
+ * scope note elsewhere warns against). Also purely additive.
  */
 export const configSchema = z.object({
   targetLanguage: z.string(),
@@ -68,6 +75,8 @@ export const configSchema = z.object({
   targetLanguages: z.array(z.string()),
   hoverTooltipEnabled: z.boolean(),
   selectionPopupEnabled: z.boolean(),
+  theme: z.enum(['auto', 'light', 'dark']),
+  translationCacheEnabled: z.boolean(),
 });
 
 export type Config = z.infer<typeof configSchema>;
@@ -101,4 +110,6 @@ export const defaultConfig: Config = {
   targetLanguages: [],
   hoverTooltipEnabled: true,
   selectionPopupEnabled: true,
+  theme: 'auto',
+  translationCacheEnabled: true,
 };
