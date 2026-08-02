@@ -43,8 +43,11 @@ const SKIP_UI_PROTOCOLS = ['chrome-extension:', 'moz-extension:', 'about:'];
  *   that changed post-launch), the primary in-page way to start/undo a
  *   translation and to reach the From/To/Service pickers, on both desktop
  *   and mobile. Visibility is per-host via `bubbleEnabled`/`bubbleByHost`.
- * - The hover-to-see-original tooltip (`components/hoverTooltip/`).
- * - Translate-selected-text (`components/selection/`).
+ * - The hover-to-see-original tooltip (`components/hoverTooltip/`), gated
+ *   by `hoverTooltipEnabled` (global toggle — Phase 2 popup/settings work,
+ *   previously hardcoded-on with no config at all).
+ * - Translate-selected-text (`components/selection/`), gated by
+ *   `selectionPopupEnabled`, same history as above.
  */
 export default defineContentScript({
   matches: ['*://*/*'],
@@ -140,17 +143,55 @@ export default defineContentScript({
         syncBubbleVisibility();
       })();
 
-      mountHoverTooltip(pageTranslator);
-      mountSelectionPopup({
-        translator: createRemoteTranslator(),
-        getSourceLanguage: () => configStore.get('sourceLanguage'),
-        getTargetLanguage: () => configStore.get('targetLanguage'),
+      // Hover tooltip / selection popup: previously hardcoded-on with no
+      // config at all — now gated by hoverTooltipEnabled/selectionPopupEnabled
+      // (global only, no per-host override — unlike the bubble, neither of
+      // these has a per-site "Hide" affordance of its own to justify one).
+      let hoverTooltip: ReturnType<typeof mountHoverTooltip> | null = null;
+      let selectionPopup: ReturnType<typeof mountSelectionPopup> | null = null;
+
+      function syncHoverTooltip(): void {
+        const enabled = configStore.get('hoverTooltipEnabled');
+        if (enabled && !hoverTooltip) {
+          hoverTooltip = mountHoverTooltip(pageTranslator);
+        } else if (!enabled && hoverTooltip) {
+          hoverTooltip.destroy();
+          hoverTooltip = null;
+        }
+      }
+
+      function syncSelectionPopup(): void {
+        const enabled = configStore.get('selectionPopupEnabled');
+        if (enabled && !selectionPopup) {
+          selectionPopup = mountSelectionPopup({
+            translator: createRemoteTranslator(),
+            getSourceLanguage: () => configStore.get('sourceLanguage'),
+            getTargetLanguage: () => configStore.get('targetLanguage'),
+          });
+        } else if (!enabled && selectionPopup) {
+          selectionPopup.destroy();
+          selectionPopup = null;
+        }
+      }
+
+      configStore.onChanged((name) => {
+        if (name === 'hoverTooltipEnabled') syncHoverTooltip();
+        if (name === 'selectionPopupEnabled') syncSelectionPopup();
       });
+      void (async () => {
+        await configStore.onReady();
+        syncHoverTooltip();
+        syncSelectionPopup();
+      })();
     }
+
+    // Hoisted to main() scope (not a fire-and-forget IIFE-local variable) so
+    // the getOriginalLanguage message handler below can read the same
+    // tracker the auto-translate decision uses, instead of re-detecting.
+    const originalLanguageTracker = createOriginalLanguageTracker();
 
     if (window.self === window.top) {
       void (async () => {
-        const originalLanguageTracker = createOriginalLanguageTracker();
         await Promise.all([configStore.onReady(), originalLanguageTracker.start()]);
 
         const shouldTranslate = shouldAutoTranslateOnLoad({
@@ -180,5 +221,7 @@ export default defineContentScript({
       return pageTranslator.getState();
     });
     onMessage('getPageState', () => pageTranslator.getState());
+    onMessage('getOriginalLanguage', () => originalLanguageTracker.get());
+    onMessage('getPageError', () => pageTranslator.getLastError());
   },
 });

@@ -34,6 +34,10 @@ export interface ProtocolMap {
   getPageState(): PageLanguageState;
   /** Content script (bubble's Settings chip) → background: a content script can't call `browser.runtime.openOptionsPage()` itself. */
   openOptionsPage(): void;
+  /** Popup → a tab's content script: the detected source language ('und' if not yet resolved), for the "Always translate from {language}" toggle. */
+  getOriginalLanguage(): string;
+  /** Popup → a tab's content script: non-null once the page translator has confirmed translation is actually failing (see translateLoop.ts's `getLastError`) — closes the gap where a translate click that fails after the popup already resolved shows nothing wrong. */
+  getPageError(): string | null;
 }
 
 export const { sendMessage, onMessage } = defineExtensionMessaging<ProtocolMap>();

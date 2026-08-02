@@ -21,9 +21,99 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
 }
 
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
 .app h1 {
   font-size: 16px;
-  margin: 0 0 0.75rem;
+  margin: 0;
+}
+
+.statusPill {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  color: #334155;
+  white-space: nowrap;
+}
+
+.statusPill.on {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+@media (prefers-color-scheme: dark) {
+  .statusPill {
+    background: #1e293b;
+    color: #cbd5e1;
+  }
+  .statusPill.on {
+    background: #14532d;
+    color: #86efac;
+  }
+}
+
+.primaryBtn {
+  width: 100%;
+  cursor: pointer;
+  padding: 0.6rem 1rem;
+  border-radius: 8px;
+  border: none;
+  background: #4f46e5;
+  color: #fff;
+  font-weight: 700;
+  font-family: inherit;
+  font-size: 14px;
+  margin-bottom: 0.6rem;
+}
+
+.primaryBtn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.pillRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 0.6rem;
+}
+
+.pill {
+  cursor: pointer;
+  padding: 0.3rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  color: inherit;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.pill.on {
+  border-color: #4f46e5;
+  color: #4f46e5;
+  background: rgba(79, 70, 229, 0.08);
+}
+
+@media (prefers-color-scheme: dark) {
+  .pill {
+    background: #1e293b;
+    border-color: #475569;
+  }
+  .pill.on {
+    border-color: #818cf8;
+    color: #a5b4fc;
+    background: rgba(129, 140, 248, 0.15);
+  }
 }
 
 .quickField {
@@ -59,20 +149,98 @@ body {
   }
 }
 
-.app button {
-  cursor: pointer;
-  padding: 0.5rem 1rem;
-  border-radius: 6px;
-  border: none;
-  background: #4f46e5;
-  color: #fff;
-  font-weight: 600;
-  font-family: inherit;
+.toggleList {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-bottom: 0.5rem;
 }
 
-.app button:disabled {
-  opacity: 0.6;
-  cursor: default;
+.toggleRow {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 12.5px;
+  padding: 0.3rem 0.4rem;
+  border-radius: 6px;
+}
+
+.toggleRow.accent {
+  background: rgba(79, 70, 229, 0.08);
+}
+
+@media (prefers-color-scheme: dark) {
+  .toggleRow.accent {
+    background: rgba(129, 140, 248, 0.15);
+  }
+}
+
+.toggleRow input {
+  cursor: pointer;
+}
+
+.moreToggle {
+  display: block;
+  width: 100%;
+  cursor: pointer;
+  background: none;
+  border: none;
+  color: #4f46e5;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 0.4rem 0;
+  text-align: left;
+}
+
+@media (prefers-color-scheme: dark) {
+  .moreToggle {
+    color: #a5b4fc;
+  }
+}
+
+.menuList {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid #e2e8f0;
+  margin-top: 0.5rem;
+  padding-top: 0.4rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  .menuList {
+    border-color: #334155;
+  }
+}
+
+.menuItem {
+  cursor: pointer;
+  background: none;
+  border: none;
+  color: inherit;
+  font-family: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  padding: 0.4rem 0.2rem;
+  border-radius: 6px;
+}
+
+.menuItem:hover {
+  background: #f1f5f9;
+}
+
+.menuItem.on {
+  color: #4f46e5;
+  font-weight: 600;
+}
+
+@media (prefers-color-scheme: dark) {
+  .menuItem:hover {
+    background: #1e293b;
+  }
+  .menuItem.on {
+    color: #a5b4fc;
+  }
 }
 
 .app p {

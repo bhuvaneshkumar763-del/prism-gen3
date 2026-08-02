@@ -32,6 +32,12 @@ import { z } from 'zod';
  * no version bump. Booleans, not the old pre-rewrite fork's `'yes'|'no'`
  * string enum — that enum only existed to match that fork's legacy
  * `chrome.storage.local` data, which this codebase never had.
+ *
+ * Same pass, Phase 2 (popup): `targetLanguages` (a recency-ordered list for
+ * the popup's quick-pick pills — see `src/shared/config/listMutations.ts`'s
+ * `addRecentTargetLanguage`) and `hoverTooltipEnabled`/`selectionPopupEnabled`
+ * (both previously hardcoded-on in `entrypoints/content.ts` with no config
+ * at all — now real togglable settings). Also purely additive.
  */
 export const configSchema = z.object({
   targetLanguage: z.string(),
@@ -58,6 +64,10 @@ export const configSchema = z.object({
   bubblePosition: z.object({ side: z.enum(['left', 'right']), yFrac: z.number() }).nullable(),
   /** Per-hostname source-language override, set via the bubble's "From" select. Absent means auto-detect. */
   sourceLanguageByHost: z.record(z.string(), z.string()),
+  /** Recency-ordered list of target languages the user has actually picked — powers the popup's quick-pick pills, most recent first. */
+  targetLanguages: z.array(z.string()),
+  hoverTooltipEnabled: z.boolean(),
+  selectionPopupEnabled: z.boolean(),
 });
 
 export type Config = z.infer<typeof configSchema>;
@@ -88,4 +98,7 @@ export const defaultConfig: Config = {
   bubbleByHost: {},
   bubblePosition: null,
   sourceLanguageByHost: {},
+  targetLanguages: [],
+  hoverTooltipEnabled: true,
+  selectionPopupEnabled: true,
 };

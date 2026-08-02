@@ -44,6 +44,12 @@ const candidateEntrypoints = [
     async check(page) {
       const hasQuickField = (await page.locator('.quickField').count()) > 0;
       if (!hasQuickField) return "expected popup's .quickField language pickers to be present";
+      const hasPrimaryBtn = (await page.locator('.primaryBtn').count()) > 0;
+      if (!hasPrimaryBtn) return "expected the popup's primary translate/restore button to be present";
+      const hasAlwaysToggle = (await page.locator('.toggleRow', { hasText: 'Always translate this site' }).count()) > 0;
+      if (!hasAlwaysToggle) return 'expected the "Always translate this site" toggle row to be present';
+      const hasMoreToggle = (await page.locator('.moreToggle').count()) > 0;
+      if (!hasMoreToggle) return 'expected the "More settings" expander to be present';
     },
   },
   {
