@@ -41,6 +41,8 @@ export interface FloatingBubbleProps {
   pageState: PageLanguageState;
   busy: boolean;
   showTranslatePrompt: boolean;
+  /** Non-null once translateLoop.ts has confirmed translation is actually failing (not a fleeting network blip) — see its `onError` header comment. Takes priority over the normal translated/prompt rows so a false "Translated" success is never shown while nothing on the page changed. */
+  errorMessage: string | null;
   onTranslateClick: () => void;
   onRestoreClick: () => void;
   onClose: () => void;
@@ -49,7 +51,13 @@ export interface FloatingBubbleProps {
 export function FloatingBubble(props: FloatingBubbleProps) {
   return (
     <div class="bubble">
-      <Show when={props.pageState === 'translated'}>
+      <Show when={props.errorMessage}>
+        <span class="label error">Translation failed</span>
+        <button type="button" class="close" aria-label="Close" onClick={props.onClose}>
+          ×
+        </button>
+      </Show>
+      <Show when={!props.errorMessage && props.pageState === 'translated'}>
         <span class="label">Translated</span>
         <button type="button" class="action" disabled={props.busy} onClick={props.onRestoreClick}>
           {props.busy ? 'Restoring…' : 'Show original'}
@@ -58,7 +66,7 @@ export function FloatingBubble(props: FloatingBubbleProps) {
           ×
         </button>
       </Show>
-      <Show when={props.pageState === 'original' && props.showTranslatePrompt}>
+      <Show when={!props.errorMessage && props.pageState === 'original' && props.showTranslatePrompt}>
         <button type="button" class="action" disabled={props.busy} onClick={props.onTranslateClick}>
           {props.busy ? 'Translating…' : 'Translate this page'}
         </button>

@@ -31,7 +31,7 @@ describe('mountBubble', () => {
 
   it('shows the "Show original" action once translated', () => {
     const controller = mountBubble(callbacks());
-    controller.update('translated', false, false);
+    controller.update('translated', false, false, null);
 
     const shadow = bubbleShadowRoot();
     const action = shadow.querySelector('.action');
@@ -41,7 +41,7 @@ describe('mountBubble', () => {
 
   it('shows a busy label and disables the action while restoring', () => {
     const controller = mountBubble(callbacks());
-    controller.update('translated', true, false);
+    controller.update('translated', true, false, null);
 
     const shadow = bubbleShadowRoot();
     const action = shadow.querySelector('.action') as HTMLButtonElement;
@@ -53,7 +53,7 @@ describe('mountBubble', () => {
   it('calls onRestoreClick when the action button is clicked', () => {
     const onRestoreClick = vi.fn();
     const controller = mountBubble(callbacks({ onRestoreClick }));
-    controller.update('translated', false, false);
+    controller.update('translated', false, false, null);
 
     const shadow = bubbleShadowRoot();
     const action = shadow.querySelector('.action') as HTMLButtonElement;
@@ -66,7 +66,7 @@ describe('mountBubble', () => {
   it('calls onClose and removes the host when the close button is clicked', () => {
     const onClose = vi.fn();
     const controller = mountBubble(callbacks({ onClose }));
-    controller.update('translated', false, false);
+    controller.update('translated', false, false, null);
 
     const shadow = bubbleShadowRoot();
     const closeButton = shadow.querySelector('.close') as HTMLButtonElement;
@@ -95,8 +95,8 @@ describe('mountBubble', () => {
 
   it('reverts to hidden when update() reports the original state again with no translate prompt', () => {
     const controller = mountBubble(callbacks());
-    controller.update('translated', false, false);
-    controller.update('original', false, false);
+    controller.update('translated', false, false, null);
+    controller.update('original', false, false, null);
 
     const shadow = bubbleShadowRoot();
     expect(shadow.querySelector('.action')).toBeNull();
@@ -105,7 +105,7 @@ describe('mountBubble', () => {
 
   it('shows the "Translate this page" prompt when showTranslatePrompt is true', () => {
     const controller = mountBubble(callbacks());
-    controller.update('original', false, true);
+    controller.update('original', false, true, null);
 
     const shadow = bubbleShadowRoot();
     expect(shadow.querySelector('.action')?.textContent).toBe('Translate this page');
@@ -115,12 +115,23 @@ describe('mountBubble', () => {
   it('calls onTranslateClick when the translate-prompt action is clicked', () => {
     const onTranslateClick = vi.fn();
     const controller = mountBubble(callbacks({ onTranslateClick }));
-    controller.update('original', false, true);
+    controller.update('original', false, true, null);
 
     const shadow = bubbleShadowRoot();
     (shadow.querySelector('.action') as HTMLButtonElement).click();
 
     expect(onTranslateClick).toHaveBeenCalledTimes(1);
+    controller.unmount();
+  });
+
+  it('shows a real error instead of the normal "Translated" success once errorMessage is set', () => {
+    const controller = mountBubble(callbacks());
+    controller.update('translated', false, false, 'HTTP 429');
+
+    const shadow = bubbleShadowRoot();
+    expect(shadow.querySelector('.label')?.textContent).toBe('Translation failed');
+    // Never claims success while an error is active — the whole bug this guards against.
+    expect(shadow.querySelector('.action')).toBeNull();
     controller.unmount();
   });
 });

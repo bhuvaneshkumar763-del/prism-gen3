@@ -58,6 +58,29 @@ export function createPageTranslator(options: PageTranslatorOptions) {
   const missingResultAttempts = new WeakMap<Text, number>();
 
   const stateListeners = new Set<(state: PageLanguageState) => void>();
+  const errorListeners = new Set<(message: string | null) => void>();
+
+  // Silent-failure guard: a translateBatch() call that throws (network
+  // error, or every retry inside batchedHttpProvider.ts exhausted — e.g. a
+  // provider that's misconfigured or rate-limited) used to be swallowed
+  // into console.error and an unconditional requeue-forever loop, with
+  // pageLanguageState staying 'translated' the whole time — the UI
+  // reported success while nothing on the page ever changed. Real bug,
+  // found via a user report: the shipped default provider
+  // (libretranslate.com, unauthenticated) returns HTTP 429 for every
+  // request. After a few consecutive full-batch failures, this now
+  // surfaces a real error instead of retrying forever in silence.
+  const CONSECUTIVE_FAILURES_BEFORE_SURFACING = 3;
+  let consecutiveBatchFailures = 0;
+  let lastErrorMessage: string | null = null;
+
+  function setError(message: string | null): void {
+    if (message === lastErrorMessage) return;
+    lastErrorMessage = message;
+    errorListeners.forEach((cb) => {
+      cb(message);
+    });
+  }
 
   function wakeRoutine(delayMs = 0): void {
     if (translationRoutineHandle) clearTimeout(translationRoutineHandle);
@@ -109,27 +132,76 @@ export function createPageTranslator(options: PageTranslatorOptions) {
           pieces: groups.map((group) => group.map((node) => node.data)),
           dontSortResults: options.getDontSortResults?.() ?? false,
         });
-        groups.forEach((group, groupIdx) => {
-          const outcome = outcomes[groupIdx];
-          group.forEach((node, nodeIdx) => {
-            if (!node.isConnected) return;
-            const translated = outcome?.ok ? outcome.value[nodeIdx] : undefined;
-            if (translated) {
-              mutationWatcher.noteOwnWrite(node, translated);
-              node.data = translated;
-            } else {
-              noteMissingResult(node);
-            }
+
+        // The common real-world failure mode (a provider HTTP call that's
+        // rate-limited, unauthenticated, or otherwise fails outright) does
+        // NOT throw here — createBatchedHttpProvider's translateBatch()
+        // deliberately always resolves, converting a failed HTTP request
+        // into an `ok: false` outcome per piece (see its own handleBatch()
+        // catch block) so one bad request can't crash an entire batch. That
+        // means a totally-broken provider looks identical, at this level,
+        // to "every piece individually failed" — which used to fall
+        // through to noteMissingResult()'s silent per-node give-up with no
+        // batch-level signal at all. Detecting "every outcome in this batch
+        // failed" here is what actually catches that case — the earlier
+        // catch(e) block below only ever fires for a genuine thrown
+        // exception (e.g. the messaging round trip itself breaking), which
+        // is real but rarer.
+        const allFailed = outcomes.length > 0 && outcomes.every((o) => !o?.ok);
+        if (allFailed) {
+          consecutiveBatchFailures++;
+          if (consecutiveBatchFailures >= CONSECUTIVE_FAILURES_BEFORE_SURFACING) {
+            const firstFailure = outcomes.find((o) => !o?.ok);
+            const message = firstFailure && !firstFailure.ok ? firstFailure.error.message : 'translation failed';
+            setError(message);
+          }
+          // Requeue the whole batch directly, bypassing noteMissingResult()'s
+          // per-node cooldown/retry-cap below — that logic exists for an
+          // isolated single-node "missing result" (a batch that mostly
+          // succeeded but came back short one piece), not for "every request
+          // to this provider is failing." Without this, a node that hits the
+          // per-node cooldown drops out of `queue` entirely once nothing else
+          // is queued behind it, and — since dedupe.ts intentionally skips
+          // already-tracked nodes — nothing ever revisits it again: the
+          // consecutive-failure counter above would stall forever below the
+          // surfacing threshold, and the page would silently never retry at
+          // all. Keeping the whole batch in the queue is what lets
+          // translateBatch() keep being attempted every tick until this is
+          // either confirmed broken (error surfaces) or recovers.
+          queue.unshift(...batch.filter((n) => n.isConnected));
+        } else {
+          consecutiveBatchFailures = 0;
+          setError(null);
+          groups.forEach((group, groupIdx) => {
+            const outcome = outcomes[groupIdx];
+            group.forEach((node, nodeIdx) => {
+              if (!node.isConnected) return;
+              const translated = outcome?.ok ? outcome.value[nodeIdx] : undefined;
+              if (translated) {
+                mutationWatcher.noteOwnWrite(node, translated);
+                node.data = translated;
+              } else {
+                noteMissingResult(node);
+              }
+            });
           });
-        });
+        }
       } catch (e) {
         console.error('[prism] translation batch failed', e);
         // Transient failure (network blip, background restart) — retry next tick.
         queue.unshift(...batch.filter((n) => n.isConnected));
+        consecutiveBatchFailures++;
+        if (consecutiveBatchFailures >= CONSECUTIVE_FAILURES_BEFORE_SURFACING) {
+          setError(e instanceof Error ? e.message : String(e));
+        }
       }
     }
 
-    const nextDelay = queue.length > 0 ? 150 : 2000;
+    // Once an error has been surfaced, back off instead of hammering a
+    // provider that's already confirmed broken (rate-limited/misconfigured)
+    // every 150ms forever — still retries (a transient outage should
+    // recover on its own once fixed), just far less aggressively.
+    const nextDelay = lastErrorMessage !== null ? 8000 : queue.length > 0 ? 150 : 2000;
     translationRoutineHandle = setTimeout(translationRoutine, nextDelay);
   }
 
@@ -200,6 +272,8 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     dedupe.track(nodes);
     queue = [...nodes];
 
+    consecutiveBatchFailures = 0;
+    setError(null);
     setState('translated');
     mutationWatcher.enable(500, () => resweep.bump());
     resweep.start();
@@ -221,6 +295,8 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     mutationWatcher.disable();
     resweep.stop();
     titleTranslator.restore();
+    consecutiveBatchFailures = 0;
+    setError(null);
     setState('original');
   }
 
@@ -234,6 +310,12 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     },
     /** Currently-translated text nodes and their pre-translation text — used by a future "hover to see original" tooltip. */
     getTranslatedNodes: (): ReadonlyArray<{ node: Text; original: string }> => nodesToRestore,
+    /** Non-null once translation has been failing for `CONSECUTIVE_FAILURES_BEFORE_SURFACING` ticks in a row — see the header comment on that constant above. */
+    getLastError: (): string | null => lastErrorMessage,
+    onError(cb: (message: string | null) => void): () => void {
+      errorListeners.add(cb);
+      return () => errorListeners.delete(cb);
+    },
   };
 }
 

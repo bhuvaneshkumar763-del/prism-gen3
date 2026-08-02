@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ok } from '../../shared/result';
+import { err, ok } from '../../shared/result';
 import type { PieceOutcome, Translator } from '../translator';
 import { createPageTranslator } from './translateLoop';
 
@@ -153,10 +153,22 @@ describe('createPageTranslator', () => {
     expect(document.body.textContent).toBe('hello');
   });
 
-  it('requeues and retries a piece that came back as a provider error, rather than leaving it untranslated silently', async () => {
-    document.body.innerHTML = '<p>hello</p>';
+  it('requeues and retries a piece that came back as a provider error, rather than leaving it untranslated silently — while an unrelated piece in the same batch still succeeds', async () => {
+    // Deliberately a *partial* failure (one node ok, one not) rather than
+    // every piece failing — an all-failed batch takes the separate
+    // allFailed/consecutive-failure-tracking path (see the tests above),
+    // which bypasses this per-node retry logic entirely by design (a
+    // systemic provider failure shouldn't be treated as "one weird node").
+    // This is what actually exercises noteMissingResult()'s isolated-node
+    // give-up-after-3-tries cooldown/retry logic below.
+    document.body.innerHTML = '<p>hello</p><p>world</p>';
     const translateBatch = vi.fn(async (request: { pieces: string[][] }) =>
-      request.pieces.map((): PieceOutcome => ({ ok: false, error: { kind: 'network', message: 'boom' } })),
+      request.pieces.map(
+        (piece): PieceOutcome =>
+          piece[0] === 'hello'
+            ? { ok: false, error: { kind: 'network', message: 'boom' } }
+            : ok(piece.map((s) => s.toUpperCase())),
+      ),
     );
     const pageTranslator = createPageTranslator({
       translator: { translateBatch },
@@ -165,14 +177,14 @@ describe('createPageTranslator', () => {
     });
 
     await pageTranslator.translatePage('es');
-    // Initial attempt, then one immediate requeue retry — a second requeue
-    // is throttled to at most once per 1500ms (noteMissingResult's guard),
-    // so this window only ever observes the first retry, not the full
-    // give-up-after-3 exhaustion.
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    await waitFor(() => document.body.textContent === 'helloWORLD');
+    // Initial attempt, then one immediate requeue retry for the failing
+    // node — a second requeue is throttled to at most once per 1500ms
+    // (noteMissingResult's cooldown guard), so this window only ever
+    // observes the first retry, not the full give-up-after-3 exhaustion.
+    await waitFor(() => translateBatch.mock.calls.length >= 2);
 
-    expect(translateBatch.mock.calls.length).toBeGreaterThanOrEqual(2);
-    expect(document.body.textContent).toBe('hello'); // never got a real translation
+    expect(document.body.textContent).toBe('helloWORLD'); // "hello" never got a real translation, "world" did
     pageTranslator.restorePage();
   });
 
@@ -237,5 +249,155 @@ describe('createPageTranslator', () => {
       setVisibility('hidden');
       setVisibility('visible');
     }).not.toThrow();
+  });
+
+  // Regression test for a real shipped bug: a misconfigured/rate-limited
+  // provider whose translateBatch() always throws used to retry forever
+  // in silence, with getState() staying 'translated' — the UI reported
+  // success while nothing on the page ever changed (see this repo's
+  // CLAUDE.md for the incident writeup). getLastError()/onError() must
+  // surface a real error after a few consecutive failures.
+  it('surfaces a real error via getLastError()/onError() after repeated batch failures, without ever throwing', async () => {
+    document.body.innerHTML = '<p>hello</p>';
+    const alwaysFailingTranslator: Translator = {
+      async translateBatch() {
+        throw new Error('HTTP 429');
+      },
+    };
+    const errorSpy = vi.fn();
+    const pageTranslator = createPageTranslator({
+      translator: alwaysFailingTranslator,
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+    pageTranslator.onError(errorSpy);
+
+    await pageTranslator.translatePage('es');
+    await waitFor(() => pageTranslator.getLastError() !== null);
+
+    expect(pageTranslator.getLastError()).toBe('HTTP 429');
+    expect(errorSpy).toHaveBeenCalledWith('HTTP 429');
+    // The page must stay untranslated — no false success.
+    expect(document.body.textContent).toBe('hello');
+
+    pageTranslator.restorePage();
+    expect(pageTranslator.getLastError()).toBeNull();
+  });
+
+  // The actual real-world shape of this bug, found via manual verification
+  // against a real broken provider: createBatchedHttpProvider's
+  // translateBatch() deliberately never throws for an HTTP-level failure —
+  // it resolves with an `ok: false` PieceOutcome per piece instead (so one
+  // bad request can't crash a whole batch). The test above only covers a
+  // translator that throws; this covers the far more common path a
+  // misconfigured/rate-limited provider actually takes.
+  it('surfaces a real error when every outcome in a batch resolves ok:false, not just on a thrown exception', async () => {
+    document.body.innerHTML = '<p>hello</p>';
+    const alwaysErrorOutcomeTranslator: Translator = {
+      async translateBatch(request) {
+        return request.pieces.map((): PieceOutcome => err({ kind: 'http', message: 'HTTP 429' }));
+      },
+    };
+    const errorSpy = vi.fn();
+    const pageTranslator = createPageTranslator({
+      translator: alwaysErrorOutcomeTranslator,
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+    pageTranslator.onError(errorSpy);
+
+    await pageTranslator.translatePage('es');
+    await waitFor(() => pageTranslator.getLastError() !== null);
+
+    expect(pageTranslator.getLastError()).toBe('HTTP 429');
+    expect(errorSpy).toHaveBeenCalledWith('HTTP 429');
+    expect(document.body.textContent).toBe('hello');
+
+    pageTranslator.restorePage();
+    expect(pageTranslator.getLastError()).toBeNull();
+  });
+
+  it('surfaces a real error even when the thrown value is not an Error instance', async () => {
+    document.body.innerHTML = '<p>hello</p>';
+    const throwsAStringTranslator: Translator = {
+      async translateBatch() {
+        // Deliberately not an Error instance — to cover the String(e) fallback branch.
+        throw 'connection reset';
+      },
+    };
+    const pageTranslator = createPageTranslator({
+      translator: throwsAStringTranslator,
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+
+    await pageTranslator.translatePage('es');
+    await waitFor(() => pageTranslator.getLastError() !== null);
+
+    expect(pageTranslator.getLastError()).toBe('connection reset');
+    pageTranslator.restorePage();
+  });
+
+  it('falls back to a generic message if a batch resolves with no outcomes at all for its pieces', async () => {
+    document.body.innerHTML = '<p>hello</p>';
+    // Deliberately malformed (bypassing the real PieceOutcome contract) —
+    // a provider that returns a shorter/empty-slot array rather than one
+    // real outcome per piece. Real providers shouldn't do this, but
+    // translateLoop.ts defensively handles it (`!o?.ok`), so it's worth
+    // proving the fallback message actually fires rather than throwing.
+    const malformedTranslator: Translator = {
+      async translateBatch(request) {
+        return request.pieces.map(() => undefined) as unknown as PieceOutcome[];
+      },
+    };
+    const pageTranslator = createPageTranslator({
+      translator: malformedTranslator,
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+
+    await pageTranslator.translatePage('es');
+    await waitFor(() => pageTranslator.getLastError() !== null);
+
+    expect(pageTranslator.getLastError()).toBe('translation failed');
+    pageTranslator.restorePage();
+  });
+
+  it('skips applying a translation result to a node that was removed from the DOM before the response arrived', async () => {
+    document.body.innerHTML = '<p id="p">hello</p>';
+    const p = document.getElementById('p') as HTMLParagraphElement;
+    const translateBatch = vi.fn(async (request: { pieces: string[][] }) => {
+      p.remove(); // disconnect the node mid-flight, before the result comes back
+      return request.pieces.map((piece): PieceOutcome => ok(piece.map((s) => s.toUpperCase())));
+    });
+    const pageTranslator = createPageTranslator({
+      translator: { translateBatch },
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+
+    await pageTranslator.translatePage('es');
+    await waitFor(() => translateBatch.mock.calls.length > 0);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // Never throws, and never writes to a node that's no longer connected.
+    expect(document.body.innerHTML).toBe('');
+    pageTranslator.restorePage();
+  });
+
+  it('restorePage() is safe to call again with nothing pending (no active routine timer)', async () => {
+    document.body.innerHTML = '<p>hello</p>';
+    const pageTranslator = createPageTranslator({
+      translator: uppercaseTranslator(),
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+
+    await pageTranslator.translatePage('es');
+    await waitFor(() => document.body.textContent === 'HELLO');
+    pageTranslator.restorePage();
+
+    expect(() => pageTranslator.restorePage()).not.toThrow();
+    expect(pageTranslator.getState()).toBe('original');
   });
 });

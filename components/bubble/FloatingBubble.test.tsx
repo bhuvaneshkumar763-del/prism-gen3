@@ -25,6 +25,7 @@ describe('FloatingBubble', () => {
     pageState: 'original' as const,
     busy: false,
     showTranslatePrompt: false,
+    errorMessage: null,
     onTranslateClick: vi.fn(),
     onRestoreClick: vi.fn(),
     onClose: vi.fn(),
@@ -92,5 +93,11 @@ describe('FloatingBubble', () => {
     const el = mount({ ...base, showTranslatePrompt: true, onClose });
     (el.querySelector('.close') as HTMLButtonElement).click();
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows a real error and never the "Translated" success once errorMessage is set, even in the translated state', () => {
+    const el = mount({ ...base, pageState: 'translated', errorMessage: 'HTTP 429' });
+    expect(el.querySelector('.label')?.textContent).toBe('Translation failed');
+    expect(el.querySelector('.action')).toBeNull();
   });
 });

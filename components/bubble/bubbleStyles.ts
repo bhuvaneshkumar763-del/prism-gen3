@@ -26,6 +26,9 @@ export const BUBBLE_STYLES = `
     font-weight: 600;
     padding-left: 4px;
   }
+  .label.error {
+    color: #fca5a5;
+  }
   .action {
     cursor: pointer;
     border: none;

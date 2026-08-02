@@ -77,7 +77,7 @@ export default defineContentScript({
             bubble = null;
           },
         });
-        bubble.update(state, translateBusy, showTranslatePrompt);
+        bubble.update(state, translateBusy, showTranslatePrompt, pageTranslator.getLastError());
       }
 
       async function handleTranslateClick(): Promise<void> {
@@ -95,6 +95,12 @@ export default defineContentScript({
       // a documented follow-up, not built here.
       pageTranslator.onStateChange(() => {
         translateBusy = false;
+        syncBubble();
+      });
+      // A translate call can keep failing silently in the background long
+      // after the state-change above already fired (see translateLoop.ts's
+      // consecutive-failure guard) — this is the surface that reflects it.
+      pageTranslator.onError(() => {
         syncBubble();
       });
       mobileViewportQuery.addEventListener('change', syncBubble);

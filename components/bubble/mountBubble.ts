@@ -6,7 +6,7 @@ import { FloatingBubble } from './FloatingBubble';
 const HOST_ID = 'prism-bubble-host';
 
 export interface BubbleController {
-  update(pageState: PageLanguageState, busy: boolean, showTranslatePrompt: boolean): void;
+  update(pageState: PageLanguageState, busy: boolean, showTranslatePrompt: boolean, errorMessage: string | null): void;
   unmount(): void;
 }
 
@@ -51,7 +51,12 @@ export function mountBubble(callbacks: MountBubbleCallbacks): BubbleController {
 
   let dispose: (() => void) | null = null;
 
-  function renderNow(pageState: PageLanguageState, busy: boolean, showTranslatePrompt: boolean): void {
+  function renderNow(
+    pageState: PageLanguageState,
+    busy: boolean,
+    showTranslatePrompt: boolean,
+    errorMessage: string | null,
+  ): void {
     dispose?.();
     dispose = render(
       () =>
@@ -59,6 +64,7 @@ export function mountBubble(callbacks: MountBubbleCallbacks): BubbleController {
           pageState,
           busy,
           showTranslatePrompt,
+          errorMessage,
           onTranslateClick: callbacks.onTranslateClick,
           onRestoreClick: callbacks.onRestoreClick,
           onClose: () => {
@@ -70,11 +76,11 @@ export function mountBubble(callbacks: MountBubbleCallbacks): BubbleController {
     );
   }
 
-  renderNow('original', false, false);
+  renderNow('original', false, false, null);
 
   return {
-    update(pageState, busy, showTranslatePrompt) {
-      renderNow(pageState, busy, showTranslatePrompt);
+    update(pageState, busy, showTranslatePrompt, errorMessage) {
+      renderNow(pageState, busy, showTranslatePrompt, errorMessage);
     },
     unmount() {
       dispose?.();
