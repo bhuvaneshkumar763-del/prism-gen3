@@ -1000,10 +1000,18 @@ writes `CHANGELOG.md`) — once that lands on `main` and CI passes,
   release-notes page, and the toolbar icon's translated/original state
   swap were never scoped into any Gen 3 session — see the parity
   checklist above for the full "Deliberately Not Built" list.
-- Icons/branding are still the WXT template defaults
-  (`public/icon/*.png`) — real Prism branding work isn't scoped to a
-  specific session yet in the plan; revisit when it becomes a blocker
-  (likely alongside UI-surface sessions).
+- ~~Icons/branding are still the WXT template defaults~~ **Resolved**
+  post-launch: `public/icon/*.png` now ships a real icon (two rounded
+  arcs forming an exchange loop, cyan→blue gradient) plus a source
+  `icon.svg`, replacing the literal WXT puzzle-piece default. Deliberately
+  a fresh mark, not the older triangle-and-dispersion "Prism" logo the
+  Gen 2 fork uses (and that this repo's own floating bubble still reuses
+  inline in its panel header — that inline mark was left as-is, out of
+  scope for this change, which only touched the actual extension icon
+  files). Two concepts were mocked up and shown to the user at real icon
+  sizes (16-128px, light/dark) before building; the chosen one was
+  verified for real against `chrome://extensions` on the built extension,
+  not just the isolated mockup.
 
 ## Post-launch incident: translation didn't work out of the box, and failure was silent
 
