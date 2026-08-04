@@ -1,5 +1,11 @@
 # prism-gen3
 
+## 0.3.0-beta.5
+
+### Patch Changes
+
+- Fixed three real regressions reported by a user comparing this rewrite against the pre-rewrite fork: (1) the translation cache opened and closed a fresh IndexedDB connection and ran a full eviction scan on every write — now a single persistent connection with O(1) incremental size tracking; the content script also now attaches at document_end instead of the default document_idle, starting translation meaningfully earlier on slow-loading pages. (2) Dynamic/streaming content could be silently missed — a 25-node cap on simultaneous text changes per batch is removed, and detached-then-reattached DOM nodes (common in virtualized/recycled list widgets) that changed content while off-DOM are now correctly re-translated instead of permanently skipped. (3) Tag-like tokens (hashtags, chained tags like #go#be, @mentions) are now isolated into their own translation request instead of being batched with surrounding prose, fixing a real marker-scrambling bug in Google's endpoint — ported from proven fix logic in the original pre-rewrite codebase.
+
 ## 0.3.0-beta.4
 
 ### Minor Changes

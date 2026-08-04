@@ -139,4 +139,68 @@ describe('createMutationWatcher', () => {
     });
     expect(() => watcher.disable()).not.toThrow();
   });
+
+  it('reports every changed node in a single batch, not just the first 25 (no silent drop)', async () => {
+    document.body.innerHTML = '';
+    const textNodes: Text[] = [];
+    for (let i = 0; i < 40; i++) {
+      const p = document.createElement('p');
+      p.textContent = `original ${i}`;
+      document.body.append(p);
+      const t = p.firstChild as Text;
+      textNodes.push(t);
+    }
+    const onChangedTextNode = vi.fn();
+    const watcher = createMutationWatcher({
+      isTranslated: () => true,
+      isNoTranslateNode: () => false,
+      onNewRoot: vi.fn(),
+      onChangedTextNode,
+    });
+    watcher.enable();
+    await flushMutations();
+    onChangedTextNode.mockClear();
+
+    // A single synchronous render pass mutating more than the old 25-node
+    // cap, all in one MutationObserver callback.
+    textNodes.forEach((t, i) => {
+      t.data = `changed ${i}`;
+    });
+    await flushMutations();
+
+    expect(onChangedTextNode).toHaveBeenCalledTimes(40);
+    watcher.disable();
+  });
+
+  it('skips the periodic onRescan tick when the observer already fired in that window', async () => {
+    document.body.innerHTML = '<p>original</p>';
+    const textNode = document.body.querySelector('p')?.firstChild as Text;
+    const onRescan = vi.fn();
+    const watcher = createMutationWatcher({
+      isTranslated: () => true,
+      isNoTranslateNode: () => false,
+      onNewRoot: vi.fn(),
+      onChangedTextNode: vi.fn(),
+    });
+
+    vi.useFakeTimers();
+    try {
+      watcher.enable(500, onRescan);
+
+      textNode.data = 'changed by the site';
+      await vi.advanceTimersByTimeAsync(0); // flush the observer's microtask-scheduled callback
+      await vi.advanceTimersByTimeAsync(500); // first periodic tick
+      // The observer already reported this exact change — the periodic tick
+      // has nothing new to catch, so onRescan should be skipped for it.
+      expect(onRescan).not.toHaveBeenCalled();
+
+      // A second window with no further mutation fires normally.
+      await vi.advanceTimersByTimeAsync(500);
+      expect(onRescan).toHaveBeenCalledTimes(1);
+
+      watcher.disable();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

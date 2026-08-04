@@ -1,4 +1,5 @@
 import type { BatchingHint } from '../providers/descriptors';
+import { isPureTagText } from './tagText';
 
 /**
  * Groups consecutive queued text nodes into pieces suitable for a single
@@ -40,6 +41,20 @@ import type { BatchingHint } from '../providers/descriptors';
  * DOM shape, just a reasonable heuristic; a node that ends up ungrouped
  * still gets translated correctly on its own, just without the extra
  * context.
+ *
+ * 3. **Isolate tag-cluster text (`#go#be`, `@mention`, ...) into its own
+ *    singleton group, never batched with anything else.** A grouped piece
+ *    with more than one string goes through provider-specific multi-item
+ *    wire markers — Google's `<a i=N>` index tags (`google.ts`), the LLM
+ *    provider's `␟`-joined segments (`llm.ts`) — and real traffic has
+ *    shown Google's endpoint can reorder/merge those markers when several
+ *    short tag tokens sit in one batch, scrambling which translated
+ *    fragment maps back to which tag (ported fix, see `tagText.ts`'s
+ *    header comment for the full history). A size-1 piece never triggers
+ *    either provider's multi-item marker scheme at all, so there's
+ *    structurally nothing left to scramble. This only changes behavior
+ *    when `hint.groupByBlock` is true (`google`/`llm` today) — providers
+ *    without a `batchingHint` already send one node per piece regardless.
  */
 
 const BLOCK_TAGS = new Set([
@@ -99,6 +114,16 @@ export function groupNodesForBatching(nodes: Text[], hint: BatchingHint | undefi
   }
 
   for (const node of nodes) {
+    if (isPureTagText(node.data.trim())) {
+      // Isolate into its own singleton group — flush whatever was
+      // building, push this node alone, flush again so nothing joins it.
+      // See this function's header comment (point 3) for why.
+      flush();
+      groups.push([node]);
+      currentBlock = nearestBlockAncestor(node);
+      continue;
+    }
+
     const block = nearestBlockAncestor(node);
     if (currentGroup.length > 0 && block !== currentBlock) {
       // A block boundary is always a clean cut — no sentence risk, the

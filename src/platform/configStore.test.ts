@@ -127,6 +127,17 @@ describe('configStore', () => {
     expect(seen).toContainEqual(['targetLanguage', defaultConfig.targetLanguage]);
     unsub();
   });
+
+  it('onReady() reads storage exactly once when no migration is needed (not a separate read for migration-check + a second for the actual load)', async () => {
+    await fakeBrowser.storage.local.set({ targetLanguage: 'ja' });
+    const getSpy = vi.spyOn(fakeBrowser.storage.local, 'get');
+
+    const store = await freshStore();
+    await store.onReady();
+
+    expect(store.get('targetLanguage')).toBe('ja');
+    expect(getSpy).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('configStore — migration (CONFIG_SCHEMA_VERSION 2)', () => {

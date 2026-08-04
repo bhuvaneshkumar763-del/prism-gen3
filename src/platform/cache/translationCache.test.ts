@@ -1,5 +1,5 @@
 import { IDBFactory } from 'fake-indexeddb';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { cacheKeyFor, createTranslationCache } from './translationCache';
 
 describe('translationCache', () => {
@@ -93,6 +93,71 @@ describe('translationCache', () => {
     await cache.evictUntilUnderBudget(3000);
 
     expect(await cache.getSizeBytes()).toBeLessThanOrEqual(3000);
+  });
+
+  it('reuses one IndexedDB connection across multiple calls instead of opening one per call', async () => {
+    const openSpy = vi.spyOn(globalThis.indexedDB, 'open');
+    const cache = createTranslationCache();
+
+    await cache.set('a', '1');
+    await cache.get('a');
+    await cache.set('b', '2');
+    await cache.get('b');
+    await cache.getSizeBytes();
+
+    expect(openSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('tracks size incrementally rather than re-scanning the whole store on every write', async () => {
+    const cache = createTranslationCache();
+    await cache.set('a', 'x'.repeat(1000));
+
+    // Seed the running total with one real scan, then spy so a further
+    // write can't silently fall back to a full re-scan.
+    await cache.getSizeBytes();
+    const openCursorCalls: number[] = [];
+    const originalOpenCursor = IDBObjectStore.prototype.openCursor;
+    IDBObjectStore.prototype.openCursor = function (...args: Parameters<typeof originalOpenCursor>) {
+      openCursorCalls.push(1);
+      return originalOpenCursor.apply(this, args);
+    };
+    try {
+      await cache.set('b', 'y'.repeat(1000));
+      // A well-under-budget write shouldn't trigger any cursor scan at all
+      // (no eviction needed, and the running total is already known).
+      expect(openCursorCalls).toHaveLength(0);
+    } finally {
+      IDBObjectStore.prototype.openCursor = originalOpenCursor;
+    }
+  });
+
+  it('seeds the running total from whatever is already persisted from a prior session (real cursor-scan path)', async () => {
+    // Write directly through a first cache instance (simulating a previous
+    // service-worker lifetime), then create a genuinely FRESH instance —
+    // its running total starts uninitialized and must be seeded by a real
+    // scan that actually finds an existing entry, not an empty store.
+    const first = createTranslationCache();
+    await first.set('a', 'x'.repeat(1000));
+
+    const second = createTranslationCache();
+    const size = await second.getSizeBytes();
+
+    expect(size).toBeGreaterThan(0);
+    expect(await second.get('a')).toBe('x'.repeat(1000));
+  });
+
+  it('overwriting an existing key adjusts the running total by the size delta, not by double-counting', async () => {
+    const cache = createTranslationCache(100_000);
+    await cache.set('a', 'x'.repeat(1000));
+    const sizeAfterFirst = await cache.getSizeBytes();
+
+    await cache.set('a', 'x'.repeat(2000));
+    const sizeAfterOverwrite = await cache.getSizeBytes();
+
+    // Roughly one entry's worth of growth (~2000 extra UTF-16 bytes), not
+    // ~1000 (unchanged) or ~5000+ (double-counted as if both old and new
+    // were still present).
+    expect(sizeAfterOverwrite - sizeAfterFirst).toBeCloseTo(2000, -2);
   });
 });
 

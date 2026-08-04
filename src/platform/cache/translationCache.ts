@@ -19,6 +19,22 @@
  * side-effecting adapter over a specific storage backend, the same category
  * of thing `src/platform/storage/localBackend.ts` already is, not
  * translation-domain logic.
+ *
+ * Post-launch speed pass: this used to open and close a fresh IndexedDB
+ * connection on EVERY `get()`/`set()` call, and `set()` unconditionally ran
+ * a full cursor-scan eviction sweep on every write — real, measured cost on
+ * the critical path of every translated piece, every tick (see the CLAUDE.md
+ * writeup for the investigation). Fixed two ways: (1) the connection is now
+ * opened once, lazily, and kept alive for the life of this cache instance
+ * — every call reuses it; (2) instead of debouncing eviction to "every N
+ * writes" (which would make eviction non-deterministic and break the
+ * existing recency/budget tests below, which rely on eviction happening
+ * exactly when a write pushes the store over budget), an in-memory running
+ * total is maintained and updated incrementally on every write/eviction —
+ * `evictUntilUnderBudget()` checks that O(1) counter instead of re-scanning
+ * the whole store, and only pays for a real cursor scan once, lazily, the
+ * first time any method is called on a given instance (to seed the counter
+ * from whatever's already persisted from a prior session).
  */
 
 const DB_NAME = 'prism-translation-cache';
@@ -54,6 +70,23 @@ function estimateSize(key: string, value: string): number {
   return (key.length + value.length) * 2;
 }
 
+function scanTotalBytes(db: IDBDatabase): Promise<number> {
+  return new Promise((resolve, reject) => {
+    let total = 0;
+    const cursorRequest = db.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME).openCursor();
+    cursorRequest.onsuccess = () => {
+      const cursor = cursorRequest.result;
+      if (!cursor) {
+        resolve(total);
+        return;
+      }
+      total += (cursor.value as CacheRecord).size;
+      cursor.continue();
+    };
+    cursorRequest.onerror = () => reject(cursorRequest.error);
+  });
+}
+
 export interface TranslationCache {
   get(key: string): Promise<string | null>;
   set(key: string, value: string): Promise<void>;
@@ -63,122 +96,101 @@ export interface TranslationCache {
 }
 
 export function createTranslationCache(defaultMaxBytes: number = DEFAULT_MAX_BYTES): TranslationCache {
+  let dbPromise: Promise<IDBDatabase> | null = null;
+  /** Seeded lazily (once) from a real scan, then kept accurate incrementally — see the module header comment. */
+  let runningTotalBytes: number | null = null;
+
+  function getDb(): Promise<IDBDatabase> {
+    if (!dbPromise) dbPromise = openDb();
+    return dbPromise;
+  }
+
+  async function ensureRunningTotal(db: IDBDatabase): Promise<number> {
+    if (runningTotalBytes === null) runningTotalBytes = await scanTotalBytes(db);
+    return runningTotalBytes;
+  }
+
   async function get(key: string): Promise<string | null> {
-    const db = await openDb();
-    try {
-      return await new Promise<string | null>((resolve, reject) => {
-        const tx = db.transaction(STORE_NAME, 'readwrite');
-        const store = tx.objectStore(STORE_NAME);
-        const request = store.get(key);
-        request.onsuccess = () => {
-          const record = request.result as CacheRecord | undefined;
-          if (!record) {
-            resolve(null);
-            return;
-          }
-          // Touch lastUsed so oldest-first eviction reflects real recency,
-          // not just insertion order.
-          store.put({ ...record, lastUsed: Date.now() });
-          resolve(record.value);
-        };
-        request.onerror = () => reject(request.error);
-      });
-    } finally {
-      db.close();
-    }
+    const db = await getDb();
+    return new Promise<string | null>((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+      const request = store.get(key);
+      request.onsuccess = () => {
+        const record = request.result as CacheRecord | undefined;
+        if (!record) {
+          resolve(null);
+          return;
+        }
+        // Touch lastUsed so oldest-first eviction reflects real recency,
+        // not just insertion order.
+        store.put({ ...record, lastUsed: Date.now() });
+        resolve(record.value);
+      };
+      request.onerror = () => reject(request.error);
+    });
   }
 
   async function set(key: string, value: string): Promise<void> {
-    const db = await openDb();
-    try {
-      const record: CacheRecord = { key, value, size: estimateSize(key, value), lastUsed: Date.now() };
-      await new Promise<void>((resolve, reject) => {
-        const tx = db.transaction(STORE_NAME, 'readwrite');
-        tx.objectStore(STORE_NAME).put(record);
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => reject(tx.error);
-      });
-    } finally {
-      db.close();
-    }
+    const db = await getDb();
+    await ensureRunningTotal(db);
+    const size = estimateSize(key, value);
+    const record: CacheRecord = { key, value, size, lastUsed: Date.now() };
+
+    const previousSize = await new Promise<number>((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+      const getRequest = store.get(key);
+      getRequest.onsuccess = () => {
+        const existing = getRequest.result as CacheRecord | undefined;
+        store.put(record);
+        resolve(existing?.size ?? 0);
+      };
+      getRequest.onerror = () => reject(getRequest.error);
+    });
+
+    runningTotalBytes = (runningTotalBytes ?? 0) - previousSize + size;
     await evictUntilUnderBudget(defaultMaxBytes);
   }
 
   async function getSizeBytes(): Promise<number> {
-    const db = await openDb();
-    try {
-      return await new Promise<number>((resolve, reject) => {
-        let total = 0;
-        const cursorRequest = db.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME).openCursor();
-        cursorRequest.onsuccess = () => {
-          const cursor = cursorRequest.result;
-          if (!cursor) {
-            resolve(total);
-            return;
-          }
-          total += (cursor.value as CacheRecord).size;
-          cursor.continue();
-        };
-        cursorRequest.onerror = () => reject(cursorRequest.error);
-      });
-    } finally {
-      db.close();
-    }
+    const db = await getDb();
+    return ensureRunningTotal(db);
   }
 
   async function evictUntilUnderBudget(maxBytes: number = defaultMaxBytes): Promise<void> {
-    const db = await openDb();
-    try {
-      await new Promise<void>((resolve, reject) => {
-        const tx = db.transaction(STORE_NAME, 'readwrite');
-        const store = tx.objectStore(STORE_NAME);
-        let total = 0;
-        const sizeRequest = store.openCursor();
-        sizeRequest.onsuccess = () => {
-          const cursor = sizeRequest.result;
-          if (cursor) {
-            total += (cursor.value as CacheRecord).size;
-            cursor.continue();
-            return;
-          }
-          if (total <= maxBytes) {
-            resolve();
-            return;
-          }
-          // Oldest-first eviction, via the lastUsed index.
-          const index = store.index(LAST_USED_INDEX);
-          const evictCursorRequest = index.openCursor();
-          evictCursorRequest.onsuccess = () => {
-            const evictCursor = evictCursorRequest.result;
-            if (!evictCursor || total <= maxBytes) {
-              resolve();
-              return;
-            }
-            total -= (evictCursor.value as CacheRecord).size;
-            evictCursor.delete();
-            evictCursor.continue();
-          };
-          evictCursorRequest.onerror = () => reject(evictCursorRequest.error);
-        };
-        sizeRequest.onerror = () => reject(sizeRequest.error);
-      });
-    } finally {
-      db.close();
-    }
+    const db = await getDb();
+    const total = await ensureRunningTotal(db);
+    if (total <= maxBytes) return;
+
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+      const index = store.index(LAST_USED_INDEX);
+      const evictCursorRequest = index.openCursor();
+      evictCursorRequest.onsuccess = () => {
+        const cursor = evictCursorRequest.result;
+        if (!cursor || (runningTotalBytes ?? 0) <= maxBytes) {
+          resolve();
+          return;
+        }
+        runningTotalBytes = (runningTotalBytes ?? 0) - (cursor.value as CacheRecord).size;
+        cursor.delete();
+        cursor.continue();
+      };
+      evictCursorRequest.onerror = () => reject(evictCursorRequest.error);
+    });
   }
 
   async function clear(): Promise<void> {
-    const db = await openDb();
-    try {
-      await new Promise<void>((resolve, reject) => {
-        const tx = db.transaction(STORE_NAME, 'readwrite');
-        tx.objectStore(STORE_NAME).clear();
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => reject(tx.error);
-      });
-    } finally {
-      db.close();
-    }
+    const db = await getDb();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      tx.objectStore(STORE_NAME).clear();
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+    runningTotalBytes = 0;
   }
 
   return { get, set, getSizeBytes, evictUntilUnderBudget, clear };

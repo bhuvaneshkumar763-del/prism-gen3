@@ -124,4 +124,98 @@ describe('groupNodesForBatching', () => {
     // forward since both prior nodes were already flushed as the head.
     expect(groups).toEqual([[s1, s2], [s3]]);
   });
+
+  describe('tag-cluster isolation', () => {
+    it('isolates a chained-tag node (the reported #go#be example) from surrounding prose into its own group', () => {
+      const p = document.createElement('p');
+      const before = textNode('Check out ');
+      const tag = textNode('#go#be');
+      const after = textNode(' for updates.');
+      p.append(before, tag, after);
+
+      const groups = groupNodesForBatching([before, tag, after], { groupByBlock: true, maxGroupChars: 2000 });
+
+      expect(groups).toEqual([[before], [tag], [after]]);
+    });
+
+    it('isolates a plain hashtag node', () => {
+      const p = document.createElement('p');
+      const before = textNode('Tagged: ');
+      const tag = textNode('#travel');
+      p.append(before, tag);
+
+      const groups = groupNodesForBatching([before, tag], { groupByBlock: true, maxGroupChars: 2000 });
+
+      expect(groups).toEqual([[before], [tag]]);
+    });
+
+    it('isolates a mention node', () => {
+      const p = document.createElement('p');
+      const before = textNode('cc ');
+      const mention = textNode('@user');
+      p.append(before, mention);
+
+      const groups = groupNodesForBatching([before, mention], { groupByBlock: true, maxGroupChars: 2000 });
+
+      expect(groups).toEqual([[before], [mention]]);
+    });
+
+    it('isolates a CJK tag cluster', () => {
+      const p = document.createElement('p');
+      const before = textNode('标签: ');
+      const tags = textNode('#动作，#冒险');
+      p.append(before, tags);
+
+      const groups = groupNodesForBatching([before, tags], { groupByBlock: true, maxGroupChars: 2000 });
+
+      expect(groups).toEqual([[before], [tags]]);
+    });
+
+    it('does NOT isolate a tag embedded inside a sentence (whole-node match only)', () => {
+      const p = document.createElement('p');
+      const sentence = textNode('Footnote #1 explains this in detail.');
+      p.append(sentence);
+
+      const groups = groupNodesForBatching([sentence], { groupByBlock: true, maxGroupChars: 2000 });
+
+      expect(groups).toEqual([[sentence]]);
+    });
+
+    it('isolates two adjacent separate tag nodes as two singleton groups, not merged together', () => {
+      const p = document.createElement('p');
+      const tagA = textNode('#cat');
+      const tagB = textNode('#dog');
+      p.append(tagA, tagB);
+
+      const groups = groupNodesForBatching([tagA, tagB], { groupByBlock: true, maxGroupChars: 2000 });
+
+      expect(groups).toEqual([[tagA], [tagB]]);
+    });
+
+    it('resumes normal block/sentence grouping for prose after an isolated tag', () => {
+      const p = document.createElement('p');
+      const tag = textNode('#news');
+      const s1 = textNode('First sentence.');
+      const s2 = textNode(' Second sentence.');
+      p.append(tag, s1, s2);
+
+      const groups = groupNodesForBatching([tag, s1, s2], { groupByBlock: true, maxGroupChars: 2000 });
+
+      expect(groups).toEqual([[tag], [s1, s2]]);
+    });
+
+    it('ordinary prose grouping is unaffected when no tag is present (regression check)', () => {
+      const p = document.createElement('p');
+      const a = textNode('Hello ');
+      const b = document.createElement('b');
+      const bText = textNode('world');
+      b.append(bText);
+      const c = textNode('.');
+      p.append(a, b, c);
+
+      const groups = groupNodesForBatching([a, bText, c], { groupByBlock: true, maxGroupChars: 2000 });
+
+      expect(groups).toEqual([[a, bText, c]]);
+    });
+  });
 });

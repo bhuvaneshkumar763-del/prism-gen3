@@ -9,6 +9,7 @@
     "enter-beta-prerelease",
     "fix-broken-default-and-silent-failure",
     "popup-full-parity",
-    "settings-full-parity"
+    "settings-full-parity",
+    "speed-dynamic-tags"
   ]
 }

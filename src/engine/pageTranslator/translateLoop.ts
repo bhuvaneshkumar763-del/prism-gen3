@@ -54,6 +54,8 @@ export function createPageTranslator(options: PageTranslatorOptions) {
   let currentTargetLanguage = '';
   let translationRoutineHandle: ReturnType<typeof setTimeout> | null = null;
 
+  /** The last content this engine actually processed for a tracked node — see `queueOrRequeueIfChanged`'s doc comment for why this exists alongside `dedupe`. */
+  const lastSeenText = new WeakMap<Text, string>();
   const requeueAt = new WeakMap<Text, number>();
   const missingResultAttempts = new WeakMap<Text, number>();
 
@@ -90,6 +92,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
   function queueNode(node: Text): boolean {
     if (dedupe.isTracked(node)) return false;
     dedupe.track([node]);
+    lastSeenText.set(node, node.data);
     queue.push(node);
     // Nodes discovered after the initial translatePage() sweep (new DOM from
     // the mutation watcher/resweep) need their pre-translation text recorded
@@ -103,8 +106,33 @@ export function createPageTranslator(options: PageTranslatorOptions) {
   function requeueChangedTextNode(node: Text): void {
     requeueAt.set(node, Date.now());
     dedupe.track([node]);
+    lastSeenText.set(node, node.data);
     queue.push(node);
     wakeRoutine();
+  }
+
+  /**
+   * Used by onNewRoot/onResweep's node collection instead of `queueNode`
+   * directly. A node can already be `dedupe.isTracked()` not because it's
+   * still live in the queue, but because it was detached, had its `.data`
+   * changed WHILE DETACHED (a disconnected node generates no mutation
+   * record at all — see mutationWatcher.ts), and has since reappeared via
+   * a childList mutation — common in virtualized/recycled list widgets
+   * that pool and reuse DOM nodes. `queueNode()` alone would silently skip
+   * it forever, since `WeakSet`-based identity tracking survives as long
+   * as anything (e.g. the widget's own node pool) holds a live reference.
+   * Comparing against `lastSeenText` catches this: if a tracked node's
+   * current content no longer matches what this engine last saw for it,
+   * treat the reappearance as a real content change, same as an in-place
+   * characterData mutation would be.
+   */
+  function queueOrRequeueIfChanged(node: Text): boolean {
+    if (!dedupe.isTracked(node)) return queueNode(node);
+    if (lastSeenText.get(node) !== node.data) {
+      requeueChangedTextNode(node);
+      return true;
+    }
+    return false;
   }
 
   function noteMissingResult(node: Text): void {
@@ -180,6 +208,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
               if (translated) {
                 mutationWatcher.noteOwnWrite(node, translated);
                 node.data = translated;
+                lastSeenText.set(node, translated);
               } else {
                 noteMissingResult(node);
               }
@@ -209,7 +238,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     isTranslated: () => pageLanguageState === 'translated',
     isNoTranslateNode,
     onNewRoot(root) {
-      const added = collectTextNodes(root).filter((n) => queueNode(n)).length;
+      const added = collectTextNodes(root).filter((n) => queueOrRequeueIfChanged(n)).length;
       if (added > 0) wakeRoutine();
     },
     onChangedTextNode(node) {
@@ -227,7 +256,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     isTranslated: () => pageLanguageState === 'translated',
     isPageVisible: () => document.visibilityState === 'visible',
     onResweep() {
-      const added = collectTextNodes(document.body).filter((n) => queueNode(n)).length;
+      const added = collectTextNodes(document.body).filter((n) => queueOrRequeueIfChanged(n)).length;
       if (added > 0) wakeRoutine();
       return added > 0;
     },
@@ -270,6 +299,9 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     nodesToRestore = nodes.map((node) => ({ node, original: node.data }));
     dedupe.reset();
     dedupe.track(nodes);
+    nodes.forEach((node) => {
+      lastSeenText.set(node, node.data);
+    });
     queue = [...nodes];
 
     consecutiveBatchFailures = 0;

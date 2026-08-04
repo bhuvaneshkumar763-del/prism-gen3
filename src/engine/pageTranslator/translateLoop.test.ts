@@ -100,6 +100,63 @@ describe('createPageTranslator', () => {
     pageTranslator.restorePage();
   });
 
+  it('translates a detached-then-reattached node whose content changed while off-DOM (recycled/virtualized list nodes)', async () => {
+    document.body.innerHTML = '<p>hello</p>';
+    const pageTranslator = createPageTranslator({
+      translator: uppercaseTranslator(),
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+
+    await pageTranslator.translatePage('es');
+    await waitFor(() => document.body.textContent === 'HELLO');
+
+    const p = document.body.querySelector('p') as HTMLParagraphElement;
+    const textNode = p.firstChild as Text;
+
+    // Simulate a virtualized-list-style node pool: detach the node (no
+    // mutation record fires for a disconnected node), mutate its content
+    // while off-DOM, then reattach it with the new content already set.
+    p.removeChild(textNode);
+    textNode.data = 'reused for new content';
+    p.appendChild(textNode);
+
+    await waitFor(() => p.textContent === 'REUSED FOR NEW CONTENT');
+    expect(p.textContent).toBe('REUSED FOR NEW CONTENT');
+
+    pageTranslator.restorePage();
+  });
+
+  it('does not re-translate a detached-then-reattached node whose content is unchanged (no spurious requeue)', async () => {
+    document.body.innerHTML = '<p>hello</p>';
+    const translateBatch = vi.fn(async (request: { pieces: string[][] }) =>
+      request.pieces.map((piece): PieceOutcome => ok(piece.map((s) => s.toUpperCase()))),
+    );
+    const pageTranslator = createPageTranslator({
+      translator: { translateBatch },
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+
+    await pageTranslator.translatePage('es');
+    await waitFor(() => document.body.textContent === 'HELLO');
+    translateBatch.mockClear();
+
+    const p = document.body.querySelector('p') as HTMLParagraphElement;
+    const textNode = p.firstChild as Text;
+    p.removeChild(textNode);
+    // No content change this time — the node still holds the translated text.
+    p.appendChild(textNode);
+
+    // Give the mutation watcher/resweep a real chance to (wrongly) queue it.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    expect(translateBatch).not.toHaveBeenCalled();
+    expect(p.textContent).toBe('HELLO');
+
+    pageTranslator.restorePage();
+  });
+
   it('notifies state-change listeners on translate and restore', async () => {
     document.body.innerHTML = '<p>hello</p>';
     const pageTranslator = createPageTranslator({

@@ -51,6 +51,15 @@ const SKIP_UI_PROTOCOLS = ['chrome-extension:', 'moz-extension:', 'about:'];
  */
 export default defineContentScript({
   matches: ['*://*/*'],
+  // Post-launch speed pass: no explicit runAt meant WXT/Chrome defaulted to
+  // document_idle (roughly "after the page's load event"), which on a page
+  // with slow images/ads/trackers can start this script — and therefore
+  // config load, the auto-translate decision, and the mutation observer's
+  // attachment — meaningfully late. document_end fires right after DOM
+  // parsing, well before subresources finish; nothing here depends on
+  // subresources being loaded (configStore.onReady() is still awaited
+  // before anything real happens).
+  runAt: 'document_end',
   main() {
     void configStore.onReady();
 

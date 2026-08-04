@@ -22,10 +22,23 @@ export function createConfigStore(backend: StorageBackend = localStorageBackend)
   let configIsReady = false;
   let readyPromise: Promise<void> | null = null;
 
-  async function migrateIfNeeded(): Promise<void> {
+  /**
+   * Returns the raw entries `initConfig()` should read from — the snapshot
+   * this function already fetched to check the version, whether or not a
+   * migration actually ran. Post-launch speed pass: this used to only
+   * migrate, and `initConfig()` did its own separate `backend.getAll()`
+   * right after — a second full `browser.storage.local.get(null)` round
+   * trip on every fresh content-script load and background service-worker
+   * wake, even in the common case (already at the current version) where
+   * nothing changed between the two reads. `applyConfigMigrations()`
+   * already returns the complete post-migration key set (not a patch), so
+   * it can be handed straight to the caller instead of re-reading it back
+   * from storage.
+   */
+  async function migrateIfNeeded(): Promise<Record<string, unknown>> {
     const raw = await backend.getAll();
     const storedVersion = typeof raw[VERSION_KEY] === 'number' ? (raw[VERSION_KEY] as number) : 0;
-    if (storedVersion >= CONFIG_SCHEMA_VERSION) return;
+    if (storedVersion >= CONFIG_SCHEMA_VERSION) return raw;
 
     const migrated = applyConfigMigrations(raw, storedVersion);
     const changedEntries = Object.fromEntries(Object.entries(migrated).filter(([key, value]) => raw[key] !== value));
@@ -43,11 +56,11 @@ export function createConfigStore(backend: StorageBackend = localStorageBackend)
     }
 
     await backend.set({ [VERSION_KEY]: CONFIG_SCHEMA_VERSION });
+    return { ...migrated, [VERSION_KEY]: CONFIG_SCHEMA_VERSION };
   }
 
   async function initConfig(): Promise<void> {
-    await migrateIfNeeded();
-    const raw = await backend.getAll();
+    const raw = await migrateIfNeeded();
     for (const key of Object.keys(defaultConfig) as ConfigKey[]) {
       if (Object.hasOwn(raw, key)) {
         (state as Record<ConfigKey, unknown>)[key] = raw[key];
