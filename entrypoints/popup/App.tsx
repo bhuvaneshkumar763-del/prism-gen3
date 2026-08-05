@@ -42,7 +42,7 @@ function App() {
   const [status, setStatus] = createSignal<'idle' | 'busy' | 'error'>('idle');
   const [pageState, setPageState] = createSignal<PageLanguageState>('original');
   const [errorMessage, setErrorMessage] = createSignal<string | null>(null);
-  const [targetLanguage, setTargetLanguage] = createSignal('es');
+  const [targetLanguage, setTargetLanguage] = createSignal('en');
   const [provider, setProvider] = createSignal('google');
   const [ready, setReady] = createSignal(false);
   const [hostname, setHostname] = createSignal('');

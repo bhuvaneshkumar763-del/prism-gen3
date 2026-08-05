@@ -83,7 +83,7 @@ export type Config = z.infer<typeof configSchema>;
 export type ConfigKey = keyof Config;
 
 export const defaultConfig: Config = {
-  targetLanguage: 'es',
+  targetLanguage: 'en',
   sourceLanguage: 'auto',
   // 'google' (free, no signup, no API key — see docs/decisions/0004-provider-scope.md)
   // is the only provider that works with zero configuration. This was a

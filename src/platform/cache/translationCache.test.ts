@@ -159,6 +159,111 @@ describe('translationCache', () => {
     // were still present).
     expect(sizeAfterOverwrite - sizeAfterFirst).toBeCloseTo(2000, -2);
   });
+
+  describe('connection resilience (real user-reported bug: "Attempt to get a record from database without an in-progress transaction")', () => {
+    /** Intercepts indexedDB.open() and returns the real IDBDatabase the cache ends up holding internally, so a test can simulate the browser closing it out from under the cache. */
+    function captureNextOpenedDb(): { db: () => IDBDatabase | undefined } {
+      let captured: IDBDatabase | undefined;
+      const originalOpen = globalThis.indexedDB.open.bind(globalThis.indexedDB);
+      vi.spyOn(globalThis.indexedDB, 'open').mockImplementation((...args: Parameters<typeof originalOpen>) => {
+        const request = originalOpen(...args);
+        request.addEventListener('success', () => {
+          captured = request.result;
+        });
+        return request;
+      });
+      return { db: () => captured };
+    }
+
+    it('transparently reopens after the browser closes the connection (memory pressure, low storage, etc.)', async () => {
+      // fake-indexeddb's dispatchEvent() rejects synthetic 'close' events
+      // (InvalidStateError — its FakeEventTarget only allows internally-
+      // triggered dispatch for this event type), so this captures the
+      // listener this module registers via addEventListener('close', ...)
+      // and invokes it directly — exercising the exact same callback body
+      // a real browser-initiated close would run, without depending on
+      // fake-indexeddb's dispatch restriction.
+      let closeListener: (() => void) | undefined;
+      const originalOpen = globalThis.indexedDB.open.bind(globalThis.indexedDB);
+      vi.spyOn(globalThis.indexedDB, 'open').mockImplementation((...args: Parameters<typeof originalOpen>) => {
+        const request = originalOpen(...args);
+        request.addEventListener('success', () => {
+          const db = request.result;
+          const originalAddEventListener = db.addEventListener.bind(db);
+          vi.spyOn(db, 'addEventListener').mockImplementation(
+            (type: string, listener: EventListenerOrEventListenerObject) => {
+              if (type === 'close' && typeof listener === 'function') closeListener = listener as () => void;
+              return originalAddEventListener(type, listener);
+            },
+          );
+        });
+        return request;
+      });
+
+      const cache = createTranslationCache();
+      await cache.set('a', 'hello');
+      expect(closeListener).toBeDefined();
+
+      // Simulate a browser-initiated close — this is exactly what mobile
+      // browsers do more aggressively than desktop, and what the old
+      // always-open-fresh/always-close design never lived long enough to
+      // hit.
+      closeListener?.();
+
+      // The next call must transparently reopen, not keep failing forever.
+      await expect(cache.get('a')).resolves.toBe('hello');
+      await expect(cache.set('b', 'world')).resolves.toBeUndefined();
+      await expect(cache.get('b')).resolves.toBe('world');
+    });
+
+    it('retries once with a fresh connection when a transaction fails mid-flight, without throwing', async () => {
+      const capture = captureNextOpenedDb();
+      const cache = createTranslationCache();
+      await cache.set('warm', '1'); // establishes and caches a connection
+      const db = capture.db();
+      expect(db).toBeDefined();
+      if (!db) throw new Error('unreachable');
+
+      // Simulate the connection dying between getDb() resolving and the
+      // transaction actually being created — db.onclose alone doesn't
+      // cover this race, only withDb()'s retry does.
+      let failedOnce = false;
+      const originalTransaction = db.transaction.bind(db);
+      vi.spyOn(db, 'transaction').mockImplementation((...args: Parameters<typeof originalTransaction>) => {
+        if (!failedOnce) {
+          failedOnce = true;
+          throw new Error('simulated: connection is closing');
+        }
+        return originalTransaction(...args);
+      });
+
+      await expect(cache.get('warm')).resolves.toBe('1');
+      expect(failedOnce).toBe(true);
+    });
+
+    it('propagates a real error if the connection is unusable even after the retry (does not loop forever or hang)', async () => {
+      const capture = captureNextOpenedDb();
+      const cache = createTranslationCache();
+      await cache.set('warm', '1');
+      const db = capture.db();
+      expect(db).toBeDefined();
+      if (!db) throw new Error('unreachable');
+
+      // The first attempt fails via the already-cached (now broken)
+      // connection...
+      vi.spyOn(db, 'transaction').mockImplementation(() => {
+        throw new Error('simulated: connection is permanently unusable');
+      });
+      // ...and the retry's fresh reopen fails too, so there's genuinely no
+      // way through — confirms withDb() gives up after one retry instead
+      // of hanging or looping.
+      vi.spyOn(globalThis.indexedDB, 'open').mockImplementation(() => {
+        throw new Error('simulated: storage unavailable');
+      });
+
+      await expect(cache.get('warm')).rejects.toThrow();
+    });
+  });
 });
 
 describe('cacheKeyFor', () => {

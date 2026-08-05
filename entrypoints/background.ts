@@ -132,8 +132,20 @@ export default defineBackground(() => {
     const pieceKeys = pieces.map((piece) =>
       cacheKeyFor(providerId, sourceLanguage, targetLanguage, JSON.stringify(piece)),
     );
+    // Caching is purely an optimization — a cache-layer failure (a closed
+    // IndexedDB connection, a quota/permission issue) must never break an
+    // otherwise-successful translation. Treat a failed read as a cache
+    // miss (falls through to a live provider call below) and a failed
+    // write as a no-op, both logged but not propagated.
     const cachedValues = cacheEnabled
-      ? await Promise.all(pieceKeys.map((key) => translationCache.get(key)))
+      ? await Promise.all(
+          pieceKeys.map((key) =>
+            translationCache.get(key).catch((e) => {
+              console.warn('[prism] translation cache read failed, treating as a cache miss', e);
+              return null;
+            }),
+          ),
+        )
       : pieces.map(() => null);
 
     const missingIndices: number[] = [];
@@ -166,7 +178,12 @@ export default defineBackground(() => {
         missingIndices.map(async (i, idx) => {
           const outcome = freshOutcomes[idx];
           const key = pieceKeys[i];
-          if (outcome?.ok && key) await translationCache.set(key, JSON.stringify(outcome.value));
+          if (!outcome?.ok || !key) return;
+          try {
+            await translationCache.set(key, JSON.stringify(outcome.value));
+          } catch (e) {
+            console.warn('[prism] translation cache write failed, continuing without caching this piece', e);
+          }
         }),
       );
     }
