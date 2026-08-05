@@ -27,6 +27,23 @@ describe('collectTextNodes', () => {
     const nodes = collectTextNodes(document.body);
     expect(nodes.map((n) => n.data)).toEqual(['Static']);
   });
+
+  it('skips a bare "#" or "@" marker node, real bug: alicesw.com tag list markup', () => {
+    // <a><em>#</em>travel</a> — the marker is its own Text node, separate
+    // from the word. Nothing useful to translate in a lone punctuation
+    // character, and leaving it out of the queue means it can never be
+    // mangled by a provider (grouping.ts's tag-anchor isolation still
+    // recognizes the cluster as a tag via the anchor's live textContent).
+    document.body.innerHTML = '<a><em>#</em>travel</a><a><em>@</em>user</a>';
+    const nodes = collectTextNodes(document.body);
+    expect(nodes.map((n) => n.data)).toEqual(['travel', 'user']);
+  });
+
+  it('does not skip a marker character that is part of a larger word', () => {
+    document.body.innerHTML = '<p>#travel</p>';
+    const nodes = collectTextNodes(document.body);
+    expect(nodes.map((n) => n.data)).toEqual(['#travel']);
+  });
 });
 
 describe('isNoTranslateNode', () => {

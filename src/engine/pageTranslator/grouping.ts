@@ -55,6 +55,25 @@ import { isPureTagText } from './tagText';
  *    structurally nothing left to scramble. This only changes behavior
  *    when `hint.groupByBlock` is true (`google`/`llm` today) — providers
  *    without a `batchingHint` already send one node per piece regardless.
+ *
+ * 4. **Isolate a tag ANCHOR's text nodes together, even when the tag is
+ *    split across sibling nodes.** Real tag lists (confirmed against a
+ *    real reported bug — alicesw.com) often mark up a tag as
+ *    `<a><em>#</em>travel</a>`: the marker and the word are two separate
+ *    Text nodes, so neither one alone matches `isPureTagText` and point 3
+ *    above never fires. A page with 15 such tags in a row was grouping ALL
+ *    of them into one shared-block-ancestor piece — the same multi-item
+ *    scrambling point 3 exists to prevent, just from a different DOM
+ *    shape. `tagAnchorFor` walks up from a node to its nearest `<a>`
+ *    ancestor (stopping at a block boundary); if that anchor's own full
+ *    `textContent` reads as a pure tag, every Text node under that
+ *    specific anchor is grouped together and isolated from neighboring
+ *    anchors — one piece per tag, not one piece for the whole list. (The
+ *    bare `#`/`@` marker node itself is filtered out earlier, in
+ *    `collectTextNodes.ts`, so in the common case this only ends up
+ *    isolating the word — the anchor-text check still reads the marker
+ *    off the live DOM to recognize the cluster as a tag in the first
+ *    place.)
  */
 
 const BLOCK_TAGS = new Set([
@@ -91,6 +110,24 @@ function nearestBlockAncestor(node: Text): Element | null {
   return el;
 }
 
+/** Walks up from `node` to its nearest `<a>` ancestor, stopping at a block boundary — the marker/word split described in point 4 above is always inside one anchor closer than any block element. */
+function nearestTagAnchor(node: Text): Element | null {
+  let el = node.parentElement;
+  while (el && !BLOCK_TAGS.has(el.tagName)) {
+    if (el.tagName === 'A') return el;
+    el = el.parentElement;
+  }
+  return null;
+}
+
+/** The isolation key for a node isolated by point 3 or point 4 above — `null` means "not isolated, use normal grouping." Point 3 keys on the node itself (always its own group); point 4 keys on the shared anchor (so sibling nodes under the same tag anchor merge into one group). */
+function isolationKeyFor(node: Text): Text | Element | null {
+  if (isPureTagText(node.data.trim())) return node;
+  const anchor = nearestTagAnchor(node);
+  if (anchor && isPureTagText((anchor.textContent ?? '').trim())) return anchor;
+  return null;
+}
+
 function endsAtSentenceBoundary(node: Text): boolean {
   return SENTENCE_END.test(node.data);
 }
@@ -105,23 +142,37 @@ export function groupNodesForBatching(nodes: Text[], hint: BatchingHint | undefi
   let currentBlock: Element | null = null;
   let currentChars = 0;
   let groupEndsAtBoundary = false;
+  let currentIsolationKey: Text | Element | null = null;
 
   function flush(): void {
     if (currentGroup.length > 0) groups.push(currentGroup);
     currentGroup = [];
     currentChars = 0;
     groupEndsAtBoundary = false;
+    currentIsolationKey = null;
   }
 
   for (const node of nodes) {
-    if (isPureTagText(node.data.trim())) {
-      // Isolate into its own singleton group — flush whatever was
-      // building, push this node alone, flush again so nothing joins it.
-      // See this function's header comment (point 3) for why.
-      flush();
-      groups.push([node]);
-      currentBlock = nearestBlockAncestor(node);
+    const isolationKey = isolationKeyFor(node);
+    if (isolationKey !== null) {
+      if (currentIsolationKey !== isolationKey) {
+        // Either starting fresh, leaving normal grouping, or moving from one
+        // isolated tag to a different one — either way, whatever was
+        // building doesn't belong with this node. See this function's
+        // header comment (points 3 and 4) for why.
+        flush();
+        currentIsolationKey = isolationKey;
+        currentBlock = nearestBlockAncestor(node);
+      }
+      currentGroup.push(node);
+      currentChars += node.data.length;
       continue;
+    }
+
+    if (currentIsolationKey !== null) {
+      // Leaving an isolated tag group — the next node is ordinary prose, so
+      // close the tag group out before resuming normal grouping.
+      flush();
     }
 
     const block = nearestBlockAncestor(node);

@@ -204,6 +204,46 @@ describe('groupNodesForBatching', () => {
       expect(groups).toEqual([[tag], [s1, s2]]);
     });
 
+    it('isolates each tag anchor in a list where the marker and word are separate sibling nodes (real bug: alicesw.com)', () => {
+      // <a><em>#</em>travel</a><a><em>#</em>tech</a><a><em>#</em>food</a> —
+      // collectTextNodes.ts already drops the bare "#" marker nodes, so
+      // grouping only ever sees the three word nodes here; each one's
+      // nearest <a> ancestor's full textContent ("#travel" etc, marker
+      // still in the live DOM) is what makes it recognizable as a tag.
+      const div = document.createElement('div');
+      const anchors = ['travel', 'tech', 'food'].map((word) => {
+        const a = document.createElement('a');
+        const em = document.createElement('em');
+        em.append(textNode('#'));
+        const wordNode = textNode(word);
+        a.append(em, wordNode);
+        div.append(a);
+        return wordNode;
+      });
+
+      const groups = groupNodesForBatching(anchors, { groupByBlock: true, maxGroupChars: 2000 });
+
+      expect(groups).toEqual([[anchors[0]], [anchors[1]], [anchors[2]]]);
+    });
+
+    it('groups multiple word nodes under the SAME tag anchor together, not split apart', () => {
+      // A tag word split across two inline elements within one anchor:
+      // <a><em>#</em><span>sci</span>-fi</a>
+      const a = document.createElement('a');
+      const em = document.createElement('em');
+      em.append(textNode('#'));
+      const span = document.createElement('span');
+      const sci = textNode('sci');
+      span.append(sci);
+      const fi = textNode('-fi');
+      a.append(em, span, fi);
+      document.body.append(a);
+
+      const groups = groupNodesForBatching([sci, fi], { groupByBlock: true, maxGroupChars: 2000 });
+
+      expect(groups).toEqual([[sci, fi]]);
+    });
+
     it('ordinary prose grouping is unaffected when no tag is present (regression check)', () => {
       const p = document.createElement('p');
       const a = textNode('Hello ');
