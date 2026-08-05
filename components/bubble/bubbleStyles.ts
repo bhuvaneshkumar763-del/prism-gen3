@@ -29,7 +29,7 @@ export const BUBBLE_STYLES = `
     opacity: .55; transition: opacity .2s ease, transform .15s ease, box-shadow .2s ease;
     touch-action: none;
   }
-  .ball.active { opacity: 1; }
+  .wrap:hover .ball, .ball.active { opacity: 1; }
   .ball:active { cursor: grabbing; transform: scale(.94); }
   .ball .ic { width: 21px; height: 21px; pointer-events: none; }
   .ball .ic-or { display: none; }
@@ -56,20 +56,8 @@ export const BUBBLE_STYLES = `
     transform-origin: center center;
     transition: opacity .16s ease, transform .16s ease, visibility .16s;
   }
-  .panel.pinned {
+  .wrap:hover .panel, .panel.pinned {
     opacity: 1; visibility: visible; transform: scale(1);
-  }
-  /* Real mouse devices only — on touch (Android, etc.) there's no pointer
-     to "leave" the ball with, so many mobile browsers apply :hover on tap
-     and never clear it, permanently pinning the panel open. Confirmed via
-     a real user report: the panel (From/To/Service selects) was stuck
-     visible at all times on Android, on top of the page, layered with the
-     ball. Touch users open the panel via long-press (.panel.pinned) only. */
-  @media (hover: hover) {
-    .wrap:hover .ball { opacity: 1; }
-    .wrap:hover .panel {
-      opacity: 1; visibility: visible; transform: scale(1);
-    }
   }
 
   .head {

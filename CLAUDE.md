@@ -1639,20 +1639,20 @@ fake-indexeddb, so the close-listener is captured via `addEventListener`
 and invoked directly — still exercises the exact same callback body a real
 browser-initiated close would run).
 
-**2. `components/bubble/bubbleStyles.ts` — the translation-options panel
-stuck permanently open on Android.** `.wrap:hover .panel` reveals the
-bubble's From/To/Service panel on hover — correct on desktop, but touch
-devices have no pointer to "leave" an element with, so many mobile
-browsers apply `:hover` on tap and never clear it, permanently pinning the
-panel open on top of the page alongside the ball. Fixed by moving the
-hover-reveal rules behind `@media (hover: hover)`, so touch-primary
-devices (`hover: none`) never get panel-on-hover at all — only the
-existing `.panel.pinned` (long-press) path opens it there, which was
-already the intended touch interaction. **Verified for real**: in a
-genuinely touch/mobile-emulated Playwright context (`hasTouch: true,
-isMobile: true` — a *context*-level setting, not retrofittable onto an
-existing page), confirmed `(hover: hover)` evaluates `false` and that a
-plain touch tap on the ball no longer leaves the panel visible.
+**2. `components/bubble/bubbleStyles.ts` — misdiagnosed, reverted.** The
+user's actual report was a different, unrelated element appearing on
+Android ("a table of translation options on top, in addition to the
+bubble") — not the bubble's own hover panel. This was guessed at without
+confirming against the real symptom: `.wrap:hover .panel` was gated behind
+`@media (hover: hover)` on the theory that mobile browsers stick `:hover`
+after a tap, verified only in the narrow sense that the CSS did what it
+was written to do, never against what the user actually saw. The user
+corrected this directly — "that's not the problem, revert that" — and the
+change was reverted in full, byte-for-byte back to what it was before.
+**The real cause of the "table on top" report is still open** — don't
+re-attempt this same fix; whatever's actually showing up needs to be
+identified from the user's own description or a screenshot before
+touching this file again.
 
 **3. `src/shared/config/schema.ts` — default target language was Spanish,
 not English.** `defaultConfig.targetLanguage` had been `'es'` since early
