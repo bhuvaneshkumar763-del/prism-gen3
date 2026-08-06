@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createBuiltinProvider } from './builtin';
+import { checkBuiltinAvailability, createBuiltinProvider } from './builtin';
 
 describe('createBuiltinProvider', () => {
   afterEach(() => {
@@ -93,5 +93,40 @@ describe('createBuiltinProvider', () => {
     const results = await provider.translateBatch({ sourceLanguage: 'en', targetLanguage: 'fr', pieces: [['hi']] });
 
     expect(results[0]?.ok).toBe(false);
+  });
+});
+
+describe('checkBuiltinAvailability', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('reports hasApi: false when the Translator API is not present in this context', async () => {
+    vi.stubGlobal('Translator', undefined);
+
+    const result = await checkBuiltinAvailability('en', 'es');
+
+    expect(result).toEqual({ hasApi: false, languagePairAvailability: null });
+  });
+
+  it('reports the real per-language-pair availability when the API is present', async () => {
+    vi.stubGlobal('Translator', { availability: vi.fn(async () => 'downloadable'), create: vi.fn() });
+
+    const result = await checkBuiltinAvailability('en', 'es');
+
+    expect(result).toEqual({ hasApi: true, languagePairAvailability: 'downloadable' });
+  });
+
+  it('still reports hasApi: true (just with a null pair result) if availability() itself throws', async () => {
+    vi.stubGlobal('Translator', {
+      availability: vi.fn(async () => {
+        throw new Error('boom');
+      }),
+      create: vi.fn(),
+    });
+
+    const result = await checkBuiltinAvailability('en', 'es');
+
+    expect(result).toEqual({ hasApi: true, languagePairAvailability: null });
   });
 });

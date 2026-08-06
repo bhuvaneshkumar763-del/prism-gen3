@@ -6,6 +6,7 @@
   },
   "changesets": [
     "bubble-full-parity",
+    "builtin-availability",
     "enter-beta-prerelease",
     "fix-broken-default-and-silent-failure",
     "new-icon",

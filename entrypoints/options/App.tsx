@@ -1,4 +1,4 @@
-import { createSignal, For, onCleanup, onMount, Show } from 'solid-js';
+import { createEffect, createSignal, For, onCleanup, onMount, Show } from 'solid-js';
 import { createStore } from 'solid-js/store';
 import { StringListEditor } from '../../components/options/StringListEditor';
 import { TabPanel } from '../../components/options/TabPanel';
@@ -7,6 +7,7 @@ import { providerDescriptors } from '../../src/engine/providers/descriptors';
 import { translationCache } from '../../src/platform/cache/translationCache';
 import { configStore } from '../../src/platform/configStore';
 import { type DiagnosticsReport, runDiagnostics } from '../../src/platform/diagnostics';
+import { sendMessage } from '../../src/platform/messaging/protocol';
 import { parseBackup, serializeBackup } from '../../src/shared/config/backup';
 import {
   addLangToAlwaysTranslate,
@@ -62,7 +63,28 @@ function App() {
   const [cacheCleared, setCacheCleared] = createSignal(false);
   const [backupMessage, setBackupMessage] = createSignal<string | null>(null);
   const [restoredDefaults, setRestoredDefaults] = createSignal(false);
+  const [builtinStatus, setBuiltinStatus] = createSignal<
+    { hasApi: boolean; languagePairAvailability: string | null } | 'loading' | null
+  >(null);
   let fileInput: HTMLInputElement | undefined;
+
+  // Real report: picking "Built-in AI" produced "[builtin] not configured
+  // or unavailable" with no way to tell why — Translator API availability
+  // is per-context and the thing that actually decides success
+  // (createProvider, called from background.ts) only ever runs in the
+  // background service worker, so this asks THAT context directly rather
+  // than checking `typeof Translator` here (which could disagree).
+  createEffect(() => {
+    if (settings.pageTranslatorProvider !== 'builtin') return;
+    setBuiltinStatus('loading');
+    const targetLanguage = settings.targetLanguage || 'es';
+    // A same-language pair (e.g. en->en) is correctly reported
+    // "unavailable" by the real API regardless of whether the feature
+    // itself works — pick a source guaranteed to differ from the target
+    // so this represents a real, checkable pair, not a false negative.
+    const sourceLanguage = targetLanguage === 'en' ? 'es' : 'en';
+    void sendMessage('checkBuiltinAvailability', { sourceLanguage, targetLanguage }).then(setBuiltinStatus);
+  });
 
   async function handleRunDiagnostics(): Promise<void> {
     setDiagnosticsRunning(true);
@@ -351,8 +373,49 @@ function App() {
               </div>
             </Show>
 
-            <Show when={settings.pageTranslatorProvider === 'google' || settings.pageTranslatorProvider === 'builtin'}>
+            <Show when={settings.pageTranslatorProvider === 'google'}>
               <p class="hint">No configuration needed for this provider.</p>
+            </Show>
+
+            <Show when={settings.pageTranslatorProvider === 'builtin'}>
+              <p class="hint">No configuration needed for this provider.</p>
+              <Show when={builtinStatus() === 'loading'}>
+                <p class="hint">Checking availability…</p>
+              </Show>
+              <Show when={builtinStatus() && builtinStatus() !== 'loading'}>
+                {(() => {
+                  const status = builtinStatus() as { hasApi: boolean; languagePairAvailability: string | null };
+                  if (!status.hasApi) {
+                    return (
+                      <p class="hint" style={{ color: 'var(--danger, #c0392b)' }}>
+                        Not available in this browser/profile — Chrome's on-device Translator API isn't present here.
+                        Check <code>chrome://on-device-translation-internals</code>, make sure Chrome is up to date, or
+                        pick a different provider above.
+                      </p>
+                    );
+                  }
+                  if (status.languagePairAvailability === 'unavailable') {
+                    return (
+                      <p class="hint">
+                        Translating into {settings.targetLanguage || 'this language'} isn't supported by the on-device
+                        model — page translation with this provider won't work for that target.
+                      </p>
+                    );
+                  }
+                  if (
+                    status.languagePairAvailability === 'downloadable' ||
+                    status.languagePairAvailability === 'downloading'
+                  ) {
+                    return (
+                      <p class="hint">
+                        The on-device model isn't downloaded yet — it'll download automatically on first use, which can
+                        take a while depending on your connection.
+                      </p>
+                    );
+                  }
+                  return <p class="hint">Available.</p>;
+                })()}
+              </Show>
             </Show>
 
             <Show

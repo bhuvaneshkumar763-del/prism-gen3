@@ -67,6 +67,22 @@ async function translatePiece(translatorInstance: BuiltinTranslatorInstance, str
   }
 }
 
+export type BuiltinAvailability = 'unavailable' | 'downloadable' | 'downloading' | 'available';
+
+/** Exposed separately from `createBuiltinProvider` so callers (e.g. an options-page "is this actually usable" check) can query real availability without translating anything. Must be called from whatever context will actually run the translation — see protocol.ts's `checkBuiltinAvailability` doc comment for why that matters. */
+export async function checkBuiltinAvailability(
+  sourceLanguage: string,
+  targetLanguage: string,
+): Promise<{ hasApi: boolean; languagePairAvailability: BuiltinAvailability | null }> {
+  if (typeof Translator === 'undefined') return { hasApi: false, languagePairAvailability: null };
+  try {
+    const languagePairAvailability = await Translator.availability({ sourceLanguage, targetLanguage });
+    return { hasApi: true, languagePairAvailability };
+  } catch {
+    return { hasApi: true, languagePairAvailability: null };
+  }
+}
+
 export function createBuiltinProvider(): EngineTranslator {
   return {
     async translateBatch(request: TranslateBatchRequest): Promise<PieceOutcome[]> {
