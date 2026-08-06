@@ -1,11 +1,7 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { createProvider } from './registry';
 
 describe('createProvider', () => {
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
-
   it('creates a libretranslate provider when configured', () => {
     const provider = createProvider('libretranslate', { libretranslate: { baseUrl: 'https://example.com' } });
     expect(provider).not.toBeNull();
@@ -29,17 +25,6 @@ describe('createProvider', () => {
     expect(
       createProvider('llm', { llm: { baseUrl: 'https://example.com', apiKey: 'k', model: 'gpt-4o-mini' } }),
     ).not.toBeNull();
-  });
-
-  it('creates a builtin provider when the Translator API is available', () => {
-    vi.stubGlobal('Translator', { availability: vi.fn(), create: vi.fn() });
-    expect(createProvider('builtin', {})).not.toBeNull();
-  });
-
-  it('returns null for an unavailable provider even when configured', () => {
-    vi.stubGlobal('Translator', undefined);
-    // builtin has no config requirement but isAvailable() gates it.
-    expect(createProvider('builtin', {})).toBeNull();
   });
 
   it('returns null for an unknown provider id', () => {

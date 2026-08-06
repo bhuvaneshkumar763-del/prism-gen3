@@ -12,7 +12,7 @@
  * synchronously, without a message round trip.
  */
 
-export type ProviderId = 'libretranslate' | 'google' | 'googleCloudTranslate' | 'llm' | 'builtin';
+export type ProviderId = 'libretranslate' | 'google' | 'googleCloudTranslate' | 'llm';
 
 /** How a future page-translation engine should batch DOM text nodes for this provider, if it wants something other than one-node-per-piece. */
 export interface BatchingHint {
@@ -27,13 +27,9 @@ export interface ProviderDescriptor {
   displayName: string;
   /** True if the provider needs a user-supplied key/URL before it can be used. */
   requiresKey: boolean;
-  /** Runtime feature-detection for providers that may not exist in this browser (the on-device provider). Omit for providers that are always usable once configured. */
+  /** Runtime feature-detection for providers that may not exist in every environment. Omit for providers that are always usable once configured. */
   isAvailable?(): boolean;
   batchingHint?: BatchingHint;
-}
-
-function hasBuiltinTranslatorApi(): boolean {
-  return typeof (globalThis as { Translator?: unknown }).Translator !== 'undefined';
 }
 
 export const providerDescriptors: ProviderDescriptor[] = [
@@ -77,14 +73,6 @@ export const providerDescriptors: ProviderDescriptor[] = [
     displayName: 'AI (OpenAI-compatible — cloud or local)',
     requiresKey: true,
     batchingHint: { groupByBlock: true, maxGroupChars: 2000 },
-  },
-  {
-    id: 'builtin',
-    displayName: 'Built-in AI (on-device, this browser only)',
-    requiresKey: false,
-    isAvailable: hasBuiltinTranslatorApi,
-    // Deliberately no batchingHint: on-device calls have no network
-    // round-trip to amortize, so per-node granularity is already fine.
   },
 ];
 

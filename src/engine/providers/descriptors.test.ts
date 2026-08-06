@@ -1,14 +1,10 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { getBatchingHint, getProviderDescriptor, isProviderAvailable, providerDescriptors } from './descriptors';
 
 describe('descriptors', () => {
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  it('lists exactly the 5 Session 4 providers', () => {
+  it('lists exactly the 4 providers', () => {
     expect(providerDescriptors.map((d) => d.id).sort()).toEqual(
-      ['builtin', 'google', 'googleCloudTranslate', 'libretranslate', 'llm'].sort(),
+      ['google', 'googleCloudTranslate', 'libretranslate', 'llm'].sort(),
     );
   });
 
@@ -32,13 +28,5 @@ describe('descriptors', () => {
 
   it('isProviderAvailable is false for an unknown provider id', () => {
     expect(isProviderAvailable('nope')).toBe(false);
-  });
-
-  it('isProviderAvailable for builtin reflects live Translator feature-detection', () => {
-    vi.stubGlobal('Translator', undefined);
-    expect(isProviderAvailable('builtin')).toBe(false);
-
-    vi.stubGlobal('Translator', { availability: vi.fn(), create: vi.fn() });
-    expect(isProviderAvailable('builtin')).toBe(true);
   });
 });

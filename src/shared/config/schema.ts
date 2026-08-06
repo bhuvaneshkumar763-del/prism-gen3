@@ -50,7 +50,7 @@ export const configSchema = z.object({
   targetLanguage: z.string(),
   /** ISO 639-1 code, or 'auto' to let the provider detect it. */
   sourceLanguage: z.string(),
-  pageTranslatorProvider: z.enum(['libretranslate', 'google', 'googleCloudTranslate', 'llm', 'builtin']),
+  pageTranslatorProvider: z.enum(['libretranslate', 'google', 'googleCloudTranslate', 'llm']),
   libreTranslateBaseUrl: z.string(),
   libreTranslateApiKey: z.string(),
   googleCloudTranslateApiKey: z.string(),

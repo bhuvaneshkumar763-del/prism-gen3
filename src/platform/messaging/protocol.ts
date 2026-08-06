@@ -38,22 +38,6 @@ export interface ProtocolMap {
   getOriginalLanguage(): string;
   /** Popup → a tab's content script: non-null once the page translator has confirmed translation is actually failing (see translateLoop.ts's `getLastError`) — closes the gap where a translate click that fails after the popup already resolved shows nothing wrong. */
   getPageError(): string | null;
-  /**
-   * Options/popup → background: is the "Built-in AI" (on-device Chrome
-   * Translator API) provider actually usable? Must run IN the background
-   * service worker, not the caller's own context — `globalThis.Translator`
-   * is exposed per-context, and `createProvider('builtin', ...)` (the
-   * thing that actually decides whether a translate succeeds) is only
-   * ever invoked from background.ts's `resolveActiveProvider()`. A check
-   * done in the options page's own context could disagree with the real
-   * outcome and mislead the user right back into the bug this exists to
-   * fix — real report: "[builtin] not configured or unavailable" with no
-   * way to tell why.
-   */
-  checkBuiltinAvailability(data: { sourceLanguage: string; targetLanguage: string }): {
-    hasApi: boolean;
-    languagePairAvailability: 'unavailable' | 'downloadable' | 'downloading' | 'available' | null;
-  };
 }
 
 export const { sendMessage, onMessage } = defineExtensionMessaging<ProtocolMap>();

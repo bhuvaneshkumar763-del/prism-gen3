@@ -22,6 +22,19 @@
  * (`libreTranslateBaseUrl`/`libreTranslateApiKey`, since that's what they
  * were actually holding — the store only ever configured LibreTranslate
  * before Session 4 added the others).
+ *
+ * Version 3: the `builtin` (on-device Chrome Translator API) provider was
+ * removed outright — a real user report traced this to a hard, unfixable
+ * platform limitation rather than a bug: Chrome's on-device AI model is
+ * Google's own proprietary service, gated to actual Google Chrome, and
+ * never works in any other Chromium-based browser (Vivaldi, Brave, Opera,
+ * Edge, ...) even though they share the same engine. Anyone with
+ * `pageTranslatorProvider: 'builtin'` already stored falls back to the
+ * default (`google`) rather than being left on a value `schema.ts`'s enum
+ * no longer accepts — `initConfig()` reads raw storage straight into
+ * state with no schema validation (see its own comment), so an orphaned
+ * enum value here wouldn't be caught until `registry.ts`'s `createProvider`
+ * switch hit a runtime type mismatch.
  */
 
 export interface ConfigMigration {
@@ -36,7 +49,7 @@ export interface ConfigMigration {
   migrate(rawEntries: Record<string, unknown>): Record<string, unknown>;
 }
 
-export const CONFIG_SCHEMA_VERSION = 2;
+export const CONFIG_SCHEMA_VERSION = 3;
 
 export const configMigrations: ConfigMigration[] = [
   {
@@ -65,6 +78,16 @@ export const configMigrations: ConfigMigration[] = [
       if (typeof next.providerApiKey === 'string') {
         next.libreTranslateApiKey = next.providerApiKey;
         delete next.providerApiKey;
+      }
+      return next;
+    },
+  },
+  {
+    toVersion: 3,
+    migrate(rawEntries) {
+      const next = { ...rawEntries };
+      if (next.pageTranslatorProvider === 'builtin') {
+        next.pageTranslatorProvider = 'google';
       }
       return next;
     },

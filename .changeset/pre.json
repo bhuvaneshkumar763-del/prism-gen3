@@ -11,6 +11,7 @@
     "fix-broken-default-and-silent-failure",
     "new-icon",
     "popup-full-parity",
+    "remove-builtin-provider",
     "revert-hover-fix",
     "settings-full-parity",
     "speed-dynamic-tags",

@@ -1,5 +1,4 @@
 import type { Translator } from '../translator';
-import { createBuiltinProvider } from './builtin';
 import { isProviderAvailable, type ProviderId } from './descriptors';
 import { createGoogleProvider } from './google';
 import { createGoogleCloudTranslateProvider } from './googleCloudTranslate';
@@ -18,14 +17,12 @@ export interface ProviderConfig {
   google?: Record<string, never>;
   googleCloudTranslate?: { apiKey: string };
   llm?: { baseUrl: string; apiKey: string; model: string };
-  builtin?: Record<string, never>;
 }
 
 /**
  * Pure factory — no `chrome`/`browser` imports, safe to call from
  * anywhere. Returns null if the provider isn't configured or isn't
- * available in this environment (e.g. `builtin` on a browser without the
- * Translator API).
+ * available in this environment.
  */
 export function createProvider(id: ProviderId, config: ProviderConfig): Translator | null {
   if (!isProviderAvailable(id)) return null;
@@ -39,8 +36,6 @@ export function createProvider(id: ProviderId, config: ProviderConfig): Translat
       return config.googleCloudTranslate ? createGoogleCloudTranslateProvider(config.googleCloudTranslate) : null;
     case 'llm':
       return config.llm ? createLlmProvider(config.llm) : null;
-    case 'builtin':
-      return createBuiltinProvider();
     default: {
       const exhaustiveCheck: never = id;
       return exhaustiveCheck;

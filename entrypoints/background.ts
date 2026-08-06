@@ -1,4 +1,3 @@
-import { checkBuiltinAvailability } from '../src/engine/providers/builtin';
 import { createProvider, type ProviderConfig } from '../src/engine/providers/registry';
 import type { PieceOutcome } from '../src/engine/translator';
 import { translateOne } from '../src/engine/translator';
@@ -72,7 +71,6 @@ function buildProviderConfig(): ProviderConfig {
     google: {},
     googleCloudTranslate: googleCloudTranslateApiKey ? { apiKey: googleCloudTranslateApiKey } : undefined,
     llm: llmBaseUrl && llmApiKey && llmModel ? { baseUrl: llmBaseUrl, apiKey: llmApiKey, model: llmModel } : undefined,
-    builtin: {},
   };
 }
 
@@ -109,21 +107,7 @@ async function toggleActiveTab(): Promise<void> {
   }
 }
 
-/**
- * `providerId === 'builtin'` and `createProvider` returned null means
- * `isProviderAvailable('builtin')` was false in THIS service worker —
- * i.e. `typeof Translator === 'undefined'` right here. That's a real,
- * common outcome (Chrome's on-device Translator API isn't available in
- * every Chrome install — version, channel, hardware, and per-profile
- * feature state all gate it) and the old flat "not configured or
- * unavailable" message gave a real user nothing to act on. See
- * `checkBuiltinAvailability` (options page) for the live status version
- * of this same check.
- */
 function unavailableMessage(providerId: string): string {
-  if (providerId === 'builtin') {
-    return "[builtin] Chrome's on-device Translator API isn't available in this browser/profile — check chrome://on-device-translation-internals, make sure Chrome is up to date, or switch providers in Settings.";
-  }
   return `[${providerId}] not configured or unavailable`;
 }
 
@@ -231,9 +215,5 @@ export default defineBackground(() => {
 
   onMessage('openOptionsPage', () => {
     void browser.runtime.openOptionsPage();
-  });
-
-  onMessage('checkBuiltinAvailability', async (message) => {
-    return checkBuiltinAvailability(message.data.sourceLanguage, message.data.targetLanguage);
   });
 });

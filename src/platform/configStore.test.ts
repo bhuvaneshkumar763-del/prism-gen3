@@ -140,7 +140,7 @@ describe('configStore', () => {
   });
 });
 
-describe('configStore — migration (CONFIG_SCHEMA_VERSION 2)', () => {
+describe('configStore — migration (CONFIG_SCHEMA_VERSION 3)', () => {
   beforeEach(() => {
     fakeBrowser.reset();
   });
@@ -156,7 +156,7 @@ describe('configStore — migration (CONFIG_SCHEMA_VERSION 2)', () => {
 
     expect(store.get('libreTranslateBaseUrl')).toBe('https://my-instance.example');
     expect(store.get('libreTranslateApiKey')).toBe('old-key');
-    expect((await fakeBrowser.storage.local.get(null)).__configSchemaVersion).toBe(2);
+    expect((await fakeBrowser.storage.local.get(null)).__configSchemaVersion).toBe(3);
   });
 
   it('a profile stuck at version 1 (generic providerBaseUrl/providerApiKey) migrates to the provider-specific names', async () => {
@@ -174,14 +174,14 @@ describe('configStore — migration (CONFIG_SCHEMA_VERSION 2)', () => {
     const raw = await fakeBrowser.storage.local.get(null);
     expect(Object.hasOwn(raw, 'providerBaseUrl')).toBe(false);
     expect(Object.hasOwn(raw, 'providerApiKey')).toBe(false);
-    expect(raw.__configSchemaVersion).toBe(2);
+    expect(raw.__configSchemaVersion).toBe(3);
   });
 
   it('is idempotent on a second load', async () => {
     await fakeBrowser.storage.local.set({ libreTranslateBaseUrl: 'https://x.example' });
     const first = await freshStore();
     await first.onReady();
-    expect((await fakeBrowser.storage.local.get(null)).__configSchemaVersion).toBe(2);
+    expect((await fakeBrowser.storage.local.get(null)).__configSchemaVersion).toBe(3);
 
     const second = await freshStore();
     await expect(second.onReady()).resolves.toBeUndefined();

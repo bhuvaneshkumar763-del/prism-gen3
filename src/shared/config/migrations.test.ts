@@ -80,4 +80,15 @@ describe('applyConfigMigrations', () => {
     const highest = configMigrations.reduce((max, m) => Math.max(max, m.toVersion), 0);
     expect(CONFIG_SCHEMA_VERSION).toBe(highest);
   });
+
+  it('toVersion 3 falls an existing "builtin" provider selection back to google (removed provider)', () => {
+    const raw = { pageTranslatorProvider: 'builtin', targetLanguage: 'fr' };
+    const migrated = applyConfigMigrations(raw, 2);
+    expect(migrated).toEqual({ pageTranslatorProvider: 'google', targetLanguage: 'fr' });
+  });
+
+  it('toVersion 3 leaves a non-builtin provider selection untouched', () => {
+    const raw = { pageTranslatorProvider: 'llm', targetLanguage: 'fr' };
+    expect(applyConfigMigrations(raw, 2)).toEqual(raw);
+  });
 });
