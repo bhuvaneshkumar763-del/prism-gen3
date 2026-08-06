@@ -35,6 +35,19 @@
  * state with no schema validation (see its own comment), so an orphaned
  * enum value here wouldn't be caught until `registry.ts`'s `createProvider`
  * switch hit a runtime type mismatch.
+ *
+ * Version 4: the `libretranslate` provider was removed outright too, at
+ * the same user's explicit request right after the `builtin` removal
+ * above — `schema.ts`'s default was already changed off it earlier
+ * (public libretranslate.com rate-limits unauthenticated requests to the
+ * point of being unusable), so nothing depended on it remaining selectable.
+ * Same fallback pattern as version 3: any stored `pageTranslatorProvider:
+ * 'libretranslate'` becomes `'google'`. The now-orphaned
+ * `libreTranslateBaseUrl`/`libreTranslateApiKey` storage keys are left in
+ * place rather than actively deleted — `initConfig()` only copies keys
+ * present in `defaultConfig` (see configStore.ts), so removing them from
+ * the schema already makes them inert; deleting the raw storage entries
+ * too would be pure tidiness with no correctness benefit.
  */
 
 export interface ConfigMigration {
@@ -49,7 +62,7 @@ export interface ConfigMigration {
   migrate(rawEntries: Record<string, unknown>): Record<string, unknown>;
 }
 
-export const CONFIG_SCHEMA_VERSION = 3;
+export const CONFIG_SCHEMA_VERSION = 4;
 
 export const configMigrations: ConfigMigration[] = [
   {
@@ -87,6 +100,16 @@ export const configMigrations: ConfigMigration[] = [
     migrate(rawEntries) {
       const next = { ...rawEntries };
       if (next.pageTranslatorProvider === 'builtin') {
+        next.pageTranslatorProvider = 'google';
+      }
+      return next;
+    },
+  },
+  {
+    toVersion: 4,
+    migrate(rawEntries) {
+      const next = { ...rawEntries };
+      if (next.pageTranslatorProvider === 'libretranslate') {
         next.pageTranslatorProvider = 'google';
       }
       return next;

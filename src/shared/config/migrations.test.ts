@@ -91,4 +91,15 @@ describe('applyConfigMigrations', () => {
     const raw = { pageTranslatorProvider: 'llm', targetLanguage: 'fr' };
     expect(applyConfigMigrations(raw, 2)).toEqual(raw);
   });
+
+  it('toVersion 4 falls an existing "libretranslate" provider selection back to google (removed provider)', () => {
+    const raw = { pageTranslatorProvider: 'libretranslate', targetLanguage: 'fr' };
+    const migrated = applyConfigMigrations(raw, 3);
+    expect(migrated).toEqual({ pageTranslatorProvider: 'google', targetLanguage: 'fr' });
+  });
+
+  it('toVersion 4 leaves a non-libretranslate provider selection untouched', () => {
+    const raw = { pageTranslatorProvider: 'llm', targetLanguage: 'fr' };
+    expect(applyConfigMigrations(raw, 3)).toEqual(raw);
+  });
 });

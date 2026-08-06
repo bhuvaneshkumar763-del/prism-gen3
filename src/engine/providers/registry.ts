@@ -2,7 +2,6 @@ import type { Translator } from '../translator';
 import { isProviderAvailable, type ProviderId } from './descriptors';
 import { createGoogleProvider } from './google';
 import { createGoogleCloudTranslateProvider } from './googleCloudTranslate';
-import { createLibreTranslateProvider } from './libretranslate';
 import { createLlmProvider } from './llm';
 
 /**
@@ -13,7 +12,6 @@ import { createLlmProvider } from './llm';
  * config into this shape.
  */
 export interface ProviderConfig {
-  libretranslate?: { baseUrl: string; apiKey?: string };
   google?: Record<string, never>;
   googleCloudTranslate?: { apiKey: string };
   llm?: { baseUrl: string; apiKey: string; model: string };
@@ -28,8 +26,6 @@ export function createProvider(id: ProviderId, config: ProviderConfig): Translat
   if (!isProviderAvailable(id)) return null;
 
   switch (id) {
-    case 'libretranslate':
-      return config.libretranslate ? createLibreTranslateProvider(config.libretranslate) : null;
     case 'google':
       return createGoogleProvider();
     case 'googleCloudTranslate':

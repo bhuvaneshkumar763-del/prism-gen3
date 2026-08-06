@@ -27,7 +27,7 @@ describe('configStore', () => {
     const store = await freshStore();
     await store.onReady();
     expect(store.get('targetLanguage')).toBe(defaultConfig.targetLanguage);
-    expect(store.get('libreTranslateBaseUrl')).toBe(defaultConfig.libreTranslateBaseUrl);
+    expect(store.get('googleCloudTranslateApiKey')).toBe(defaultConfig.googleCloudTranslateApiKey);
   });
 
   it('set() persists to browser.storage.local under the plain field name', async () => {
@@ -78,13 +78,13 @@ describe('configStore', () => {
     const store = await freshStore();
     await store.onReady();
 
-    await store.import(JSON.stringify({ targetLanguage: 'zh', libreTranslateApiKey: 'abc123' }));
+    await store.import(JSON.stringify({ targetLanguage: 'zh', googleCloudTranslateApiKey: 'abc123' }));
 
     expect(store.get('targetLanguage')).toBe('zh');
-    expect(store.get('libreTranslateApiKey')).toBe('abc123');
+    expect(store.get('googleCloudTranslateApiKey')).toBe('abc123');
     const raw = await fakeBrowser.storage.local.get(null);
     expect(raw.targetLanguage).toBe('zh');
-    expect(raw.libreTranslateApiKey).toBe('abc123');
+    expect(raw.googleCloudTranslateApiKey).toBe('abc123');
   });
 
   it('import() rejects a value of the wrong type instead of silently corrupting storage', async () => {
@@ -140,12 +140,17 @@ describe('configStore', () => {
   });
 });
 
-describe('configStore — migration (CONFIG_SCHEMA_VERSION 3)', () => {
+describe('configStore — migration (CONFIG_SCHEMA_VERSION 4)', () => {
   beforeEach(() => {
     fakeBrowser.reset();
   });
 
   it('a fresh (version 0) profile with Session 2s ad hoc keys round-trips through both migrations, ending back at the same field names', async () => {
+    // `libreTranslateBaseUrl`/`libreTranslateApiKey` are no longer part of
+    // the schema (the provider itself was removed in version 4 above), so
+    // this checks the raw storage entries the version 1/2 migrations
+    // actually produce rather than `store.get()`, which can no longer
+    // name a field that doesn't exist.
     await fakeBrowser.storage.local.set({
       libreTranslateBaseUrl: 'https://my-instance.example',
       libreTranslateApiKey: 'old-key',
@@ -154,9 +159,10 @@ describe('configStore — migration (CONFIG_SCHEMA_VERSION 3)', () => {
     const store = await freshStore();
     await store.onReady();
 
-    expect(store.get('libreTranslateBaseUrl')).toBe('https://my-instance.example');
-    expect(store.get('libreTranslateApiKey')).toBe('old-key');
-    expect((await fakeBrowser.storage.local.get(null)).__configSchemaVersion).toBe(3);
+    const raw = await fakeBrowser.storage.local.get(null);
+    expect(raw.libreTranslateBaseUrl).toBe('https://my-instance.example');
+    expect(raw.libreTranslateApiKey).toBe('old-key');
+    expect(raw.__configSchemaVersion).toBe(4);
   });
 
   it('a profile stuck at version 1 (generic providerBaseUrl/providerApiKey) migrates to the provider-specific names', async () => {
@@ -169,23 +175,23 @@ describe('configStore — migration (CONFIG_SCHEMA_VERSION 3)', () => {
     const store = await freshStore();
     await store.onReady();
 
-    expect(store.get('libreTranslateBaseUrl')).toBe('https://v1-instance.example');
-    expect(store.get('libreTranslateApiKey')).toBe('v1-key');
     const raw = await fakeBrowser.storage.local.get(null);
+    expect(raw.libreTranslateBaseUrl).toBe('https://v1-instance.example');
+    expect(raw.libreTranslateApiKey).toBe('v1-key');
     expect(Object.hasOwn(raw, 'providerBaseUrl')).toBe(false);
     expect(Object.hasOwn(raw, 'providerApiKey')).toBe(false);
-    expect(raw.__configSchemaVersion).toBe(3);
+    expect(raw.__configSchemaVersion).toBe(4);
   });
 
   it('is idempotent on a second load', async () => {
     await fakeBrowser.storage.local.set({ libreTranslateBaseUrl: 'https://x.example' });
     const first = await freshStore();
     await first.onReady();
-    expect((await fakeBrowser.storage.local.get(null)).__configSchemaVersion).toBe(3);
+    expect((await fakeBrowser.storage.local.get(null)).__configSchemaVersion).toBe(4);
 
     const second = await freshStore();
     await expect(second.onReady()).resolves.toBeUndefined();
-    expect(second.get('libreTranslateBaseUrl')).toBe('https://x.example');
+    expect((await fakeBrowser.storage.local.get(null)).libreTranslateBaseUrl).toBe('https://x.example');
   });
 });
 

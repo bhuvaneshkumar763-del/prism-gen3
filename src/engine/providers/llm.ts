@@ -15,8 +15,7 @@ import { createBatchedHttpProvider } from './batchedHttpProvider';
  * = the whole numbered prompt; each "piece" here is one numbered segment).
  * Multi-string pieces (grouped context, once a later session's
  * page-translation engine groups sibling DOM nodes) are joined/split with
- * a Unicode separator, same idea as `libretranslate.ts`/
- * `googleCloudTranslate.ts`.
+ * a Unicode separator, same idea as `googleCloudTranslate.ts`.
  */
 
 const PIECE_PART_SEPARATOR = '␟'; // U+241F SYMBOL FOR UNIT SEPARATOR

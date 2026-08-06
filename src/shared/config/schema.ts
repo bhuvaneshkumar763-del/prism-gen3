@@ -50,9 +50,7 @@ export const configSchema = z.object({
   targetLanguage: z.string(),
   /** ISO 639-1 code, or 'auto' to let the provider detect it. */
   sourceLanguage: z.string(),
-  pageTranslatorProvider: z.enum(['libretranslate', 'google', 'googleCloudTranslate', 'llm']),
-  libreTranslateBaseUrl: z.string(),
-  libreTranslateApiKey: z.string(),
+  pageTranslatorProvider: z.enum(['google', 'googleCloudTranslate', 'llm']),
   googleCloudTranslateApiKey: z.string(),
   llmBaseUrl: z.string(),
   llmApiKey: z.string(),
@@ -86,15 +84,8 @@ export const defaultConfig: Config = {
   targetLanguage: 'en',
   sourceLanguage: 'auto',
   // 'google' (free, no signup, no API key — see docs/decisions/0004-provider-scope.md)
-  // is the only provider that works with zero configuration. This was a
-  // real shipped bug, not a scoping choice: the default was 'libretranslate'
-  // pointed at the public libretranslate.com, which rate-limits
-  // unauthenticated requests to the point of being unusable (confirmed live:
-  // a bare translate request returns HTTP 429 "Slowdown: 10 per 1 minute").
-  // Every fresh install was translating into a provider that never worked.
+  // is the only provider that works with zero configuration.
   pageTranslatorProvider: 'google',
-  libreTranslateBaseUrl: 'https://libretranslate.com',
-  libreTranslateApiKey: '',
   googleCloudTranslateApiKey: '',
   llmBaseUrl: '',
   llmApiKey: '',

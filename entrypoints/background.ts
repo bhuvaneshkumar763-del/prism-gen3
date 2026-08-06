@@ -64,10 +64,6 @@ function buildProviderConfig(): ProviderConfig {
   const googleCloudTranslateApiKey = configStore.get('googleCloudTranslateApiKey');
 
   return {
-    libretranslate: {
-      baseUrl: configStore.get('libreTranslateBaseUrl'),
-      apiKey: configStore.get('libreTranslateApiKey') || undefined,
-    },
     google: {},
     googleCloudTranslate: googleCloudTranslateApiKey ? { apiKey: googleCloudTranslateApiKey } : undefined,
     llm: llmBaseUrl && llmApiKey && llmModel ? { baseUrl: llmBaseUrl, apiKey: llmApiKey, model: llmModel } : undefined,

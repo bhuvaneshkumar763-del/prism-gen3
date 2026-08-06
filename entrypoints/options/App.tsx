@@ -286,27 +286,6 @@ function App() {
               </select>
             </label>
 
-            <Show when={settings.pageTranslatorProvider === 'libretranslate'}>
-              <div class="providerFields">
-                <label class="field">
-                  <span>LibreTranslate base URL</span>
-                  <input
-                    type="text"
-                    value={settings.libreTranslateBaseUrl}
-                    onChange={(e) => void setField('libreTranslateBaseUrl', e.currentTarget.value)}
-                  />
-                </label>
-                <label class="field">
-                  <span>API key (optional)</span>
-                  <input
-                    type="password"
-                    value={settings.libreTranslateApiKey}
-                    onChange={(e) => void setField('libreTranslateApiKey', e.currentTarget.value)}
-                  />
-                </label>
-              </div>
-            </Show>
-
             <Show when={settings.pageTranslatorProvider === 'googleCloudTranslate'}>
               <div class="providerFields">
                 <label class="field">
@@ -360,8 +339,6 @@ function App() {
                 savedField() &&
                 [
                   'pageTranslatorProvider',
-                  'libreTranslateBaseUrl',
-                  'libreTranslateApiKey',
                   'googleCloudTranslateApiKey',
                   'llmBaseUrl',
                   'llmApiKey',

@@ -2,15 +2,6 @@ import { describe, expect, it } from 'vitest';
 import { createProvider } from './registry';
 
 describe('createProvider', () => {
-  it('creates a libretranslate provider when configured', () => {
-    const provider = createProvider('libretranslate', { libretranslate: { baseUrl: 'https://example.com' } });
-    expect(provider).not.toBeNull();
-  });
-
-  it('returns null for libretranslate when unconfigured', () => {
-    expect(createProvider('libretranslate', {})).toBeNull();
-  });
-
   it('creates a google provider unconditionally (no config needed)', () => {
     expect(createProvider('google', {})).not.toBeNull();
   });
