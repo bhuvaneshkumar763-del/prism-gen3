@@ -4,6 +4,27 @@
  * Extracted as its own function (rather than inlined in translateLoop.ts)
  * so it's directly unit-testable against a real (happy-dom) DOM without
  * spinning up the whole engine — same reasoning as `grouping.ts`.
+ *
+ * Crosses open shadow-root boundaries too — real bug, confirmed against a
+ * real site (bilibili's main comment thread, as opposed to its danmaku
+ * overlay which isn't shadow DOM and translated fine): `element.childNodes`
+ * does NOT include a shadow host's `shadowRoot` content, so a plain walk
+ * silently skips any subtree rendered inside one. Confirmed live that
+ * site's comment system is a deep tree of custom elements
+ * (`bili-comment-renderer` > `bili-rich-text` > ...), each attaching its
+ * own OPEN shadow root — several levels deep, so this has to recurse into
+ * `el.shadowRoot`, not just check the immediate root once. A closed shadow
+ * root is unreachable from outside by design (`element.shadowRoot` reads
+ * `null` for one) — nothing to do about that case, same as this project's
+ * existing acknowledged gap for same-origin iframes.
+ *
+ * `mutationWatcher.ts`'s own MutationObserver still can't see mutations
+ * happening *inside* an already-attached shadow root (subtree:true on a
+ * light-DOM ancestor doesn't cross the boundary either) — that gap is
+ * already covered by `resweep.ts`'s periodic/scroll-triggered re-walk,
+ * which calls this same function; making this function shadow-aware is
+ * what makes that existing backstop actually reach shadow content, not a
+ * separate fix.
  */
 
 const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEXTAREA']);
@@ -42,6 +63,8 @@ export function collectTextNodes(root: Node): Text[] {
       return;
     }
     if (isNoTranslateNode(node)) return;
+    const shadowRoot = (node as Element).shadowRoot;
+    if (shadowRoot) walk(shadowRoot);
     node.childNodes.forEach(walk);
   };
   walk(root);

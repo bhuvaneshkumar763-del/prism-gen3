@@ -15,6 +15,7 @@
     "remove-libretranslate-provider",
     "revert-hover-fix",
     "settings-full-parity",
+    "shadow-dom-and-google-reflow",
     "speed-dynamic-tags",
     "tag-anchor-isolation",
     "three-bugfixes"

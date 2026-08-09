@@ -44,6 +44,59 @@ describe('collectTextNodes', () => {
     const nodes = collectTextNodes(document.body);
     expect(nodes.map((n) => n.data)).toEqual(['#travel']);
   });
+
+  it('crosses an open shadow-root boundary, real bug: bilibili main comments not translated', () => {
+    // <bili-comment-renderer> attaches an open shadow root — element.childNodes
+    // never includes shadow content, so a plain walk would silently miss it.
+    document.body.innerHTML = '<div id="host"></div>';
+    const host = document.getElementById('host');
+    if (!host) throw new Error('unreachable');
+    const shadow = host.attachShadow({ mode: 'open' });
+    shadow.innerHTML = '<p>Shadow comment text</p>';
+
+    const nodes = collectTextNodes(document.body);
+
+    expect(nodes.map((n) => n.data)).toEqual(['Shadow comment text']);
+  });
+
+  it("crosses multiple nested shadow-root boundaries, matching bilibili's multi-level comment tree", () => {
+    document.body.innerHTML = '<div id="outer"></div>';
+    const outer = document.getElementById('outer');
+    if (!outer) throw new Error('unreachable');
+    const outerShadow = outer.attachShadow({ mode: 'open' });
+    const inner = document.createElement('div');
+    outerShadow.append(inner);
+    const innerShadow = inner.attachShadow({ mode: 'open' });
+    innerShadow.innerHTML = '<span>Deeply nested reply</span>';
+
+    const nodes = collectTextNodes(document.body);
+
+    expect(nodes.map((n) => n.data)).toEqual(['Deeply nested reply']);
+  });
+
+  it('still skips script/style/contenteditable subtrees found inside a shadow root', () => {
+    document.body.innerHTML = '<div id="host"></div>';
+    const host = document.getElementById('host');
+    if (!host) throw new Error('unreachable');
+    const shadow = host.attachShadow({ mode: 'open' });
+    shadow.innerHTML = '<script>var x = 1;</script><p>Visible in shadow</p>';
+
+    const nodes = collectTextNodes(document.body);
+
+    expect(nodes.map((n) => n.data)).toEqual(['Visible in shadow']);
+  });
+
+  it('does not throw when a closed shadow root is present (unreachable by design, not an error)', () => {
+    document.body.innerHTML = '<div id="host"></div><p>Light DOM text</p>';
+    const host = document.getElementById('host');
+    if (!host) throw new Error('unreachable');
+    const closedShadow = host.attachShadow({ mode: 'closed' });
+    closedShadow.innerHTML = '<p>Unreachable</p>';
+
+    const nodes = collectTextNodes(document.body);
+
+    expect(nodes.map((n) => n.data)).toEqual(['Light DOM text']);
+  });
 });
 
 describe('isNoTranslateNode', () => {

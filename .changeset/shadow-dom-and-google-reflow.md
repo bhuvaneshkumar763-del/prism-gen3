@@ -1,0 +1,5 @@
+---
+"prism-gen3": patch
+---
+
+Fixed two real reported translation-quality bugs. (1) Some sites' comment sections (e.g. bilibili's main comment thread, as opposed to its danmaku overlay) render through several levels of open shadow DOM, which the page-translation engine's DOM walk couldn't see at all — `element.childNodes` never includes shadow-root content, so all that text was structurally invisible. The walk now crosses open shadow-root boundaries, recursively. (2) The free Google provider grouped multiple DOM text nodes into one request for extra sentence context, but Google's endpoint can genuinely reflow translated text across those internal node boundaries for some language pairs — confirmed with a real request producing duplicated/merged word fragments and truncated output, and matching the reported symptom of stray punctuation appearing at the start of sentences or paragraphs. Reverted Google to one-node-per-piece translation, the same safe default already used by every other provider without this grouping. Also fixed a transitive `nanoid` advisory (npm audit).

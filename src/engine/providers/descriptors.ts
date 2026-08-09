@@ -37,15 +37,22 @@ export const providerDescriptors: ProviderDescriptor[] = [
     id: 'google',
     displayName: 'Google (free)',
     requiresKey: false,
-    // Google's endpoint has its own real multi-item marker scheme
-    // (`<a i=N>`, see google.ts) — grouping sibling text nodes into one
-    // piece here gives the model genuine sentence/paragraph context while
-    // still reliably splitting back into the original per-node strings,
-    // no separator-ambiguity risk. A smaller budget than the LLM
-    // provider's (this is a scraped "lite" endpoint, not a chat
-    // completion — keeping requests modest avoids stressing an endpoint
-    // this project doesn't control).
-    batchingHint: { groupByBlock: true, maxGroupChars: 800 },
+    // No batchingHint (removed post-launch, real bug): Google's endpoint
+    // has its own multi-item marker scheme (`<a i=N>`, see google.ts) that
+    // in principle reconstructs grouped sibling nodes back into their
+    // original per-node strings — but its own header comment already
+    // documented, and a real user report plus a live repro against the
+    // actual endpoint confirmed, that Google's translation genuinely
+    // reflows text across the piece-internal node boundaries for some
+    // language pairs (a real en->zh request produced duplicated/merged
+    // word fragments and truncated output; en->fr reconstructed cleanly —
+    // language-pair dependent, not a parsing bug in this codebase). The
+    // reported symptom ("random punctuation showing up at the start of
+    // sentences/paragraphs") is this same reflow, just manifesting as a
+    // stray character instead of duplication for other inputs. Reverted
+    // to one-node-per-piece — the same safe default every provider without
+    // a batchingHint already uses — trading the extra sentence/paragraph
+    // context for correctness.
   },
   // The real, official Google Cloud API (user's own key/billing) — the
   // closest match to what Arc's browser translate feature actually uses,
