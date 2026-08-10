@@ -55,8 +55,11 @@ be treated as separable decisions, not a package deal:
 
 ## Consequences
 - No DeepL provider exists in `descriptors.ts`/`registry.ts` as of Session
-  4. `providerDescriptors` covers `libretranslate`, `google`,
-  `googleCloudTranslate`, `llm`, `builtin` only.
+  4. `providerDescriptors` covered `libretranslate`, `google`,
+  `googleCloudTranslate`, `llm`, `builtin` at that time — `libretranslate`
+  and `builtin` were both later removed entirely (see
+  `docs/decisions/0004-provider-scope.md`'s "Update" section); the current
+  set is `google`, `googleCloudTranslate`, `llm`.
 - This ADR is the record that the gap is deliberate, not forgotten — see
   also `docs/decisions/0004-provider-scope.md`, which narrowed this
   session's scope and pointed here for the DeepL-specific reasoning.

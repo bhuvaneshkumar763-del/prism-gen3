@@ -75,6 +75,32 @@ work — not assumed from the old repo's regex.
 - `docs/decisions/0005-deepl-live-tab-bridge.md` covers the DeepL decision
   separately — same "don't build a scraping-heavy, fragile integration
   without a clear reason" reasoning applies there too.
-- The provider descriptor list (`descriptors.ts`) reflects this scope:
-  `libretranslate`, `google` (free fallback), `googleCloudTranslate` (paid,
-  real API), `llm`, `builtin`. No `bing`/`yandex` entries.
+- The provider descriptor list (`descriptors.ts`) reflected this scope as
+  of Session 4: `libretranslate`, `google` (free fallback),
+  `googleCloudTranslate` (paid, real API), `llm`, `builtin`. No `bing`/
+  `yandex` entries.
+
+## Update — post-launch: `libretranslate` and `builtin` both removed
+Two later, real, user-driven decisions narrowed this list further (see
+`CLAUDE.md`'s post-launch sections for the full accounts — this ADR isn't
+rewritten to pretend they didn't happen):
+- **`builtin`** (on-device Chrome Translator API) was removed entirely.
+  Root-caused a real "not configured or unavailable" report to a hard
+  platform limitation, not a bug: the on-device model is Google's own
+  proprietary service, gated to actual Google Chrome, and never works in
+  any other Chromium-based browser (Vivaldi, Brave, Opera, Edge, ...) even
+  though they share the same engine. A provider that only works for a
+  subset of Chrome users and produces a confusing dead end for everyone
+  else wasn't worth half-supporting.
+- **`libretranslate`** was removed at the same user's explicit follow-up
+  request, right after the `builtin` removal. It had already been demoted
+  from the default provider earlier (see the "Post-launch incident"
+  section in `CLAUDE.md` — the public `libretranslate.com` rate-limits
+  unauthenticated requests to the point of being unusable) and wasn't
+  worth keeping as a selectable-but-broken-by-default option.
+
+As of this update, `descriptors.ts` covers exactly 3 providers: `google`
+(free fallback), `googleCloudTranslate` (paid, real API), `llm`
+(OpenAI-compatible, cloud or local). Both removals ship a config migration
+(`migrations.ts`, versions 3 and 4) falling any existing selection of the
+removed provider back to the default (`google`).

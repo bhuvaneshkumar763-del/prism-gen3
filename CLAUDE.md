@@ -853,11 +853,11 @@ libretranslate, llm, builtin):
 
 | Provider | Status | Note |
 |---|---|---|
-| LibreTranslate | Ported | Session 2, the first vertical slice |
-| Google (free scraped `translateHtml`) | Ported | Session 4, independently re-engineered against live traffic — see `docs/decisions/0004-provider-scope.md` |
+| LibreTranslate | **Removed post-launch** | Ported Session 2; removed by explicit user request after being demoted from the default provider (public instance rate-limits to the point of uselessness) and not worth keeping as a selectable-but-broken-by-default option — see the "Provider removals" post-launch section below and `docs/decisions/0004-provider-scope.md`'s "Update" |
+| Google (free scraped `translateHtml`) | Ported | Session 4, independently re-engineered against live traffic — see `docs/decisions/0004-provider-scope.md`. Its block-level `batchingHint` was later removed post-launch too — see below |
 | Google Cloud Translate | Deliberately Improved | New in Session 4, not in the old repo — added specifically because it's the real API Arc's own translate feature is built on, confirmed by investigation, not the free scrape's quality ceiling |
 | LLM (OpenAI-compatible) | Ported | Session 4 |
-| Builtin (on-device Gemini Nano) | Ported | Session 4 |
+| Builtin (on-device Gemini Nano) | **Removed post-launch** | Ported Session 4; removed after root-causing a real "not configured or unavailable" report to a hard platform limitation — Chrome's on-device model is Google's own proprietary service and never works in any other Chromium-based browser, even ones sharing the same engine — see the "Provider removals" post-launch section below |
 | Bing (scraped) | Deliberately Dropped | Session 4 — see `docs/decisions/0004-provider-scope.md`; not a permanent rejection, a fresh decision if a real need surfaces |
 | Yandex (scraped) | Deliberately Dropped | Session 4 — same ADR, same reasoning |
 | DeepL Free API | Deliberately Deferred | Session 4 — see `docs/decisions/0005-deepl-live-tab-bridge.md`; a plausible cheap follow-up, just not done yet |
@@ -871,11 +871,11 @@ libretranslate, llm, builtin):
 | Dedupe (avoid re-translating already-handled nodes) | Ported | Session 5, WeakSet-based; re-verified this session with a real 500-node page |
 | Mutation watching (live DOM changes) | Ported | Session 5, `mutationWatcher.ts` |
 | Resweep (adaptive backoff + href polling for SPAs) | Ported | Session 5, `resweep.ts`; re-verified this session with a real `pushState` SPA |
-| Block-context grouping + sentence-boundary-aware chunking | Deliberately Improved | `grouping.ts` — cuts on a sentence boundary when possible (growing up to 1.5x `maxGroupChars` hunting for one) rather than always force-cutting at the char limit, for providers with `batchingHint` (`llm`, `google`) |
+| Block-context grouping + sentence-boundary-aware chunking | Deliberately Improved, later scoped down | `grouping.ts` — cuts on a sentence boundary when possible (growing up to 1.5x `maxGroupChars` hunting for one) rather than always force-cutting at the char limit. Only `llm` carries a `batchingHint` now — `google`'s was removed post-launch after a real reflow-corruption bug, see "Provider removals" below |
 | Tab-bar title translation | Ported | `titleTranslator.ts`, dual-write to `<title>` element + `document.title` |
 | Auto-translate-on-load decision | Ported | `autoTranslateDecision.ts`, pure/testable |
 | Original-language detection | Ported | `originalLanguageTracker.ts`, main-frame only (see Known gaps) |
-| Shadow-DOM content translation (third-party pages) | **Not ported — newly confirmed gap** | See this session's writeup above; `collectTextNodes.ts` doesn't descend into open shadow roots |
+| Shadow-DOM content translation (third-party pages) | **Ported post-launch** | Session 10 found the gap (`collectTextNodes.ts` didn't descend into open shadow roots); fixed post-launch after a real report (bilibili's main comment thread) — see "Shadow-DOM and Google reflow" below |
 | Iframe support (auto-translate/hover/selection) | Deliberately Deferred | Main-frame only since Session 5/6, documented in `originalLanguageTracker.ts` |
 | Element-attribute translation (placeholder/title/alt/aria-label) | Deliberately Deferred | Same phase-2 scope cut the plan calls out |
 | Custom dictionary | Deliberately Not Built | The old repo shipped a non-functional placeholder for this; the plan explicitly said not to repeat that. Gen 3 correctly has neither the UI nor the config for it — a real ADR-worthy decision only once actually attempted |
@@ -984,17 +984,11 @@ writes `CHANGELOG.md`) — once that lands on `main` and CI passes,
 - ~~No options/backup UI wired to `configStore.export()`/`import()` yet~~
   **Resolved** by the post-launch UI-depth pass's Phase 3 (see that section
   above) — Export/Import/Restore-defaults now live on the General tab.
-- **Shadow-DOM page content is never translated** (Session 10 — a real
-  gap found by manual verification, not a pre-existing documented cut).
-  `collectTextNodes.ts` walks `document.body` with a `TreeWalker`, which
-  does not descend into shadow roots. Confirmed with a real page: text
-  inside an *open* shadow root (a third-party page's own shadow DOM, not
-  this extension's UI) is completely untranslated while the rest of the
-  page translates correctly. A correct fix needs recursively discovering
-  and walking into every open shadow root encountered during the light-DOM
-  walk (closed shadow roots are unreachable from outside by design, no fix
-  possible there). Not attempted this session — real scope, not a
-  one-line patch.
+- ~~Shadow-DOM page content is never translated~~ **Resolved** post-launch
+  (see "Provider removals and shadow-DOM/reflow fixes" below) —
+  `collectTextNodes.ts` now recursively descends into every open shadow
+  root it encounters. Closed shadow roots remain unreachable from outside
+  by design; no fix possible there.
 - Standalone auxiliary windows (improve-translation, translate-text,
   translate-document), text-to-speech, a backup export/import UI, a
   release-notes page, and the toolbar icon's translated/original state
@@ -1669,6 +1663,133 @@ with the new retry/reopen logic itself fully covered — the whole point of
 this fix, not just the aggregate number, both CI guards, `build` ×2
 browsers, `guard:bundle-size`, `test:e2e`, `npm audit`) clean throughout.
 
+## Post-launch: provider removals (`builtin`, `libretranslate`), shadow-DOM translation, and Google reflow corruption
+
+Four related real-user reports, worked through in sequence in one session,
+`0.3.0-beta.9` → `0.3.0-beta.13`.
+
+**1. `builtin` (on-device Chrome Translator API) — root-caused, then
+removed.** A user reported "the local model doesn't work," which turned
+out to mean the Built-in AI provider, producing
+`[builtin] not configured or unavailable`. First pass: added a
+`checkBuiltinAvailability` message (background → options page) so the UI
+could show *why* — not available in this browser/profile, needs to
+download, unsupported for this language pair, or ready — instead of one
+flat error string. The user then shared their `chrome://version` output:
+Vivaldi, not Google Chrome (its User-Agent deliberately omits any
+"Vivaldi" token for site-compatibility reasons — the giveaway was the
+Executable Path, `/Applications/Vivaldi.app/...`). Root cause, confirmed
+rather than guessed: Chrome's on-device AI model (Gemini Nano) and its
+`Translator` JS API are Google's own proprietary service, gated to actual
+Google Chrome. Other Chromium-based browsers (Vivaldi, Brave, Opera,
+Edge, ...) share the open-source engine — including
+`chrome://on-device-translation-internals`, a page compiled into Chromium
+itself, which is why it loaded and listed real language packages even
+though nothing behind it could work — but never get Google's private
+model-distribution backend. This is a hard platform limitation, not
+fixable by this extension. Per the user's explicit follow-up
+("remove the built in model its useless now"), the whole provider was
+deleted rather than left half-working: `builtin.ts`,
+`checkBuiltinAvailability` (message + background handler + options-page
+status UI), the `'builtin'` `ProviderId`/enum entries, all gone. A new
+config migration (`CONFIG_SCHEMA_VERSION` 2 → 3) falls any existing
+`pageTranslatorProvider: 'builtin'` back to `'google'` — `initConfig()`
+reads raw storage straight into state with **no schema validation** (see
+`configStore.ts`'s own comment), so an orphaned enum value would otherwise
+only surface as a runtime type mismatch in `registry.ts`'s
+`createProvider` switch, not a clean fallback.
+
+**2. `libretranslate` — removed at the same user's explicit follow-up
+request** ("remove libretranslate too"), immediately after the `builtin`
+removal above. It had already been demoted from the default provider
+earlier (see the "Post-launch incident" section above — the public
+`libretranslate.com` rate-limits unauthenticated requests to uselessness)
+and wasn't worth keeping as a selectable-but-broken-by-default option.
+Same removal shape as `builtin`: `libretranslate.ts` deleted, `'libretranslate'`
+removed from `ProviderId`/the config enum/`ProviderConfig`, `libreTranslateBaseUrl`/
+`libreTranslateApiKey` schema fields removed (the orphaned raw storage
+keys are left in place rather than actively deleted — `initConfig()` only
+copies keys present in `defaultConfig`, so removing them from the schema
+already makes them inert). Another migration (version 3 → 4) falls any
+existing `pageTranslatorProvider: 'libretranslate'` back to `'google'`.
+As of this update, `descriptors.ts` covers exactly 3 providers: `google`,
+`googleCloudTranslate`, `llm`.
+
+**3. Shadow-DOM content never translated — real bug, confirmed live, not
+the Session 10 gap being rediscovered.** A user reported bilibili's main
+comment thread never translates, while its danmaku bullet-comment overlay
+does. Live DOM inspection (not guessed) confirmed bilibili's comments are
+a deep tree of custom elements (`bili-comment-renderer` >
+`bili-rich-text` > `bili-comment-user-info` > ...), each attaching its own
+**open** shadow root — several levels deep. `element.childNodes` never
+includes a shadow host's `shadowRoot` content, so `collectTextNodes.ts`'s
+DFS walk structurally could not see any of it (danmaku works because it's
+a plain overlay layer, not shadow DOM). This is the exact gap Session 10
+found and explicitly deferred (see the "Known gaps" entry above, now
+resolved) — this session is where it actually got fixed: the walk now
+recurses into `el.shadowRoot` wherever present. Closed shadow roots stay
+unreachable by design, same documented limitation as this project's
+same-origin-iframe gap. This also makes `resweep.ts`'s existing
+periodic/scroll-triggered backstop (its own header comment already named
+"mutations inside a shadow root" as exactly the case it exists for)
+actually reach shadow content for the first time, since it re-walks
+through this same function — not a separate fix, a consequence of this
+one.
+
+**4. Google provider reflow corruption — real bug, reproduced live before
+fixing.** Same report also described "random punctuation showing up at
+the start of sentences or paragraphs." Traced to `google.ts`'s multi-item
+`<a i=N>` reconstruction, used because `descriptors.ts` gave `google` a
+`batchingHint` (Session 5) to group sibling DOM text nodes into one
+request for extra context. `google.ts`'s own header comment already
+documented that Google's endpoint can reflow translated text across those
+piece-internal boundaries for some language pairs — this session
+reproduced it against the real live endpoint rather than trusting the old
+comment alone: an en→zh request through the real built extension produced
+duplicated/merged word fragments and truncated output, while the same
+code path with en→fr reconstructed cleanly — language-pair-dependent, not
+a parsing bug in this codebase. Fixed by removing `google`'s
+`batchingHint` entirely, reverting to one-node-per-piece translation — the
+same safe default every provider without a `batchingHint` already used.
+Re-ran the identical live en→zh request after the fix: clean per-node
+reconstruction, no duplication, no truncation, no stray leading
+punctuation. `grouping.ts`'s tag-anchor isolation logic (added just before
+this pass, see below) still exists for `llm`, the one remaining provider
+with a `batchingHint` — it simply never engages for `google` anymore,
+since `groupNodesForBatching` returns one-node-per-piece immediately when
+no `batchingHint` is present.
+
+**Also folded into this pass, landed just before it (`0.3.0-beta.9`):
+tag-list scrambling when the `#`/`@` marker is a separate sibling node.**
+A real site (alicesw.com) markets tags as `<a><em>#</em>travel</a>` — the
+marker and the word are two separate Text nodes. Neither alone matched
+`tagText.ts`'s `isPureTagText` (built for the single-node `#travel` case,
+see the "Tag-cluster translation accuracy" section above), so the whole
+tag list fell through into ordinary block-level grouping — exactly the
+multi-item scrambling that section's own isolation logic exists to
+prevent, just from a DOM shape it didn't check for. Fixed two ways:
+`collectTextNodes.ts` no longer queues a bare `#`/`@` marker node at all
+(nothing useful to translate in a lone punctuation character), and
+`grouping.ts` gained anchor-based isolation (`nearestTagAnchor` +
+`isolationKeyFor`) alongside the existing node-based isolation — a node's
+nearest `<a>` ancestor is checked against `isPureTagText` using the
+anchor's full `textContent` (which still includes the marker in the live
+DOM), and every node under that anchor groups together, isolated from
+neighboring anchors. Verified against the real page's live DOM structure
+via Playwright before fixing, not assumed.
+
+**Verification across all of the above**: every fix was checked against
+the real built extension, not just unit tests — a live `chrome://version`-style
+DOM inspection of bilibili's actual comment tree, live `en->zh`/`en->fr`
+Google translate requests before and after the reflow fix, and a live
+Options-page walkthrough confirming the provider dropdown now lists
+exactly `Google (free)` / `Google Cloud Translation API` /
+`AI (OpenAI-compatible — cloud or local)`, nothing else. Full standard
+chain (`compile`, unit tests, `lint`, both guards, both browser builds,
+`guard:bundle-size`, `test:e2e`, `npm audit`) clean after every step, plus
+an ad hoc `npm audit fix` for an unrelated transitive `nanoid` advisory
+picked up along the way.
+
 ## Explicitly out of scope for v1
 
 Compiled Session 10, per the plan's Session 10 requirement — a visible
@@ -1682,8 +1803,8 @@ compiled summary, not new information:
 - **Bing and Yandex providers** — deliberately dropped, `docs/decisions/0004-provider-scope.md`.
 - **DeepL** (both the Free API and the live-tab bridge) — deliberately
   deferred, `docs/decisions/0005-deepl-live-tab-bridge.md`.
-- **Shadow-DOM page content** — never discovered by `collectTextNodes.ts`,
-  see the Known gaps entry above (found this session).
+- ~~Shadow-DOM page content~~ **Resolved** post-launch, see the Known gaps
+  entry above.
 - **Iframe support** for auto-translate/hover/selection — main-frame only.
 - **Element-attribute translation** (placeholder/title/alt/aria-label) and
   **custom dictionary** — neither built.
