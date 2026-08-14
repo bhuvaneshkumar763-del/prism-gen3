@@ -73,16 +73,24 @@ describe('createLlmProvider', () => {
     expect(results).toEqual([{ ok: true, value: ['hola', 'mundo'] }]);
   });
 
-  it('treats a non-string array entry as empty rather than throwing', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => jsonResponse(chatResponse(JSON.stringify([42])))),
-    );
+  it('treats a non-string array entry as empty, which the sanity-check repair pass then retries once', async () => {
+    // A non-string entry (malformed model output) maps to '' per
+    // parseResponse — for real (non-empty) input, an empty result is
+    // exactly the failure signature Phase 5's isSuspiciousOutcome() exists
+    // to catch, so this now retries once (batchedHttpProvider.ts's
+    // existing repair path) rather than silently accepting the empty
+    // string as a successful translation.
+    const fetchMock = vi.fn(async () => jsonResponse(chatResponse(JSON.stringify([42]))));
+    vi.stubGlobal('fetch', fetchMock);
 
     const provider = createLlmProvider({ baseUrl: 'https://example.com', apiKey: 'k', model: 'm' });
     const results = await provider.translateBatch({ sourceLanguage: 'en', targetLanguage: 'es', pieces: [['hello']] });
 
-    expect(results[0]).toEqual({ ok: true, value: [''] });
+    // The retry hits the same mock and gets the same malformed response
+    // again, so it ultimately resolves as a failure rather than a false
+    // "successfully translated to an empty string."
+    expect(results[0]).toEqual({ ok: false, error: { kind: 'network', message: '[llm] no result for this piece' } });
+    expect(fetchMock).toHaveBeenCalledTimes(2); // original attempt + one individual retry
   });
 
   it('returns an error outcome when the model response is not valid JSON', async () => {

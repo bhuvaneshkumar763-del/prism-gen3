@@ -28,7 +28,12 @@ describe('FloatingBubble', () => {
     container = document.createElement('div');
     document.body.append(container);
     const props = {
-      state: { pageState: 'original' as const, busy: false, errorMessage: null as string | null },
+      state: {
+        pageState: 'original' as const,
+        busy: false,
+        errorMessage: null as string | null,
+        errorKind: null as 'offline' | 'provider' | null,
+      },
       hostname: 'example.com',
       shadowHost: container,
       onTranslate: vi.fn(),
@@ -52,12 +57,12 @@ describe('FloatingBubble', () => {
   });
 
   it('shows "Show original" once translated', () => {
-    const { el } = mount({ state: { pageState: 'translated', busy: false, errorMessage: null } });
+    const { el } = mount({ state: { pageState: 'translated', busy: false, errorMessage: null, errorKind: null } });
     expect(el.querySelector('.primary')?.textContent).toBe('Show original');
   });
 
   it('disables the primary button and shows a busy label while busy', () => {
-    const { el } = mount({ state: { pageState: 'translated', busy: true, errorMessage: null } });
+    const { el } = mount({ state: { pageState: 'translated', busy: true, errorMessage: null, errorKind: null } });
     const primary = el.querySelector('.primary') as HTMLButtonElement;
     expect(primary.textContent).toBe('Restoring…');
     expect(primary.disabled).toBe(true);
@@ -65,7 +70,10 @@ describe('FloatingBubble', () => {
 
   it('invokes onRestore when the primary button is clicked while translated', () => {
     const onRestore = vi.fn();
-    const { el } = mount({ state: { pageState: 'translated', busy: false, errorMessage: null }, onRestore });
+    const { el } = mount({
+      state: { pageState: 'translated', busy: false, errorMessage: null, errorKind: null },
+      onRestore,
+    });
     (el.querySelector('.primary') as HTMLButtonElement).click();
     expect(onRestore).toHaveBeenCalledTimes(1);
   });
@@ -78,7 +86,9 @@ describe('FloatingBubble', () => {
   });
 
   it('shows a real error instead of the normal "Translated" success, even in the translated state', () => {
-    const { el } = mount({ state: { pageState: 'translated', busy: false, errorMessage: 'HTTP 429' } });
+    const { el } = mount({
+      state: { pageState: 'translated', busy: false, errorMessage: 'HTTP 429', errorKind: 'provider' },
+    });
     expect(el.querySelector('.htitle')?.textContent).toBe('Translation failed');
     expect(el.querySelector('.errorText')?.textContent).toBe('HTTP 429');
     expect(el.querySelector('.primary')?.textContent).not.toBe('Show original');
@@ -88,13 +98,47 @@ describe('FloatingBubble', () => {
     const onTranslate = vi.fn();
     const onRestore = vi.fn();
     const { el } = mount({
-      state: { pageState: 'translated', busy: false, errorMessage: 'HTTP 429' },
+      state: { pageState: 'translated', busy: false, errorMessage: 'HTTP 429', errorKind: 'provider' },
       onTranslate,
       onRestore,
     });
     expect(el.querySelector('.primary')?.textContent).toBe('Retry');
     (el.querySelector('.primary') as HTMLButtonElement).click();
     expect(onTranslate).toHaveBeenCalledTimes(1);
+    expect(onRestore).not.toHaveBeenCalled();
+  });
+
+  it('shows a distinct "Offline" state — not the generic "Translation failed" — and a disabled, non-retry button', () => {
+    const { el } = mount({
+      state: {
+        pageState: 'translated',
+        busy: false,
+        errorMessage: 'Offline — translation will resume automatically once your connection is back.',
+        errorKind: 'offline',
+      },
+    });
+    expect(el.querySelector('.htitle')?.textContent).toBe('Offline');
+    expect(el.querySelector('.htitle')?.textContent).not.toBe('Translation failed');
+    const primary = el.querySelector('.primary') as HTMLButtonElement;
+    expect(primary.textContent).toBe('Waiting for connection…');
+    expect(primary.textContent).not.toBe('Retry');
+    expect(primary.disabled).toBe(true);
+    // The offline banner text is redundant with the head title/primary
+    // label above it (both already say "offline") — suppressed, unlike a
+    // real provider error, which still shows its message in .errorText.
+    expect(el.querySelector('.errorText')).toBeNull();
+  });
+
+  it('clicking the primary button while offline does nothing (belt-and-braces, on top of the disabled attribute)', () => {
+    const onTranslate = vi.fn();
+    const onRestore = vi.fn();
+    const { el } = mount({
+      state: { pageState: 'translated', busy: false, errorMessage: 'offline', errorKind: 'offline' },
+      onTranslate,
+      onRestore,
+    });
+    (el.querySelector('.primary') as HTMLButtonElement).click();
+    expect(onTranslate).not.toHaveBeenCalled();
     expect(onRestore).not.toHaveBeenCalled();
   });
 

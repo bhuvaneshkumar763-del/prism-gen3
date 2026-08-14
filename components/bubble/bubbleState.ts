@@ -15,12 +15,15 @@ export interface BubbleViewState {
   pageState: 'original' | 'translated';
   busy: boolean;
   errorMessage: string | null;
+  /** `'offline'` vs `'provider'` vs `null` — see `translateLoop.ts`'s `ErrorKind`. Additive alongside `errorMessage`, not a replacement for it. */
+  errorKind: 'offline' | 'provider' | null;
 }
 
 export const DEFAULT_BUBBLE_VIEW_STATE: BubbleViewState = {
   pageState: 'original',
   busy: false,
   errorMessage: null,
+  errorKind: null,
 };
 
 export function createBubbleState(

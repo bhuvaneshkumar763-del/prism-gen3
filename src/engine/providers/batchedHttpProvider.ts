@@ -1,5 +1,8 @@
 import { err, ok } from '../../shared/result';
+import { connectivity } from '../connectivity';
+import { getAdaptiveConcurrency } from '../networkQuality';
 import type { PieceOutcome, TranslateBatchRequest, Translator } from '../translator';
+import { isSuspiciousOutcome } from './outputSanityCheck';
 
 /**
  * Shared machinery every HTTP-based translation provider composes (Gen 3
@@ -72,7 +75,7 @@ const MAX_ATTEMPTS = 3;
 
 export function createBatchedHttpProvider(options: BatchedProviderOptions): Translator {
   const maxBatchChars = options.maxBatchChars ?? DEFAULT_MAX_BATCH_CHARS;
-  const maxConcurrent = options.maxConcurrent ?? DEFAULT_MAX_CONCURRENT;
+  const configuredMaxConcurrent = options.maxConcurrent ?? DEFAULT_MAX_CONCURRENT;
 
   /** In-flight dedupe: two identical concurrent piece requests share one HTTP call's result. */
   const inFlightByKey = new Map<string, Promise<{ text: string; detectedLanguage: string | null } | null>>();
@@ -115,8 +118,31 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
     let lastError: RetryableError | undefined;
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       if (attempt > 0) {
+        // Offline: the browser has no route to anywhere, so every remaining
+        // attempt is guaranteed to fail the same way sendOnce() would find
+        // out anyway — skip straight to giving up instead of burning the
+        // rest of the retry budget sleeping between doomed requests.
+        // navigator.onLine has known false positives (a captive portal),
+        // which is exactly why this only short-circuits the *retry* loop,
+        // not the very first attempt — a false "online" or an offline
+        // flip mid-request still goes through the normal sendOnce()/catch
+        // path below and reports a real error, same as before this change.
+        if (!connectivity.isOnline()) break;
+
         let delay = attempt === 1 ? 400 : 1200;
-        if (lastError?.retryAfterMs && lastError.retryAfterMs > delay) delay = lastError.retryAfterMs;
+        if (lastError?.retryAfterMs && lastError.retryAfterMs > delay) {
+          // A server-specified Retry-After is exact, not jittered — the
+          // endpoint told us how long to wait, second-guessing it with
+          // randomness serves no purpose.
+          delay = lastError.retryAfterMs;
+        } else {
+          // ±25% jitter on the fixed delays: with maxConcurrent=6, many
+          // pieces failing together against a real provider outage used to
+          // retry in lockstep at the exact same two offsets, producing
+          // synchronized request waves against an already-struggling
+          // endpoint. Jitter desyncs those waves.
+          delay = delay * 0.75 + Math.random() * delay * 0.5;
+        }
         await new Promise((resolve) => setTimeout(resolve, delay));
       }
       try {
@@ -152,7 +178,7 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
 
       pending.forEach((p, idx) => {
         const result = results[idx];
-        if (!result) {
+        if (!result || isSuspiciousOutcome(p.wireText, result, sourceLanguage, targetLanguage)) {
           missing.push(p);
           return;
         }
@@ -225,6 +251,11 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
           await new Promise<void>((resolveAll) => {
             let completed = 0;
             const pump = () => {
+              // Resolved fresh on each pump() call, not captured once —
+              // a long page's connection quality can change mid-batch
+              // (e.g. a real network degradation partway through 500
+              // paragraphs), and this picks that up without restarting.
+              const maxConcurrent = getAdaptiveConcurrency(configuredMaxConcurrent);
               while (inFlight < maxConcurrent && cursor < batches.length) {
                 const batch = batches[cursor++];
                 if (!batch) continue;

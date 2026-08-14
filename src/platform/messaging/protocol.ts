@@ -1,5 +1,5 @@
 import { defineExtensionMessaging } from '@webext-core/messaging';
-import type { PageLanguageState } from '../../engine/pageTranslator/translateLoop';
+import type { ErrorKind, PageLanguageState } from '../../engine/pageTranslator/translateLoop';
 import type { PieceOutcome, TranslateBatchRequest, TranslateError } from '../../engine/translator';
 import type { Result } from '../../shared/result';
 
@@ -36,8 +36,8 @@ export interface ProtocolMap {
   openOptionsPage(): void;
   /** Popup → a tab's content script: the detected source language ('und' if not yet resolved), for the "Always translate from {language}" toggle. */
   getOriginalLanguage(): string;
-  /** Popup → a tab's content script: non-null once the page translator has confirmed translation is actually failing (see translateLoop.ts's `getLastError`) — closes the gap where a translate click that fails after the popup already resolved shows nothing wrong. */
-  getPageError(): string | null;
+  /** Popup → a tab's content script: non-null once the page translator has confirmed translation is actually failing OR the browser is offline (see translateLoop.ts's `getLastError`/`getLastErrorKind`) — closes the gap where a translate click that fails after the popup already resolved shows nothing wrong. `kind` distinguishes "offline, will resume automatically" from "the provider is actually broken." */
+  getPageError(): { message: string; kind: ErrorKind } | null;
 }
 
 export const { sendMessage, onMessage } = defineExtensionMessaging<ProtocolMap>();

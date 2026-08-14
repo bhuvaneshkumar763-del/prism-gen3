@@ -107,6 +107,7 @@ export default defineContentScript({
           bubble.update({
             pageState: pageTranslator.getState(),
             errorMessage: pageTranslator.getLastError(),
+            errorKind: pageTranslator.getLastErrorKind(),
           });
         }
       }
@@ -133,8 +134,8 @@ export default defineContentScript({
       // A translate call can keep failing silently in the background long
       // after the state-change above already fired (see translateLoop.ts's
       // consecutive-failure guard) — this is the surface that reflects it.
-      pageTranslator.onError((message) => {
-        bubble?.update({ errorMessage: message });
+      pageTranslator.onError((message, kind) => {
+        bubble?.update({ errorMessage: message, errorKind: kind });
       });
       configStore.onChanged((name) => {
         if (name === 'bubbleEnabled' || name === 'bubbleByHost') syncBubbleVisibility();
@@ -231,6 +232,9 @@ export default defineContentScript({
     });
     onMessage('getPageState', () => pageTranslator.getState());
     onMessage('getOriginalLanguage', () => originalLanguageTracker.get());
-    onMessage('getPageError', () => pageTranslator.getLastError());
+    onMessage('getPageError', () => {
+      const message = pageTranslator.getLastError();
+      return message ? { message, kind: pageTranslator.getLastErrorKind() } : null;
+    });
   },
 });

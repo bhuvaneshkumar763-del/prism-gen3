@@ -139,6 +139,12 @@ export function FloatingBubble(props: FloatingBubbleProps) {
   }
 
   function handlePrimaryAction(): void {
+    // No-op while offline — translateLoop.ts already auto-resumes the
+    // instant connectivity returns (see connectivity.ts), and the button
+    // is disabled in this state anyway (see the JSX below); this guard is
+    // the belt-and-braces version in case handlePrimaryAction is ever
+    // reachable some other way.
+    if (props.state.errorKind === 'offline') return;
     if (props.state.errorMessage) {
       props.onTranslate(targetLanguage());
       return;
@@ -335,18 +341,25 @@ export function FloatingBubble(props: FloatingBubbleProps) {
 
   const translated = () => !props.state.errorMessage && props.state.pageState === 'translated';
   const errored = () => Boolean(props.state.errorMessage);
+  const offline = () => errored() && props.state.errorKind === 'offline';
   const headTitle = () => {
+    if (offline()) return 'Offline';
     if (errored()) return 'Translation failed';
     return translated() ? 'Page translated' : 'Translate this page';
   };
   const primaryLabel = () => {
+    // No "Retry" while offline — translateLoop.ts already auto-resumes the
+    // instant connectivity returns (see handlePrimaryAction above), so a
+    // retry button here would just be a no-op the user has to notice does
+    // nothing.
+    if (offline()) return 'Waiting for connection…';
     if (errored()) return props.state.busy ? 'Retrying…' : 'Retry';
     if (translated()) return props.state.busy ? 'Restoring…' : 'Show original';
     return props.state.busy ? 'Translating…' : 'Translate page';
   };
 
   return (
-    <div class="wrap" classList={{ translated: translated(), error: errored() }} ref={wrap}>
+    <div class="wrap" classList={{ translated: translated(), error: errored(), offline: offline() }} ref={wrap}>
       <button
         type="button"
         class="ball"
@@ -384,10 +397,10 @@ export function FloatingBubble(props: FloatingBubbleProps) {
           </div>
         </div>
         <div class="body">
-          <button type="button" class="primary" disabled={props.state.busy} on:click={onPrimaryClick}>
+          <button type="button" class="primary" disabled={props.state.busy || offline()} on:click={onPrimaryClick}>
             {primaryLabel()}
           </button>
-          <Show when={props.state.errorMessage}>
+          <Show when={props.state.errorMessage && !offline()}>
             <p class="errorText">{props.state.errorMessage}</p>
           </Show>
           <div class="selrow">

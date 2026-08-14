@@ -9,6 +9,7 @@
     "builtin-availability",
     "enter-beta-prerelease",
     "fix-broken-default-and-silent-failure",
+    "graceful-degradation",
     "new-icon",
     "popup-full-parity",
     "remove-builtin-provider",

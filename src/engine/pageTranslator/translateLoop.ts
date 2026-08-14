@@ -1,3 +1,4 @@
+import { connectivity } from '../connectivity';
 import type { BatchingHint } from '../providers/descriptors';
 import type { Translator } from '../translator';
 import { collectTextNodes, isNoTranslateNode } from './collectTextNodes';
@@ -6,6 +7,7 @@ import { groupNodesForBatching } from './grouping';
 import { createMutationWatcher } from './mutationWatcher';
 import { createResweepScheduler } from './resweep';
 import { createTitleTranslator } from './titleTranslator';
+import { prioritizeByViewport } from './viewportPriority';
 
 /**
  * The page-translation engine: collect text nodes, batch-translate them via
@@ -37,6 +39,9 @@ const HAS_LETTER = /\p{L}/u;
 
 export type PageLanguageState = 'original' | 'translated';
 
+/** `'offline'` when the browser itself has no connectivity (distinct from `'provider'`, a confirmed-broken/misconfigured provider while online) — see `setError`. */
+export type ErrorKind = 'offline' | 'provider' | null;
+
 export interface PageTranslatorOptions {
   translator: Translator;
   getSourceLanguage(): string;
@@ -60,7 +65,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
   const missingResultAttempts = new WeakMap<Text, number>();
 
   const stateListeners = new Set<(state: PageLanguageState) => void>();
-  const errorListeners = new Set<(message: string | null) => void>();
+  const errorListeners = new Set<(message: string | null, kind: ErrorKind) => void>();
 
   // Silent-failure guard: a translateBatch() call that throws (network
   // error, or every retry inside batchedHttpProvider.ts exhausted — e.g. a
@@ -75,12 +80,23 @@ export function createPageTranslator(options: PageTranslatorOptions) {
   const CONSECUTIVE_FAILURES_BEFORE_SURFACING = 3;
   let consecutiveBatchFailures = 0;
   let lastErrorMessage: string | null = null;
+  let lastErrorKind: ErrorKind = null;
+  // Grows the surfaced-error backoff the longer a real outage lasts (Phase
+  // 2 of the graceful-degradation pass) — counts consecutive ticks where an
+  // error stayed surfaced, reset the moment it clears. Kept separate from
+  // consecutiveBatchFailures, which counts failed *batches* (can advance
+  // faster than once per tick's worth of backoff) and is reset on offline
+  // ticks (see the offline branch in translationRoutine below) — this
+  // counter should keep growing through an offline stretch too, since the
+  // provider hasn't actually recovered just because connectivity dropped.
+  let surfacedErrorStreak = 0;
 
-  function setError(message: string | null): void {
-    if (message === lastErrorMessage) return;
+  function setError(message: string | null, kind: ErrorKind = message ? 'provider' : null): void {
+    if (message === lastErrorMessage && kind === lastErrorKind) return;
     lastErrorMessage = message;
+    lastErrorKind = kind;
     errorListeners.forEach((cb) => {
-      cb(message);
+      cb(message, kind);
     });
   }
 
@@ -150,7 +166,34 @@ export function createPageTranslator(options: PageTranslatorOptions) {
   async function translationRoutine(): Promise<void> {
     if (translationRoutineHandle) clearTimeout(translationRoutineHandle);
 
+    // Offline: don't even attempt a batch — every provider request is
+    // guaranteed to fail the same way, so there's nothing to gain by
+    // sending it (batchedHttpProvider.ts's own retry loop has the matching
+    // check for the same reason). Distinct from "provider broken" — this
+    // bypasses the CONSECUTIVE_FAILURES_BEFORE_SURFACING threshold and
+    // reports immediately, since offline is a directly-known cause, not a
+    // pattern that needs 3 failures to infer. Queued work is left exactly
+    // where it is; connectivity.onChange() below wakes this routine the
+    // instant the connection returns.
+    if (pageLanguageState === 'translated' && queue.length > 0 && !connectivity.isOnline()) {
+      setError('Offline — translation will resume automatically once your connection is back.', 'offline');
+      surfacedErrorStreak++;
+      translationRoutineHandle = setTimeout(translationRoutine, 2000);
+      return;
+    }
+
     if (pageLanguageState === 'translated' && queue.length > 0) {
+      // Perceived-speed win, Phase 4a of the graceful-degradation pass:
+      // translate what the user is actually looking at first. Only
+      // bothers reordering (and paying for getBoundingClientRect() calls,
+      // a real reflow cost) when the queue is bigger than what fits in one
+      // tick — a page that fits in one batch already translates
+      // everything this tick regardless of order. This only changes which
+      // nodes land in `batch` below; grouping still runs on whatever comes
+      // out, unmodified.
+      if (queue.length > MAX_PIECES_PER_TICK) {
+        queue = prioritizeByViewport(queue, { top: 0, bottom: window.innerHeight });
+      }
       const batch = queue.splice(0, MAX_PIECES_PER_TICK);
       const groups = groupNodesForBatching(batch, options.getBatchingHint());
       try {
@@ -182,6 +225,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
             const firstFailure = outcomes.find((o) => !o?.ok);
             const message = firstFailure && !firstFailure.ok ? firstFailure.error.message : 'translation failed';
             setError(message);
+            surfacedErrorStreak++;
           }
           // Requeue the whole batch directly, bypassing noteMissingResult()'s
           // per-node cooldown/retry-cap below — that logic exists for an
@@ -199,6 +243,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
           queue.unshift(...batch.filter((n) => n.isConnected));
         } else {
           consecutiveBatchFailures = 0;
+          surfacedErrorStreak = 0;
           setError(null);
           groups.forEach((group, groupIdx) => {
             const outcome = outcomes[groupIdx];
@@ -222,15 +267,24 @@ export function createPageTranslator(options: PageTranslatorOptions) {
         consecutiveBatchFailures++;
         if (consecutiveBatchFailures >= CONSECUTIVE_FAILURES_BEFORE_SURFACING) {
           setError(e instanceof Error ? e.message : String(e));
+          surfacedErrorStreak++;
         }
       }
     }
 
     // Once an error has been surfaced, back off instead of hammering a
     // provider that's already confirmed broken (rate-limited/misconfigured)
-    // every 150ms forever — still retries (a transient outage should
-    // recover on its own once fixed), just far less aggressively.
-    const nextDelay = lastErrorMessage !== null ? 8000 : queue.length > 0 ? 150 : 2000;
+    // every 8s forever — still retries (a transient outage should recover
+    // on its own once fixed), just increasingly less aggressively the
+    // longer it stays broken: 8s, 12s, 18s, ... capped at 30s. A short
+    // outage still recovers within one 8s cycle; a long one stops
+    // hammering a confirmed-broken provider indefinitely at a fixed rate.
+    let nextDelay: number;
+    if (lastErrorMessage !== null) {
+      nextDelay = Math.min(30000, 8000 * 1.5 ** (surfacedErrorStreak - 1));
+    } else {
+      nextDelay = queue.length > 0 ? 150 : 2000;
+    }
     translationRoutineHandle = setTimeout(translationRoutine, nextDelay);
   }
 
@@ -276,6 +330,16 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     } else if (document.visibilityState !== 'visible') {
       mutationWatcher.disable();
     }
+  });
+
+  // Resume the instant connectivity returns, rather than waiting for
+  // whatever backoff delay is currently scheduled (up to 30s once an error
+  // has been surfaced for a while — see the nextDelay calc above). The
+  // offline error clears itself on the very next tick once isOnline() is
+  // true again (the offline branch at the top of translationRoutine simply
+  // stops matching), no separate clear-on-reconnect call needed here.
+  connectivity.onChange((online) => {
+    if (online && pageLanguageState === 'translated') wakeRoutine(0);
   });
 
   function setState(next: PageLanguageState): void {
@@ -342,9 +406,11 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     },
     /** Currently-translated text nodes and their pre-translation text — used by a future "hover to see original" tooltip. */
     getTranslatedNodes: (): ReadonlyArray<{ node: Text; original: string }> => nodesToRestore,
-    /** Non-null once translation has been failing for `CONSECUTIVE_FAILURES_BEFORE_SURFACING` ticks in a row — see the header comment on that constant above. */
+    /** Non-null once translation has been failing for `CONSECUTIVE_FAILURES_BEFORE_SURFACING` ticks in a row (or immediately, for `'offline'`) — see the header comment on that constant above. */
     getLastError: (): string | null => lastErrorMessage,
-    onError(cb: (message: string | null) => void): () => void {
+    /** `'offline'` vs `'provider'` vs `null` — see the `ErrorKind` doc comment. */
+    getLastErrorKind: (): ErrorKind => lastErrorKind,
+    onError(cb: (message: string | null, kind: ErrorKind) => void): () => void {
       errorListeners.add(cb);
       return () => errorListeners.delete(cb);
     },

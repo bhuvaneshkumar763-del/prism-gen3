@@ -1,5 +1,5 @@
 import { createMemo, createSignal, For, onCleanup, onMount, Show } from 'solid-js';
-import type { PageLanguageState } from '../../src/engine/pageTranslator/translateLoop';
+import type { ErrorKind, PageLanguageState } from '../../src/engine/pageTranslator/translateLoop';
 import { providerDescriptors } from '../../src/engine/providers/descriptors';
 import { applyListPatch, readListsSnapshot } from '../../src/platform/configMutations';
 import { configStore } from '../../src/platform/configStore';
@@ -42,6 +42,7 @@ function App() {
   const [status, setStatus] = createSignal<'idle' | 'busy' | 'error'>('idle');
   const [pageState, setPageState] = createSignal<PageLanguageState>('original');
   const [errorMessage, setErrorMessage] = createSignal<string | null>(null);
+  const [errorKind, setErrorKind] = createSignal<ErrorKind>(null);
   const [targetLanguage, setTargetLanguage] = createSignal('en');
   const [provider, setProvider] = createSignal('google');
   const [ready, setReady] = createSignal(false);
@@ -131,9 +132,10 @@ function App() {
   async function refreshError(): Promise<void> {
     if (tabId === null) return;
     try {
-      const message = await sendMessage('getPageError', undefined, tabId);
-      if (message) {
-        setErrorMessage(message);
+      const result = await sendMessage('getPageError', undefined, tabId);
+      if (result) {
+        setErrorMessage(result.message);
+        setErrorKind(result.kind);
         setStatus('error');
       }
     } catch {
@@ -155,6 +157,7 @@ function App() {
   async function onTranslateClick() {
     setStatus('busy');
     setErrorMessage(null);
+    setErrorKind(null);
     try {
       await configStore.onReady();
       const id = await getActiveTabId();
@@ -166,6 +169,7 @@ function App() {
       setTimeout(() => void refreshError(), 6000);
     } catch (e) {
       setErrorMessage(e instanceof Error ? e.message : String(e));
+      setErrorKind('provider');
       setStatus('error');
     }
   }
@@ -173,6 +177,7 @@ function App() {
   async function onRestoreClick() {
     setStatus('busy');
     setErrorMessage(null);
+    setErrorKind(null);
     try {
       const id = await getActiveTabId();
       tabId = id;
@@ -181,6 +186,7 @@ function App() {
       setStatus('idle');
     } catch (e) {
       setErrorMessage(e instanceof Error ? e.message : String(e));
+      setErrorKind('provider');
       setStatus('error');
     }
   }
@@ -357,7 +363,9 @@ function App() {
       </nav>
 
       <Show when={status() === 'error'}>
-        <p class="error">Error: {errorMessage()}</p>
+        <p class="error" classList={{ offline: errorKind() === 'offline' }}>
+          {errorKind() === 'offline' ? errorMessage() : `Error: ${errorMessage()}`}
+        </p>
       </Show>
     </div>
   );

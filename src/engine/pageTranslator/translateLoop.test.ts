@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { err, ok } from '../../shared/result';
+import { connectivity } from '../connectivity';
 import type { PieceOutcome, Translator } from '../translator';
 import { createPageTranslator } from './translateLoop';
 
@@ -333,7 +334,7 @@ describe('createPageTranslator', () => {
     await waitFor(() => pageTranslator.getLastError() !== null);
 
     expect(pageTranslator.getLastError()).toBe('HTTP 429');
-    expect(errorSpy).toHaveBeenCalledWith('HTTP 429');
+    expect(errorSpy).toHaveBeenCalledWith('HTTP 429', 'provider');
     // The page must stay untranslated — no false success.
     expect(document.body.textContent).toBe('hello');
 
@@ -367,7 +368,7 @@ describe('createPageTranslator', () => {
     await waitFor(() => pageTranslator.getLastError() !== null);
 
     expect(pageTranslator.getLastError()).toBe('HTTP 429');
-    expect(errorSpy).toHaveBeenCalledWith('HTTP 429');
+    expect(errorSpy).toHaveBeenCalledWith('HTTP 429', 'provider');
     expect(document.body.textContent).toBe('hello');
 
     pageTranslator.restorePage();
@@ -456,5 +457,87 @@ describe('createPageTranslator', () => {
 
     expect(() => pageTranslator.restorePage()).not.toThrow();
     expect(pageTranslator.getState()).toBe('original');
+  });
+
+  describe('connectivity awareness (graceful degradation under flaky/no internet)', () => {
+    it('does not call translateBatch at all while offline — reports a distinct "offline" error instead of "provider broken"', async () => {
+      const isOnlineSpy = vi.spyOn(connectivity, 'isOnline').mockReturnValue(false);
+      document.body.innerHTML = '<p>hello</p>';
+      const translateBatch = vi.fn(async (request: { pieces: string[][] }) =>
+        request.pieces.map((piece): PieceOutcome => ok(piece.map((s) => s.toUpperCase()))),
+      );
+      const errorSpy = vi.fn();
+      const pageTranslator = createPageTranslator({
+        translator: { translateBatch },
+        getSourceLanguage: () => 'en',
+        getBatchingHint: () => undefined,
+      });
+      pageTranslator.onError(errorSpy);
+
+      await pageTranslator.translatePage('es');
+      await waitFor(() => pageTranslator.getLastErrorKind() === 'offline');
+
+      expect(translateBatch).not.toHaveBeenCalled();
+      expect(pageTranslator.getLastErrorKind()).toBe('offline');
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('resume automatically'), 'offline');
+      // The queued node is untouched — no false success, no data loss.
+      expect(document.body.textContent).toBe('hello');
+
+      pageTranslator.restorePage();
+      isOnlineSpy.mockRestore();
+    });
+
+    it('resumes translating within one tick of connectivity returning, without waiting for the next scheduled backoff', async () => {
+      const isOnlineSpy = vi.spyOn(connectivity, 'isOnline').mockReturnValue(false);
+      let capturedListener: ((online: boolean) => void) | undefined;
+      const onChangeSpy = vi.spyOn(connectivity, 'onChange').mockImplementation((cb) => {
+        capturedListener = cb;
+        return () => {};
+      });
+      document.body.innerHTML = '<p>hello</p>';
+      const pageTranslator = createPageTranslator({
+        translator: uppercaseTranslator(),
+        getSourceLanguage: () => 'en',
+        getBatchingHint: () => undefined,
+      });
+
+      await pageTranslator.translatePage('es');
+      await waitFor(() => pageTranslator.getLastErrorKind() === 'offline');
+      expect(document.body.textContent).toBe('hello'); // still untranslated while offline
+
+      isOnlineSpy.mockReturnValue(true);
+      capturedListener?.(true);
+      await waitFor(() => document.body.textContent === 'HELLO');
+
+      expect(document.body.textContent).toBe('HELLO');
+      expect(pageTranslator.getLastErrorKind()).toBeNull();
+
+      pageTranslator.restorePage();
+      isOnlineSpy.mockRestore();
+      onChangeSpy.mockRestore();
+    });
+
+    it('a provider failure while online is reported as "provider", not "offline"', async () => {
+      const isOnlineSpy = vi.spyOn(connectivity, 'isOnline').mockReturnValue(true);
+      document.body.innerHTML = '<p>hello</p>';
+      const alwaysFailingTranslator: Translator = {
+        async translateBatch() {
+          throw new Error('HTTP 500');
+        },
+      };
+      const pageTranslator = createPageTranslator({
+        translator: alwaysFailingTranslator,
+        getSourceLanguage: () => 'en',
+        getBatchingHint: () => undefined,
+      });
+
+      await pageTranslator.translatePage('es');
+      await waitFor(() => pageTranslator.getLastError() !== null);
+
+      expect(pageTranslator.getLastErrorKind()).toBe('provider');
+
+      pageTranslator.restorePage();
+      isOnlineSpy.mockRestore();
+    });
   });
 });
