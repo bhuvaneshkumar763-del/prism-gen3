@@ -1,0 +1,36 @@
+#!/bin/sh
+INPUT=$(cat)
+FILE_PATH=$(printf '%s' "$INPUT" | python3 -c "
+import sys, json
+try:
+    d = json.loads(sys.stdin.read())
+    ti = d.get('tool_input') or {}
+    print(ti.get('file_path') or ti.get('path') or '')
+except Exception:
+    print('')
+" 2>/dev/null)
+
+if [ -z "$FILE_PATH" ]; then exit 0; fi
+
+RESULT=$(agora-code summarize "$FILE_PATH" --json-output 2>/dev/null)
+if [ -z "$RESULT" ]; then exit 0; fi
+
+ACTION=$(printf '%s' "$RESULT" | python3 -c "
+import sys, json
+try:
+    print(json.loads(sys.stdin.read()).get('action', 'allow'))
+except Exception:
+    print('allow')
+" 2>/dev/null)
+
+if [ "$ACTION" = "summarize" ]; then
+    printf '%s' "$RESULT" | python3 -c "
+import sys, json
+d = json.loads(sys.stdin.read())
+print(d.get('summary', ''))
+print()
+print(f'[Read blocked: file has {d.get(\"original_lines\", 0)} lines. Use the summary above — do NOT read this file in chunks.]')
+" 2>/dev/null
+    exit 2
+fi
+exit 0
