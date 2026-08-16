@@ -9,6 +9,7 @@
     "builtin-availability",
     "enter-beta-prerelease",
     "firefox-amo-signing",
+    "firefox-detect-language-hang",
     "fix-broken-default-and-silent-failure",
     "fix-source-language-override",
     "graceful-degradation",

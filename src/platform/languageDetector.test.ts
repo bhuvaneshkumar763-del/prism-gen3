@@ -16,6 +16,7 @@ describe('createLanguageDetector', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.useRealTimers();
   });
 
   it('returns the top language, reliability, and percentage', async () => {
@@ -66,5 +67,16 @@ describe('createLanguageDetector', () => {
     const result = await detector.detect('ambiguous text');
 
     expect(result).toBeNull();
+  });
+
+  it('resolves to null instead of hanging forever when detectLanguage never settles, real bug: on Firefox this stalled translation entirely (translateLoop.ts hard-awaits every block detection before translating)', async () => {
+    vi.useFakeTimers();
+    spyOnDetectLanguage().mockReturnValue(new Promise(() => {})); // never resolves or rejects
+
+    const detector = createLanguageDetector();
+    const detectPromise = detector.detect('some text');
+    await vi.advanceTimersByTimeAsync(3000);
+
+    await expect(detectPromise).resolves.toBeNull();
   });
 });

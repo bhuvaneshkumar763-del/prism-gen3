@@ -88,6 +88,22 @@ describe('createOriginalLanguageTracker', () => {
     expect(tracker.get()).toBe('und');
   });
 
+  it('resolves to "und" instead of hanging forever when detectLanguage never settles, real bug: Firefox\'s implementation can hang indefinitely (Mozilla bug 1712214)', async () => {
+    vi.useFakeTimers();
+    spyOnDetectLanguage().mockReturnValue(new Promise(() => {})); // never resolves or rejects
+
+    const tracker = createOriginalLanguageTracker();
+    const startPromise = tracker.start();
+
+    // start() also awaits waitUntilVisible()'s 150ms delay before the detect
+    // call even fires — advance past that first, then past the timeout.
+    await vi.advanceTimersByTimeAsync(200);
+    await vi.advanceTimersByTimeAsync(3000);
+    await startPromise;
+
+    expect(tracker.get()).toBe('und');
+  });
+
   it('does not wait for visibility when the page is already visible', async () => {
     spyOnDetectLanguage().mockResolvedValue({
       isReliable: true,

@@ -23,6 +23,8 @@
  * whatever code `browser.i18n.detectLanguage` reports, as-is.
  */
 
+import { withTimeout } from '../shared/withTimeout';
+
 /**
  * Resolves when the tab becomes visible — but never waits forever. The cap
  * matters because `start()`'s result gates the auto-translate-on-load
@@ -61,11 +63,24 @@ async function waitUntilVisible(timeoutMs = 5000): Promise<void> {
  * to "translate anyway if the user asked for this site" (via the
  * always-translate-sites list), never to silence.
  */
+/**
+ * Real bug, found testing against actual Firefox (not just Chrome, which
+ * is all this was ever exercised against until Firefox releases became
+ * installable): Firefox's `i18n.detectLanguage` has long-standing
+ * upstream reliability problems (e.g. Mozilla bug 1712214) where it can
+ * simply never resolve or reject, rather than failing cleanly the way the
+ * try/catch below already handles. Without a bound, that hangs this
+ * function — and everything downstream awaiting it, including the entire
+ * auto-translate-on-load decision — forever, with no error, no timeout,
+ * nothing. 3s is generous for what should be a near-instant local call.
+ */
+const DETECT_LANGUAGE_TIMEOUT_MS = 3000;
+
 async function detectFromPageText(): Promise<string> {
   try {
     const sample = (document.body?.innerText ?? '').slice(0, 4000).trim();
     if (!sample || typeof browser.i18n?.detectLanguage !== 'function') return 'und';
-    const result = await browser.i18n.detectLanguage(sample);
+    const result = await withTimeout(browser.i18n.detectLanguage(sample), DETECT_LANGUAGE_TIMEOUT_MS);
     const top = result?.languages?.[0]?.language;
     return top ?? 'und';
   } catch (e) {
