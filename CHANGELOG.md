@@ -1,6 +1,6 @@
 # prism-gen3
 
-## 0.3.0-beta.15
+## 0.3.0-beta.16
 
 ### Minor Changes
 
