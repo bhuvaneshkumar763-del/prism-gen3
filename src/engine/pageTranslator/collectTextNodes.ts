@@ -1,3 +1,5 @@
+import { baseLanguageTag } from '../../shared/languages';
+
 /**
  * Depth-first walk collecting translatable Text nodes under `root`,
  * skipping script/style/noscript/textarea subtrees and editable content.
@@ -59,7 +61,32 @@ const BARE_MARKER = /^[#@]$/;
  * them from the provider's context window, rather than trying to get a
  * translation provider to consistently no-op on them.
  */
+/**
+ * Also the reason a lone zero-width character (U+200B, U+200C/U+200D
+ * joiners, U+FEFF) never needs its own filter: none of those are in the
+ * Unicode Letter category either, so a text node containing only invisible
+ * characters already matches this and gets skipped — verified directly
+ * before adding a separate check that would have been dead code.
+ */
 const NO_LETTERS = /^[^\p{L}]*$/u;
+
+export interface CollectTextNodesOptions {
+  /**
+   * Skip a text node whose nearest `[lang]` ancestor's base tag matches
+   * this. Free, zero-API-call signal — some sites mark mixed-language
+   * regions explicitly. Omit to skip this check entirely (no target
+   * language known yet, e.g. before the config/detector is ready).
+   */
+  targetLanguage?: string;
+  /**
+   * Elements to skip entirely, alongside the structural skip rules below —
+   * populated by `blockLanguageFilter.ts`'s block-level "this container is
+   * already confidently in the target language" detection. A separate,
+   * async, best-effort pass computes this set; this function itself stays
+   * synchronous and just consults it.
+   */
+  skipElements?: Set<Element>;
+}
 
 export function isNoTranslateNode(node: Node): boolean {
   if (node.nodeType === Node.ELEMENT_NODE) {
@@ -77,22 +104,56 @@ export function isNoTranslateNode(node: Node): boolean {
   return false;
 }
 
-export function collectTextNodes(root: Node): Text[] {
+/** True if the nearest `[lang]` ancestor's base tag (e.g. "en" out of "en-US") matches `targetBase`. */
+function nearestLangMatches(parent: Node, targetBase: string): boolean {
+  if (!(parent instanceof Element)) return false;
+  const lang = parent.closest('[lang]')?.getAttribute('lang');
+  return !!lang && baseLanguageTag(lang) === targetBase;
+}
+
+/**
+ * Iterative (explicit stack, not recursive) — a pathologically deep DOM
+ * (real risk: infinite-scroll/virtualized-list pages that nest a nearly
+ * flat structure hundreds of levels deep) would blow the call stack with a
+ * recursive walk and kill translation outright with a `RangeError` instead
+ * of just costing more time.
+ */
+export function collectTextNodes(root: Node, options: CollectTextNodesOptions = {}): Text[] {
   const nodes: Text[] = [];
-  const walk = (node: Node): void => {
+  const targetBase = options.targetLanguage ? baseLanguageTag(options.targetLanguage) : null;
+
+  const stack: Node[] = [root];
+  while (stack.length > 0) {
+    // biome-ignore lint/style/noNonNullAssertion: length just checked above
+    const node = stack.pop()!;
     if (node.nodeType === Node.TEXT_NODE) {
       const parent = node.parentNode;
       const text = node.textContent?.trim();
-      if (text && !BARE_MARKER.test(text) && !NO_LETTERS.test(text) && parent && !isNoTranslateNode(parent)) {
+      if (
+        text &&
+        !BARE_MARKER.test(text) &&
+        !NO_LETTERS.test(text) &&
+        parent &&
+        !isNoTranslateNode(parent) &&
+        !(targetBase && nearestLangMatches(parent, targetBase))
+      ) {
         nodes.push(node as Text);
       }
-      return;
+      continue;
     }
-    if (isNoTranslateNode(node)) return;
+    if (isNoTranslateNode(node)) continue;
+    if (options.skipElements?.has(node as Element)) continue;
+    // Push in reverse so the stack pops children in original document
+    // order, then push the shadow root last so it's on top of the stack
+    // and pops first — matching the original recursive walk's order
+    // (shadow content processed before the host's own light-DOM children).
+    const children = node.childNodes;
+    for (let i = children.length - 1; i >= 0; i--) {
+      // biome-ignore lint/style/noNonNullAssertion: i is always in bounds
+      stack.push(children[i]!);
+    }
     const shadowRoot = (node as Element).shadowRoot;
-    if (shadowRoot) walk(shadowRoot);
-    node.childNodes.forEach(walk);
-  };
-  walk(root);
+    if (shadowRoot) stack.push(shadowRoot);
+  }
   return nodes;
 }

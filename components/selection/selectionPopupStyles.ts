@@ -1,6 +1,6 @@
 export const SELECTION_POPUP_STYLES = `
   :host {
-    all: initial;
+    all: initial !important;
   }
   .trigger {
     position: fixed;

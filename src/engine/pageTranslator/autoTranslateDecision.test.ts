@@ -112,6 +112,19 @@ describe('isTranslationServiceHost', () => {
     expect(isTranslationServiceHost('some-site-com.translate.goog')).toBe(true);
   });
 
+  it('recognizes the bare translate.goog host itself', () => {
+    expect(isTranslationServiceHost('translate.goog')).toBe(true);
+  });
+
+  it('recognizes regional Google Translate TLDs, real gap: translate.google.co.uk was unrecognized', () => {
+    expect(isTranslationServiceHost('translate.google.co.uk')).toBe(true);
+    expect(isTranslationServiceHost('translate.google.de')).toBe(true);
+  });
+
+  it('does not false-positive on a hostname that merely ends with the .goog suffix string with no subdomain boundary', () => {
+    expect(isTranslationServiceHost('mytranslate.goog')).toBe(false);
+  });
+
   it('is false for an ordinary hostname', () => {
     expect(isTranslationServiceHost('example.com')).toBe(false);
   });

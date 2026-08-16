@@ -45,6 +45,17 @@ describe('FloatingBubble', () => {
     return { el: container, props };
   }
 
+  it('moves live when bubblePosition changes elsewhere (another tab), real gap: onChanged never actually handled this key despite the header comment claiming it did', async () => {
+    await configStore.set('bubblePosition', { side: 'right', yFrac: 0.5 });
+    const { el } = mount();
+    const wrap = el.querySelector('.wrap');
+    expect(wrap?.classList.contains('right')).toBe(true);
+
+    await configStore.set('bubblePosition', { side: 'left', yFrac: 0.5 });
+
+    expect(wrap?.classList.contains('right')).toBe(false);
+  });
+
   it('renders the ball and panel primary button', () => {
     const { el } = mount();
     expect(el.querySelector('.ball')).not.toBeNull();
@@ -181,6 +192,18 @@ describe('FloatingBubble', () => {
     const alwaysChip = Array.from(el.querySelectorAll('.chip')).find((chip) => chip.textContent?.includes('Always'));
     (alwaysChip as HTMLElement).click();
     expect(onTranslate).toHaveBeenCalledWith('es');
+  });
+
+  it('ArrowDown on the ball opens the panel and moves focus into it, real gap: the panel had no keyboard-open path at all (hover/long-press only)', () => {
+    const { el } = mount();
+    const ball = el.querySelector('.ball') as HTMLButtonElement;
+    const panel = el.querySelector('.panel') as HTMLElement;
+    expect(panel.classList.contains('pinned')).toBe(false);
+
+    ball.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+
+    expect(panel.classList.contains('pinned')).toBe(true);
+    expect(panel.contains(document.activeElement)).toBe(true);
   });
 
   it('renders From/To/Service selects with the current values selected', () => {

@@ -15,14 +15,27 @@ import { baseLanguageTag } from '../../shared/languages';
 
 const TRANSLATION_SERVICE_HOSTS = new Set([
   'translate.googleusercontent.com',
-  'translate.google.com',
   'translate.yandex.com',
   'www.deepl.com',
   'translated.turbopages.org',
 ]);
 
+/**
+ * `translate.google.com` alone missed every regional TLD Google Translate's
+ * own site actually uses (`translate.google.co.uk`, `translate.google.de`,
+ * ...) — real bug, matched by pattern instead of one entry per TLD.
+ */
+const TRANSLATE_GOOGLE_SITE = /^translate\.google\.[a-z.]+$/;
+
 export function isTranslationServiceHost(hostname: string): boolean {
-  return TRANSLATION_SERVICE_HOSTS.has(hostname) || hostname.endsWith('translate.goog');
+  if (TRANSLATION_SERVICE_HOSTS.has(hostname)) return true;
+  if (TRANSLATE_GOOGLE_SITE.test(hostname)) return true;
+  // Dot-boundary the .goog suffix: a bare endsWith('translate.goog') also
+  // matches a hostname like "mytranslate.goog" (the substring "translate.goog"
+  // is a suffix even with no subdomain dot before it) — false-positive
+  // service-host match on an unrelated site. Require an exact match or a
+  // real subdomain boundary.
+  return hostname === 'translate.goog' || hostname.endsWith('.translate.goog');
 }
 
 export interface AutoTranslateDecisionInput {

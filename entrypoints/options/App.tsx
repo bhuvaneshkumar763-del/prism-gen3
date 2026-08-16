@@ -60,6 +60,7 @@ function App() {
   const [diagnostics, setDiagnostics] = createSignal<DiagnosticsReport | null>(null);
   const [diagnosticsRunning, setDiagnosticsRunning] = createSignal(false);
   const [cacheCleared, setCacheCleared] = createSignal(false);
+  const [clearingCache, setClearingCache] = createSignal(false);
   const [backupMessage, setBackupMessage] = createSignal<string | null>(null);
   const [restoredDefaults, setRestoredDefaults] = createSignal(false);
   /**
@@ -85,6 +86,7 @@ function App() {
   }
 
   async function handleClearCache(): Promise<void> {
+    setClearingCache(true);
     try {
       await translationCache.clear();
       setCacheCleared(true);
@@ -92,6 +94,8 @@ function App() {
       if (diagnostics()) await handleRunDiagnostics();
     } catch (e) {
       setSaveError(`Couldn't clear the cache: ${describeError(e)}`);
+    } finally {
+      setClearingCache(false);
     }
   }
 
@@ -495,7 +499,12 @@ function App() {
               <span>Show a button to translate selected text</span>
             </label>
 
-            <p class="hint">Per-site source-language overrides (set from the bubble's "From" select):</p>
+            <p class="hint">
+              Per-site source-language overrides (set from the bubble's "From" select). Pinning a site tells the
+              translator every request on it is in that language, overriding its own per-request detection — content
+              already in your target language can come back garbled. Only pin a site if automatic detection is genuinely
+              wrong for it.
+            </p>
             <Show when={sourceLanguageHostEntries().length > 0} fallback={<p class="listEditorEmpty">None</p>}>
               <ul class="siteTable">
                 <For each={sourceLanguageHostEntries()}>
@@ -532,8 +541,8 @@ function App() {
               <span>Cache translations on disk (reduces repeat requests to the provider)</span>
             </label>
             <div class="diagnosticsActions">
-              <button type="button" onClick={() => void handleClearCache()}>
-                Clear translation cache
+              <button type="button" disabled={clearingCache()} onClick={() => void handleClearCache()}>
+                {clearingCache() ? 'Clearing…' : 'Clear translation cache'}
               </button>
               <Show when={cacheCleared()}>
                 <span class="saved inline">Cache cleared</span>

@@ -2,10 +2,12 @@ import { mountBubble } from '../components/bubble/mountBubble';
 import { mountHoverTooltip } from '../components/hoverTooltip/mountHoverTooltip';
 import { mountSelectionPopup } from '../components/selection/mountSelectionPopup';
 import { shouldAutoTranslateOnLoad } from '../src/engine/pageTranslator/autoTranslateDecision';
+import { createBlockLanguageFilter } from '../src/engine/pageTranslator/blockLanguageFilter';
 import { createPageTranslator } from '../src/engine/pageTranslator/translateLoop';
 import { getBatchingHint } from '../src/engine/providers/descriptors';
 import { configStore } from '../src/platform/configStore';
-import { onMessage } from '../src/platform/messaging/protocol';
+import { createLanguageDetector } from '../src/platform/languageDetector';
+import { onMessage, sendMessage } from '../src/platform/messaging/protocol';
 import { createOriginalLanguageTracker } from '../src/platform/originalLanguageTracker';
 import { createRemoteTranslator } from '../src/platform/remoteTranslator';
 import { resolveBubbleVisibility, resolveSourceLanguageForHost } from '../src/shared/config/siteOverrides';
@@ -51,6 +53,14 @@ const SKIP_UI_PROTOCOLS = ['chrome-extension:', 'moz-extension:', 'about:'];
  */
 export default defineContentScript({
   matches: ['*://*/*'],
+  // Real gap: iframe content got no translation of any kind (not just no
+  // auto-translate decision) — the content script never ran there at all.
+  // Now it runs in every frame; main() below still scopes UI mounting and
+  // the popup-facing onMessage handlers to the top frame only (see the
+  // `window.self === window.top` checks), so this alone doesn't change any
+  // existing single-frame behavior — it only adds a frame-scoped
+  // pageTranslator plus the auto-translate relay for same-origin sub-frames.
+  allFrames: true,
   // Post-launch speed pass: no explicit runAt meant WXT/Chrome defaulted to
   // document_idle (roughly "after the page's load event"), which on a page
   // with slow images/ads/trackers can start this script — and therefore
@@ -72,6 +82,7 @@ export default defineContentScript({
           configStore.get('sourceLanguage'),
         ),
       getBatchingHint: () => getBatchingHint(configStore.get('pageTranslatorProvider')),
+      blockLanguageFilter: createBlockLanguageFilter(createLanguageDetector()),
     });
 
     if (window.self === window.top && !SKIP_UI_PROTOCOLS.includes(location.protocol)) {
@@ -215,26 +226,71 @@ export default defineContentScript({
           neverTranslateLangs: configStore.get('neverTranslateLangs'),
           isIncognito: browser.extension?.inIncognitoContext ?? false,
         });
+        // Report unconditionally (even "don't translate") — a same-origin
+        // sub-frame needs to know the main frame HAS decided, not just
+        // what a positive decision was, so it can stop retrying below
+        // instead of waiting the full retry budget out on every load.
+        void sendMessage('reportFrameLanguageDecision', {
+          shouldTranslate,
+          targetLanguage: configStore.get('targetLanguage'),
+        });
         if (shouldTranslate) {
           await pageTranslator.translatePage(configStore.get('targetLanguage'));
         }
       })();
+    } else {
+      // Sub-frame: same-origin access to window.top throws for a
+      // cross-origin frame — that throw itself is the same-origin check,
+      // no separate origin comparison needed. Cross-origin iframes are a
+      // deliberate scope cut (matching the pre-existing documented
+      // decision) — they get a pageTranslator (reachable if something ever
+      // messages this frame directly) but no auto-translate decision of
+      // any kind, same as before this change.
+      let sameOrigin = true;
+      try {
+        void window.top?.location.href;
+      } catch {
+        sameOrigin = false;
+      }
+      if (sameOrigin) {
+        void (async () => {
+          await configStore.onReady();
+          // The main frame's own report can arrive after this sub-frame
+          // has already loaded (e.g. the iframe's own document finishes
+          // parsing first) — poll briefly rather than querying once and
+          // giving up. Bounded, not indefinite: a main frame that never
+          // reports (translation disabled, an error) must not leave this
+          // polling forever.
+          const POLL_INTERVAL_MS = 200;
+          const MAX_ATTEMPTS = 15; // ~3s
+          for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+            const decision = await sendMessage('getFrameLanguageDecision', undefined);
+            if (decision) {
+              if (decision.shouldTranslate) await pageTranslator.translatePage(decision.targetLanguage);
+              return;
+            }
+            await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+          }
+        })();
+      }
     }
 
-    onMessage('pageTranslate', async (message) => {
-      await configStore.onReady();
-      await pageTranslator.translatePage(message.data.targetLanguage);
-      return pageTranslator.getState();
-    });
-    onMessage('pageRestore', () => {
-      pageTranslator.restorePage();
-      return pageTranslator.getState();
-    });
-    onMessage('getPageState', () => pageTranslator.getState());
-    onMessage('getOriginalLanguage', () => originalLanguageTracker.get());
-    onMessage('getPageError', () => {
-      const message = pageTranslator.getLastError();
-      return message ? { message, kind: pageTranslator.getLastErrorKind() } : null;
-    });
+    if (window.self === window.top) {
+      onMessage('pageTranslate', async (message) => {
+        await configStore.onReady();
+        await pageTranslator.translatePage(message.data.targetLanguage);
+        return pageTranslator.getState();
+      });
+      onMessage('pageRestore', () => {
+        pageTranslator.restorePage();
+        return pageTranslator.getState();
+      });
+      onMessage('getPageState', () => pageTranslator.getState());
+      onMessage('getOriginalLanguage', () => originalLanguageTracker.get());
+      onMessage('getPageError', () => {
+        const message = pageTranslator.getLastError();
+        return message ? { message, kind: pageTranslator.getLastErrorKind() } : null;
+      });
+    }
   },
 });

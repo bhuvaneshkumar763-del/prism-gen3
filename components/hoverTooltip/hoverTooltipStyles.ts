@@ -1,6 +1,6 @@
 export const HOVER_TOOLTIP_STYLES = `
   :host {
-    all: initial;
+    all: initial !important;
   }
   .tooltip {
     position: fixed;

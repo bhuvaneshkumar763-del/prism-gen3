@@ -787,4 +787,68 @@ describe('viewport-priority reordering — dirty-flag gating', () => {
 
     pageTranslator.restorePage();
   });
+
+  it('excludes content the block-language filter says is already in the target language, real bug: manual source-language override force-translated already-English UI chrome', async () => {
+    document.body.innerHTML = '<p id="already-english">Keep me as-is</p><p id="translate-me">hello</p>';
+    const alreadyEnglish = document.getElementById('already-english');
+    if (!alreadyEnglish) throw new Error('unreachable');
+
+    const pageTranslator = createPageTranslator({
+      translator: uppercaseTranslator(),
+      getSourceLanguage: () => 'vi',
+      getBatchingHint: () => undefined,
+      blockLanguageFilter: {
+        computeSkipElements: async () => new Set([alreadyEnglish]),
+      },
+    });
+
+    await pageTranslator.translatePage('en');
+    await waitFor(() => document.getElementById('translate-me')?.textContent === 'HELLO');
+
+    expect(document.getElementById('already-english')?.textContent).toBe('Keep me as-is');
+
+    pageTranslator.restorePage();
+  });
+
+  it('a stale translatePage() call does not corrupt state once a newer call has already started, real risk: the new await for block-language detection', async () => {
+    document.body.innerHTML = '<p>hello</p>';
+    let resolveFirst: (value: Set<Element>) => void = () => {};
+    const firstDetection = new Promise<Set<Element>>((resolve) => {
+      resolveFirst = resolve;
+    });
+    let callCount = 0;
+
+    const pageTranslator = createPageTranslator({
+      translator: uppercaseTranslator(),
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+      blockLanguageFilter: {
+        computeSkipElements: async () => {
+          callCount++;
+          if (callCount === 1) return firstDetection;
+          return new Set();
+        },
+      },
+    });
+
+    // Fire the first call but don't await it yet — it's now suspended
+    // inside computeSkipElements.
+    const firstCall = pageTranslator.translatePage('fr');
+    // A second, newer call starts and completes fully before the first's
+    // await ever resolves.
+    await pageTranslator.translatePage('es');
+    await waitFor(() => document.body.textContent === 'HELLO');
+
+    // Now let the first (stale) call's await resolve.
+    resolveFirst(new Set());
+    await firstCall;
+
+    // The clearest observable symptom of the race: without the generation
+    // guard, the stale call resumes and overwrites nodesToRestore using
+    // the DOM's *current* (already-translated) text as if it were the
+    // original — so restoring afterward leaves the translated text in
+    // place instead of actually restoring it.
+    pageTranslator.restorePage();
+    expect(document.body.textContent).toBe('hello');
+  });
 });

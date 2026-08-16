@@ -30,6 +30,21 @@ describe('configStore', () => {
     expect(store.get('googleCloudTranslateApiKey')).toBe(defaultConfig.googleCloudTranslateApiKey);
   });
 
+  it('falls back to the default for a key whose stored value fails schema validation, real gap: only import() validated', async () => {
+    // Simulate corrupted extension storage directly — bypassing store.set()
+    // (which would itself reject an invalid value) is the point: this is
+    // data that got into storage some other way (a bad migration, manual
+    // tampering, a future bug) and must not be blindly trusted on load.
+    await fakeBrowser.storage.local.set({ targetLanguage: 12345, sourceLanguage: 'vi' });
+
+    const store = await freshStore();
+    await expect(store.onReady()).resolves.toBeUndefined();
+
+    expect(store.get('targetLanguage')).toBe(defaultConfig.targetLanguage);
+    // A neighboring, validly-typed key is unaffected by the corrupted one.
+    expect(store.get('sourceLanguage')).toBe('vi');
+  });
+
   it('set() persists to browser.storage.local under the plain field name', async () => {
     const store = await freshStore();
     await store.onReady();

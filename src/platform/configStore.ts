@@ -59,11 +59,27 @@ export function createConfigStore(backend: StorageBackend = localStorageBackend)
     return { ...migrated, [VERSION_KEY]: CONFIG_SCHEMA_VERSION };
   }
 
+  /**
+   * Validates each stored value against its own schema before adopting it
+   * — real gap: only the import/restore path (`applyValidatedConfig`
+   * below) validated; a value corrupted directly in extension storage was
+   * trusted as-is and could fail somewhere far from the real cause. Never
+   * throws — startup must never fail because of this — a key that fails
+   * validation just keeps `state`'s existing default (set at this
+   * closure's top) instead of adopting the bad value.
+   */
   async function initConfig(): Promise<void> {
     const raw = await migrateIfNeeded();
     for (const key of Object.keys(defaultConfig) as ConfigKey[]) {
-      if (Object.hasOwn(raw, key)) {
-        (state as Record<ConfigKey, unknown>)[key] = raw[key];
+      if (!Object.hasOwn(raw, key)) continue;
+      const result = configSchema.shape[key].safeParse(raw[key]);
+      if (result.success) {
+        (state as Record<ConfigKey, unknown>)[key] = result.data;
+      } else {
+        console.warn(
+          `[prism] stored value for config key "${key}" failed validation, using the default instead`,
+          result.error,
+        );
       }
     }
     configIsReady = true;

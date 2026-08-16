@@ -229,16 +229,46 @@ export function FloatingBubble(props: FloatingBubbleProps) {
         // ignore
       }
       if (moved) {
+        const previousDockState = dockState;
         dockState = positionFromDragPoint(pos, viewport(), BALL_SIZE);
         pos = applyState();
-        void configStore.set('bubblePosition', dockState);
+        configStore.set('bubblePosition', dockState).catch(() => {
+          // Save failed — revert to the last-persisted position instead of
+          // leaving the ball wherever it visually landed but never saved,
+          // which would silently reset to the old spot on next page load.
+          dockState = previousDockState;
+          pos = applyState();
+        });
       } else {
         toggleTranslate();
       }
     };
+    /**
+     * A drag interrupted by the browser taking over (e.g. this ball sits
+     * near a screen edge and an OS/browser edge gesture — like Chrome's own
+     * back-swipe — claims the pointer sequence mid-drag) used to leave
+     * `dragging`/`moved` stuck true with no `pointerup` ever firing:
+     * `previewAt()`'s last call is left applied as the *visual* position
+     * (drawn directly via style, not persisted), so the ball can render at
+     * a stale, never-saved spot until something else repositions it, and a
+     * later click can be misread as "moved" from `onDocPointerDown`'s
+     * pinned-state check. Snap back to the last real committed position.
+     */
+    const onPointerCancel = (e: PointerEvent) => {
+      dragging = false;
+      moved = false;
+      if (longPressTimer) clearTimeout(longPressTimer);
+      try {
+        ball.releasePointerCapture(e.pointerId);
+      } catch {
+        // ignore
+      }
+      pos = applyState();
+    };
     ball.addEventListener('pointerdown', onPointerDown);
     ball.addEventListener('pointermove', onPointerMove);
     ball.addEventListener('pointerup', onPointerUp);
+    ball.addEventListener('pointercancel', onPointerCancel);
 
     const onDocPointerDown = (e: PointerEvent) => {
       if (pinned() && e.target !== props.shadowHost) setPinned(false);
@@ -252,6 +282,19 @@ export function FloatingBubble(props: FloatingBubbleProps) {
       } else if (e.key === 'Escape') {
         setPinned(false);
         ball.blur();
+      } else if (e.key === 'ArrowDown') {
+        // Real gap: the panel's only "open" triggers were :hover (mouse)
+        // and a 450ms pointer long-press (touch) — a keyboard/screen-reader
+        // user could reach the ball but had no way to open the panel at
+        // all, since its controls sit at visibility:hidden until one of
+        // those two fires and aren't in the tab order until then either.
+        // ArrowDown is the standard disclosure-widget convention for "open
+        // and move into the revealed content."
+        e.preventDefault();
+        setPinned(true);
+        positionPanelNow();
+        const firstControl = panel.querySelector<HTMLElement>('select, button, input, [tabindex]');
+        firstControl?.focus();
       }
     };
     ball.addEventListener('keydown', onKeydown);
@@ -268,6 +311,14 @@ export function FloatingBubble(props: FloatingBubbleProps) {
       else if (name === 'alwaysTranslateSites') setAlwaysOn((value as string[]).includes(props.hostname));
       else if (name === 'sourceLanguageByHost') {
         setSourceLanguageSignal(resolveSourceLanguageForHost(value as Record<string, string>, props.hostname, 'auto'));
+      } else if (name === 'bubblePosition') {
+        // Real gap: this header comment always claimed position stayed
+        // live-synced via onChanged, but nothing here actually handled the
+        // key — dragging the bubble in one tab left every other open tab's
+        // bubble stale until its next reload. Also fires (harmlessly,
+        // idempotently) for this instance's own writes in onPointerUp.
+        dockState = normalizeBubblePosition(value as BubblePosition);
+        pos = applyState();
       }
     });
 
@@ -281,6 +332,7 @@ export function FloatingBubble(props: FloatingBubbleProps) {
       ball.removeEventListener('pointerdown', onPointerDown);
       ball.removeEventListener('pointermove', onPointerMove);
       ball.removeEventListener('pointerup', onPointerUp);
+      ball.removeEventListener('pointercancel', onPointerCancel);
       document.removeEventListener('pointerdown', onDocPointerDown, true);
       ball.removeEventListener('keydown', onKeydown);
       document.removeEventListener('fullscreenchange', onFsChange, false);
@@ -312,20 +364,30 @@ export function FloatingBubble(props: FloatingBubbleProps) {
 
   function onHideClick(e: MouseEvent): void {
     e.stopPropagation();
-    void configStore.set(
-      'bubbleByHost',
-      setBubbleVisibilityForHost(configStore.get('bubbleByHost'), props.hostname, false),
-    );
+    // props.onClose() below hides the bubble in this session's DOM
+    // immediately regardless — that's the correct, expected UX for the
+    // click itself. A failed persist just means it can reappear on the
+    // next page load instead of staying hidden; nothing else to roll back
+    // here since this component holds no local "hidden" signal of its own.
+    configStore
+      .set('bubbleByHost', setBubbleVisibilityForHost(configStore.get('bubbleByHost'), props.hostname, false))
+      .catch((e2) => console.warn('[prism] failed to save bubble-hidden preference', e2));
     props.onClose();
   }
 
   function onSourceLanguageChange(e: Event): void {
     e.stopPropagation();
     const code = (e.currentTarget as HTMLSelectElement).value;
-    void configStore.set(
-      'sourceLanguageByHost',
-      setSourceLanguageForHost(configStore.get('sourceLanguageByHost'), props.hostname, code),
-    );
+    const previous = sourceLanguage();
+    configStore
+      .set(
+        'sourceLanguageByHost',
+        setSourceLanguageForHost(configStore.get('sourceLanguageByHost'), props.hostname, code),
+      )
+      .catch((e2) => {
+        console.warn('[prism] failed to save source-language override', e2);
+        setSourceLanguageSignal(previous);
+      });
     setSourceLanguageSignal(code);
     props.onTranslate(targetLanguage());
   }
@@ -333,7 +395,11 @@ export function FloatingBubble(props: FloatingBubbleProps) {
   function onTargetLanguageChange(e: Event): void {
     e.stopPropagation();
     const code = (e.currentTarget as HTMLSelectElement).value;
-    void configStore.set('targetLanguage', code);
+    const previous = targetLanguage();
+    configStore.set('targetLanguage', code).catch((e2) => {
+      console.warn('[prism] failed to save target language', e2);
+      setTargetLanguageSignal(previous);
+    });
     setTargetLanguageSignal(code);
     props.onTranslate(code);
   }
@@ -341,7 +407,11 @@ export function FloatingBubble(props: FloatingBubbleProps) {
   function onServiceChange(e: Event): void {
     e.stopPropagation();
     const id = (e.currentTarget as HTMLSelectElement).value as ProviderId;
-    void configStore.set('pageTranslatorProvider', id);
+    const previous = service();
+    configStore.set('pageTranslatorProvider', id).catch((e2) => {
+      console.warn('[prism] failed to save translation service', e2);
+      setServiceSignal(previous);
+    });
     setServiceSignal(id);
     props.onTranslate(targetLanguage());
   }
@@ -373,7 +443,9 @@ export function FloatingBubble(props: FloatingBubbleProps) {
         classList={{ busy: props.state.busy }}
         ref={ball}
         aria-label="Translate this page"
-        title="Click to translate · drag to move"
+        aria-haspopup="true"
+        aria-expanded={pinned()}
+        title="Click to translate · drag to move · Arrow Down to open settings"
       >
         <svg class="ic ic-tr" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
           <path d="M12.87 15.07l-2.54-2.51.03-.03c1.74-1.94 2.98-4.17 3.71-6.53H17V4h-7V2H8v2H1v1.99h11.17C11.5 7.92 10.44 9.75 9 11.35c-.93-1.03-1.7-2.16-2.31-3.35h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11.76-2.04zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2l-4.5-12zm-2.62 7l1.62-4.33L19.12 17h-3.24z" />
@@ -413,7 +485,16 @@ export function FloatingBubble(props: FloatingBubbleProps) {
           <div class="selrow">
             <div class="selcol">
               <span class="sellbl">From</span>
-              <select class="sel" on:click={(e) => e.stopPropagation()} on:change={onSourceLanguageChange}>
+              <select
+                class="sel"
+                on:click={(e) => e.stopPropagation()}
+                on:change={onSourceLanguageChange}
+                title={
+                  sourceLanguage() === 'auto'
+                    ? 'Detect each request automatically (recommended for mixed-language pages)'
+                    : "Pinned — tells the translator every request on this site is in this language, overriding its own per-request detection. Content that's already in your target language can come back garbled. Prefer Auto unless detection is genuinely wrong for this site."
+                }
+              >
                 <For each={sourceLangOptions()}>
                   {(code) => (
                     <option value={code} selected={code === sourceLanguage()}>

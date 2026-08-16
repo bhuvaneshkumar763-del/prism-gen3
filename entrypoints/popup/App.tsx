@@ -15,7 +15,18 @@ import {
 } from '../../src/shared/config/listMutations';
 import { resolveBubbleVisibility, setBubbleVisibilityForHost } from '../../src/shared/config/siteOverrides';
 import { COMMON_LANGUAGES, languageName } from '../../src/shared/languages';
+import { withTimeout } from '../../src/shared/withTimeout';
 import './App.css';
+
+/**
+ * A content script that never replies (page navigated away mid-request, or
+ * its tab crashed) used to leave the popup stuck on its "busy"/"translating…"
+ * state forever, since a promise that never settles never reaches these
+ * calls' existing try/catch either. Every content-script-directed message
+ * from this popup goes through this so a hang becomes a real, catchable
+ * error instead.
+ */
+const CONTENT_SCRIPT_TIMEOUT_MS = 5000;
 
 const MAX_QUICK_LANGUAGES = 5;
 
@@ -93,9 +104,9 @@ function App() {
         }
       }
       if (tabId !== null) {
-        const state = await sendMessage('getPageState', undefined, tabId);
+        const state = await withTimeout(sendMessage('getPageState', undefined, tabId), CONTENT_SCRIPT_TIMEOUT_MS);
         setPageState(state);
-        const lang = await sendMessage('getOriginalLanguage', undefined, tabId);
+        const lang = await withTimeout(sendMessage('getOriginalLanguage', undefined, tabId), CONTENT_SCRIPT_TIMEOUT_MS);
         setOriginalLanguage(lang);
         // A translation can keep failing in the background well after the
         // page reports 'translated' (translateLoop.ts never reverts
@@ -140,7 +151,7 @@ function App() {
   async function refreshError(): Promise<void> {
     if (tabId === null) return;
     try {
-      const result = await sendMessage('getPageError', undefined, tabId);
+      const result = await withTimeout(sendMessage('getPageError', undefined, tabId), CONTENT_SCRIPT_TIMEOUT_MS);
       if (result) {
         setErrorMessage(result.message);
         setErrorKind(result.kind);
@@ -170,7 +181,10 @@ function App() {
       await configStore.onReady();
       const id = await getActiveTabId();
       tabId = id;
-      const state = await sendMessage('pageTranslate', { targetLanguage: targetLanguage() }, id);
+      const state = await withTimeout(
+        sendMessage('pageTranslate', { targetLanguage: targetLanguage() }, id),
+        CONTENT_SCRIPT_TIMEOUT_MS,
+      );
       setPageState(state);
       setStatus('idle');
       setTimeout(() => void refreshError(), 2000);
@@ -189,7 +203,7 @@ function App() {
     try {
       const id = await getActiveTabId();
       tabId = id;
-      const state = await sendMessage('pageRestore', undefined, id);
+      const state = await withTimeout(sendMessage('pageRestore', undefined, id), CONTENT_SCRIPT_TIMEOUT_MS);
       setPageState(state);
       setStatus('idle');
     } catch (e) {
@@ -219,8 +233,14 @@ function App() {
     }
     await applyListPatch(configStore, addSiteToNeverTranslate(snapshot, host));
     if (tabId !== null && pageState() === 'translated') {
-      const state = await sendMessage('pageRestore', undefined, tabId);
-      setPageState(state);
+      try {
+        const state = await withTimeout(sendMessage('pageRestore', undefined, tabId), CONTENT_SCRIPT_TIMEOUT_MS);
+        setPageState(state);
+      } catch {
+        // The never-translate-list update above already succeeded; a
+        // failed/timed-out restore here just means the page's own state
+        // stays whatever it was — nothing else to surface for this action.
+      }
     }
   }
 

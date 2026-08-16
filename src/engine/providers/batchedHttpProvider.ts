@@ -62,6 +62,16 @@ interface RetryableError extends Error {
   retryAfterMs?: number;
 }
 
+/**
+ * A 4xx other than 429 (a bad/expired API key, a malformed request) is
+ * permanent — retrying it wastes the full retry budget (up to ~30s)
+ * confirming the same failure three times before surfacing an error the
+ * first attempt already proved. Real bug: `sendWithRetry`'s catch didn't
+ * distinguish this from a transient network/5xx/429 failure at all, so it
+ * retried everything uniformly.
+ */
+class NonRetryableHttpError extends Error {}
+
 interface PendingRequest {
   wireText: string;
   /**
@@ -125,7 +135,7 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
         throw retryableError;
       }
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
+        throw new NonRetryableHttpError(`HTTP ${response.status}`);
       }
       return await response.json();
     } finally {
@@ -179,6 +189,7 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
       try {
         return await sendOnce(sourceLanguage, targetLanguage, pieceWireTexts, Math.min(REQUEST_TIMEOUT_MS, remaining));
       } catch (e) {
+        if (e instanceof NonRetryableHttpError) throw e;
         lastError = e as RetryableError;
       }
     }

@@ -11,7 +11,7 @@ export const BUBBLE_STYLES = `
   * { box-sizing: border-box; margin: 0; padding: 0;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; }
 
-  :host { all: initial; }
+  :host { all: initial !important; }
 
   .wrap { position: fixed; width: 40px; height: 40px;
           --accent: #6366f1; --accent2: #4f46e5; z-index: 2147483647; }
@@ -56,7 +56,7 @@ export const BUBBLE_STYLES = `
     transform-origin: center center;
     transition: opacity .16s ease, transform .16s ease, visibility .16s;
   }
-  .wrap:hover .panel, .panel.pinned {
+  .wrap:hover .panel, .panel.pinned, .wrap:focus-within .panel {
     opacity: 1; visibility: visible; transform: scale(1);
   }
 

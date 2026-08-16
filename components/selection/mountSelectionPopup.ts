@@ -92,12 +92,36 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
     renderNow();
   }
 
-  function onMouseUp(e: MouseEvent): void {
-    // Ignore mouseup inside our own shadow host (e.g. releasing a click
-    // on the trigger button) so it doesn't immediately re-hide itself.
-    if (e.composedPath().includes(host)) return;
+  /**
+   * `window.getSelection()` cannot see into a shadow root — real gap, given
+   * page translation itself (`collectTextNodes.ts`) deliberately crosses
+   * shadow boundaries. A user can highlight text inside a site's sealed
+   * comment widget and the "translate this" trigger never appears at all.
+   * Chromium supports the non-standard `ShadowRoot.getSelection()`;
+   * Firefox/Safari don't (`typeof shadowRoot.getSelection !== 'function'`
+   * there), so this is purely additive — falls straight back to
+   * `window.getSelection()` everywhere it isn't available, same as before
+   * this existed. Walks the event's `composedPath()` (innermost first) so
+   * a selection inside a NESTED shadow tree resolves to its own closest
+   * root, not an ancestor's.
+   */
+  function resolveActiveSelection(e: Event): Selection | null {
+    for (const node of e.composedPath()) {
+      const shadowRoot = (node as Partial<Element>).shadowRoot as
+        | (ShadowRoot & { getSelection?(): Selection | null })
+        | null
+        | undefined;
+      if (shadowRoot && typeof shadowRoot.getSelection === 'function') {
+        const selection = shadowRoot.getSelection();
+        if (selection && !selection.isCollapsed && selection.rangeCount > 0) return selection;
+      }
+    }
+    return window.getSelection();
+  }
 
-    const info = getSelectionInfo(window.getSelection());
+  /** Shared by the mouse and keyboard paths below — the trigger's own show/hide logic doesn't care how the selection changed. */
+  function updateFromCurrentSelection(e: Event): void {
+    const info = getSelectionInfo(resolveActiveSelection(e));
     if (!info) {
       requestId++;
       state = { ...state, buttonVisible: false, panelOpen: false };
@@ -118,11 +142,34 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
     renderNow();
   }
 
+  function onMouseUp(e: MouseEvent): void {
+    // Ignore mouseup inside our own shadow host (e.g. releasing a click
+    // on the trigger button) so it doesn't immediately re-hide itself.
+    if (e.composedPath().includes(host)) return;
+    updateFromCurrentSelection(e);
+  }
+
+  /**
+   * Real gap: the trigger only ever listened for `mouseup`, so selecting
+   * text via keyboard (Shift+Arrow, Ctrl/Cmd+A, Shift+Home/End) never
+   * showed it at all — the feature was silently mouse-only. Any keyup
+   * can plausibly have changed the selection; `updateFromCurrentSelection`
+   * itself already no-ops (hides the trigger) for a collapsed/empty
+   * selection, so there's no need to enumerate every selection-extending
+   * key combination here.
+   */
+  function onKeyUp(e: KeyboardEvent): void {
+    if (e.composedPath().includes(host)) return;
+    updateFromCurrentSelection(e);
+  }
+
   document.addEventListener('mouseup', onMouseUp);
+  document.addEventListener('keyup', onKeyUp);
 
   return {
     destroy() {
       document.removeEventListener('mouseup', onMouseUp);
+      document.removeEventListener('keyup', onKeyUp);
       dispose?.();
       host.remove();
     },

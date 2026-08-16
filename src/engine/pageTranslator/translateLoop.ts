@@ -1,6 +1,7 @@
 import { connectivity } from '../connectivity';
 import type { BatchingHint } from '../providers/descriptors';
 import type { Translator } from '../translator';
+import type { BlockLanguageFilter } from './blockLanguageFilter';
 import { collectTextNodes, isNoTranslateNode } from './collectTextNodes';
 import { createDedupeTracker } from './dedupe';
 import { groupNodesForBatching } from './grouping';
@@ -48,6 +49,13 @@ export interface PageTranslatorOptions {
   /** Looked up per translate cycle to decide chunking — see descriptors.ts's `batchingHint`. */
   getBatchingHint(): BatchingHint | undefined;
   getDontSortResults?(): boolean;
+  /**
+   * Optional: closes the manual-source-language-override gap (see
+   * `blockLanguageFilter.ts`'s header comment) by excluding content
+   * already confidently in the target language before it's ever queued.
+   * Omit to skip this entirely (matches every prior behavior).
+   */
+  blockLanguageFilter?: BlockLanguageFilter;
 }
 
 export function createPageTranslator(options: PageTranslatorOptions) {
@@ -63,6 +71,25 @@ export function createPageTranslator(options: PageTranslatorOptions) {
   // node it ever translated for the life of the tab.
   let nodesToRestore = new Map<Text, string>();
   let currentTargetLanguage = '';
+  /**
+   * Refreshed synchronously (awaited) at the start of `translatePage` —
+   * the primary path, since that's what a manual source-language override
+   * actually affects. The mutation/resweep paths below are synchronous
+   * interfaces they don't control (`mutationWatcher.ts`'s `onNewRoot` and
+   * `resweep.ts`'s `onResweep` are both non-async by design), so they use
+   * whatever this held as of the *previous* cycle and kick off a
+   * fire-and-forget refresh for the next one — a newly mutated section can
+   * lag one resweep tick before it's excluded, an acceptable trade-off for
+   * a quality optimization, not a correctness gate.
+   */
+  let currentSkipElements = new Set<Element>();
+
+  function refreshSkipElementsInBackground(): void {
+    if (!options.blockLanguageFilter || !currentTargetLanguage) return;
+    void options.blockLanguageFilter.computeSkipElements(document.body, currentTargetLanguage).then((next) => {
+      currentSkipElements = next;
+    });
+  }
   /**
    * Set whenever the viewport-priority ordering could have gone stale — a
    * scroll (via resweep.ts's `onViewportChanged`) or a newly-queued node —
@@ -352,8 +379,12 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     isTranslated: () => pageLanguageState === 'translated',
     isNoTranslateNode,
     onNewRoot(root) {
-      const added = collectTextNodes(root).filter((n) => queueOrRequeueIfChanged(n)).length;
+      const added = collectTextNodes(root, {
+        targetLanguage: currentTargetLanguage,
+        skipElements: currentSkipElements,
+      }).filter((n) => queueOrRequeueIfChanged(n)).length;
       if (added > 0) wakeRoutine();
+      refreshSkipElementsInBackground();
     },
     onChangedTextNode(node) {
       requeueChangedTextNode(node);
@@ -377,8 +408,12 @@ export function createPageTranslator(options: PageTranslatorOptions) {
       for (const node of nodesToRestore.keys()) {
         if (!node.isConnected) nodesToRestore.delete(node);
       }
-      const added = collectTextNodes(document.body).filter((n) => queueOrRequeueIfChanged(n)).length;
+      const added = collectTextNodes(document.body, {
+        targetLanguage: currentTargetLanguage,
+        skipElements: currentSkipElements,
+      }).filter((n) => queueOrRequeueIfChanged(n)).length;
       if (added > 0) wakeRoutine();
+      refreshSkipElementsInBackground();
       return added > 0;
     },
     onViewportChanged() {
@@ -433,8 +468,19 @@ export function createPageTranslator(options: PageTranslatorOptions) {
 
     currentTargetLanguage = targetLanguage;
     cycleGeneration++;
+    const myGeneration = cycleGeneration;
 
-    const nodes = collectTextNodes(document.body);
+    currentSkipElements = options.blockLanguageFilter
+      ? await options.blockLanguageFilter.computeSkipElements(document.body, targetLanguage)
+      : new Set();
+    // A second translatePage()/restorePage() call while the await above was
+    // pending has already bumped cycleGeneration again — this call is
+    // stale, and writing queue/nodesToRestore/dedupe now would corrupt the
+    // newer cycle's state. Same generation-guard pattern already used for
+    // the analogous race in translationRoutine's per-batch await.
+    if (cycleGeneration !== myGeneration) return;
+
+    const nodes = collectTextNodes(document.body, { targetLanguage, skipElements: currentSkipElements });
     nodesToRestore = new Map(nodes.map((node) => [node, node.data]));
     dedupe.reset();
     dedupe.track(nodes);

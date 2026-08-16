@@ -3,6 +3,7 @@ import type { PieceOutcome, Translator } from '../src/engine/translator';
 import { translateOne } from '../src/engine/translator';
 import { cacheKeyFor, translationCache } from '../src/platform/cache/translationCache';
 import { configStore } from '../src/platform/configStore';
+import type { FrameLanguageDecision } from '../src/platform/messaging/protocol';
 import { onMessage, sendMessage } from '../src/platform/messaging/protocol';
 import { getActiveTabId } from '../src/platform/messaging/tabTarget';
 
@@ -98,6 +99,19 @@ async function resolveActiveProvider() {
   return { providerId, provider: cachedProvider.provider };
 }
 
+/**
+ * A tab's main frame's auto-translate-on-load decision, so a same-origin
+ * iframe in the same tab can inherit it instead of running its own
+ * independent detection — real gap: `all_frames` was never enabled at all,
+ * so no iframe got a decision, translated or not. Not cleared explicitly
+ * on navigation — the main frame overwrites its own entry on every fresh
+ * load, so a stale entry only matters for the brief window before that
+ * happens, and `getFrameLanguageDecision` callers already retry briefly
+ * rather than trusting a single query. Cleared on tab close (below) so
+ * this doesn't grow unbounded over a long browser session.
+ */
+const frameLanguageDecisions = new Map<number, FrameLanguageDecision>();
+
 const TRANSLATE_MENU_ID = 'prism-translate-page';
 const RESTORE_MENU_ID = 'prism-show-original';
 
@@ -126,6 +140,26 @@ async function toggleActiveTab(): Promise<void> {
 
 function unavailableMessage(providerId: string): string {
   return `[${providerId}] not configured or unavailable`;
+}
+
+/**
+ * The context menu and keyboard shortcut invoke translateActiveTab/
+ * restoreActiveTab/toggleActiveTab fire-and-forget — a rejected
+ * sendMessage (no content script on that tab: a chrome:// page, a PDF
+ * viewer, a tab that predates install) used to produce nothing visible
+ * anywhere. A brief toolbar-icon badge needs no new permission (the
+ * `action` API is already available) and is visible regardless of which
+ * surface triggered the action.
+ */
+const FAILURE_BADGE_MS = 3000;
+
+function showFailureBadge(e: unknown): void {
+  console.warn('[prism] page action failed', e);
+  void browser.action.setBadgeBackgroundColor({ color: '#d93025' });
+  void browser.action.setBadgeText({ text: '!' });
+  setTimeout(() => {
+    void browser.action.setBadgeText({ text: '' });
+  }, FAILURE_BADGE_MS);
 }
 
 export default defineBackground(() => {
@@ -251,15 +285,31 @@ export default defineBackground(() => {
     });
   });
   browser.contextMenus.onClicked.addListener((info) => {
-    if (info.menuItemId === TRANSLATE_MENU_ID) void translateActiveTab();
-    if (info.menuItemId === RESTORE_MENU_ID) void restoreActiveTab();
+    if (info.menuItemId === TRANSLATE_MENU_ID) translateActiveTab().catch(showFailureBadge);
+    if (info.menuItemId === RESTORE_MENU_ID) restoreActiveTab().catch(showFailureBadge);
   });
 
   browser.commands.onCommand.addListener((command) => {
-    if (command === 'toggle-translate-page') void toggleActiveTab();
+    if (command === 'toggle-translate-page') toggleActiveTab().catch(showFailureBadge);
   });
 
   onMessage('openOptionsPage', () => {
     void browser.runtime.openOptionsPage();
+  });
+
+  browser.tabs.onRemoved.addListener((tabId) => {
+    frameLanguageDecisions.delete(tabId);
+  });
+
+  onMessage('reportFrameLanguageDecision', (message) => {
+    const tabId = message.sender.tab?.id;
+    if (tabId === undefined) return;
+    frameLanguageDecisions.set(tabId, message.data);
+  });
+
+  onMessage('getFrameLanguageDecision', (message) => {
+    const tabId = message.sender.tab?.id;
+    if (tabId === undefined) return null;
+    return frameLanguageDecisions.get(tabId) ?? null;
   });
 });

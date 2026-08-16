@@ -48,6 +48,50 @@ describe('mountSelectionPopup', () => {
     controller.destroy();
   });
 
+  it('shows the trigger button after a keyboard-driven selection (Shift+Arrow), real gap: the trigger was mouse-only', () => {
+    vi.spyOn(window, 'getSelection').mockReturnValue(fakeSelection('hello'));
+    const controller = mountSelectionPopup({
+      translator: uppercaseTranslator(),
+      getSourceLanguage: () => 'en',
+      getTargetLanguage: () => 'es',
+    });
+
+    document.dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowRight', shiftKey: true, bubbles: true }));
+
+    expect(shadowRoot()?.querySelector('.trigger')).not.toBeNull();
+    controller.destroy();
+  });
+
+  it('reads a selection from inside a shadow root, real gap: window.getSelection() never sees into shadow DOM, real bug: highlighting text inside a sealed comment widget did nothing', () => {
+    // happy-dom doesn't implement the non-standard ShadowRoot.getSelection()
+    // (documented in resolveActiveSelection's own comment) — mock it
+    // directly on a real shadow root, and stub the event's composedPath()
+    // since happy-dom's own shadow-crossing event path isn't reliable for
+    // this either. window.getSelection() is deliberately left returning
+    // nothing selected, so a pass here can only be explained by the
+    // shadow-root path actually being used.
+    vi.spyOn(window, 'getSelection').mockReturnValue(null);
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const innerShadow = host.attachShadow({ mode: 'open' });
+    const shadowSelection = fakeSelection('shadow text');
+    (innerShadow as unknown as { getSelection(): Selection }).getSelection = () => shadowSelection;
+
+    const controller = mountSelectionPopup({
+      translator: uppercaseTranslator(),
+      getSourceLanguage: () => 'en',
+      getTargetLanguage: () => 'es',
+    });
+
+    const event = new MouseEvent('mouseup', { bubbles: true });
+    Object.defineProperty(event, 'composedPath', { value: () => [host] });
+    document.dispatchEvent(event);
+
+    expect(shadowRoot()?.querySelector('.trigger')).not.toBeNull();
+    controller.destroy();
+    host.remove();
+  });
+
   it('hides the trigger when there is no active selection', () => {
     vi.spyOn(window, 'getSelection').mockReturnValue(null);
     const controller = mountSelectionPopup({

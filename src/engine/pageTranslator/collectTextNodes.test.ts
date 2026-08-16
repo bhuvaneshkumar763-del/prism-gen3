@@ -72,6 +72,45 @@ describe('collectTextNodes', () => {
     expect(nodes.map((n) => n.data)).toEqual(['Chapter 5', '2024 was a good year']);
   });
 
+  it('skips a node under an ancestor whose lang attribute already matches the target language', () => {
+    document.body.innerHTML =
+      '<div lang="en"><button>History</button></div><div lang="vi"><button>Lịch sử</button></div><p>Translate this</p>';
+    const nodes = collectTextNodes(document.body, { targetLanguage: 'en' });
+    expect(nodes.map((n) => n.data)).toEqual(['Lịch sử', 'Translate this']);
+  });
+
+  it('matches a lang attribute by base tag, ignoring region ("en-US" matches target "en")', () => {
+    document.body.innerHTML = '<div lang="en-US"><button>History</button></div>';
+    const nodes = collectTextNodes(document.body, { targetLanguage: 'en' });
+    expect(nodes).toEqual([]);
+  });
+
+  it('does not apply the lang check when no targetLanguage is given', () => {
+    document.body.innerHTML = '<div lang="en"><button>History</button></div>';
+    const nodes = collectTextNodes(document.body);
+    expect(nodes.map((n) => n.data)).toEqual(['History']);
+  });
+
+  it('skips elements passed via skipElements, alongside the structural skip rules', () => {
+    document.body.innerHTML = '<div id="a">Keep this</div><div id="b">Skip this</div>';
+    const skipMe = document.getElementById('b');
+    if (!skipMe) throw new Error('unreachable');
+    const nodes = collectTextNodes(document.body, { skipElements: new Set([skipMe]) });
+    expect(nodes.map((n) => n.data)).toEqual(['Keep this']);
+  });
+
+  // No dedicated "N-level-deep DOM doesn't stack-overflow" test: happy-dom's
+  // own appendChild is itself recursive (Node.ts's connectedToNode walks the
+  // full ancestor chain on every call), and the exact depth at which IT
+  // overflows shifts with how much stack the rest of the suite already used
+  // in the same worker — verified directly (5000 passed in isolation, failed
+  // once run after the file's other tests). A threshold that moves based on
+  // unrelated test ordering is not a reliable regression test; same call
+  // made for the translationCache byte-accounting-drift case earlier this
+  // project. The fix itself (explicit stack array instead of function-call
+  // recursion — see collectTextNodes's implementation) has no depth-bound
+  // call stack by construction, verified by code inspection instead.
+
   it('does not skip a marker character that is part of a larger word', () => {
     document.body.innerHTML = '<p>#travel</p>';
     const nodes = collectTextNodes(document.body);

@@ -253,6 +253,28 @@ describe('createBatchedHttpProvider — connectivity awareness', () => {
     vi.useRealTimers();
   });
 
+  it('does not retry a non-retryable HTTP status (e.g. 401 bad API key) — one attempt, fails immediately', async () => {
+    // Real gap: sendWithRetry's catch didn't distinguish a permanent client
+    // error from a transient one, so a wrong/expired API key burned the
+    // full retry budget (up to ~30s) confirming the same failure 3 times
+    // before surfacing it.
+    vi.spyOn(connectivity, 'isOnline').mockReturnValue(true);
+    const fetchMock = vi.fn(async () => jsonResponse({ error: 'bad key' }, 401));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const provider = createBatchedHttpProvider({
+      name: 'bad-key',
+      baseUrl: 'https://example.com',
+      method: 'POST',
+      callbacks: { ...plainCallbacks(), getRequestBody: () => '{}' },
+    });
+
+    const results = await provider.translateBatch({ sourceLanguage: 'en', targetLanguage: 'es', pieces: [['hello']] });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(results).toEqual([{ ok: false, error: { kind: 'network', message: '[bad-key] no result for this piece' } }]);
+  });
+
   it('bounds the whole retry sequence to an overall deadline instead of letting 3 full-length slow attempts add up past a minute', async () => {
     // Regression: with no overall cap, REQUEST_TIMEOUT_MS(20s) x
     // MAX_ATTEMPTS(3) plus inter-attempt delays could leave a page visibly

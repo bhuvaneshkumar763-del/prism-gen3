@@ -38,6 +38,23 @@ interface ProtocolMap {
   getOriginalLanguage(): string;
   /** Popup → a tab's content script: non-null once the page translator has confirmed translation is actually failing OR the browser is offline (see translateLoop.ts's `getLastError`/`getLastErrorKind`) — closes the gap where a translate click that fails after the popup already resolved shows nothing wrong. `kind` distinguishes "offline, will resume automatically" from "the provider is actually broken." */
   getPageError(): { message: string; kind: ErrorKind } | null;
+  /**
+   * A tab's MAIN-FRAME content script → background: reports its own
+   * auto-translate-on-load decision once resolved, so a same-origin
+   * sub-frame in the same tab can inherit it instead of running an
+   * independent (and possibly different) detection — closes a real gap
+   * where an iframe got no auto-translate decision of its own at all.
+   * Cross-origin frames never call this (or its query counterpart below) —
+   * scoped to same-origin by the caller, not by anything server-side here.
+   */
+  reportFrameLanguageDecision(data: FrameLanguageDecision): void;
+  /** A same-origin sub-frame → background: asks for the main frame's decision, if it's reported one yet. */
+  getFrameLanguageDecision(): FrameLanguageDecision | null;
+}
+
+export interface FrameLanguageDecision {
+  shouldTranslate: boolean;
+  targetLanguage: string;
 }
 
 export const { sendMessage, onMessage } = defineExtensionMessaging<ProtocolMap>();
