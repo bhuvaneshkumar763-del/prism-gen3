@@ -2,9 +2,7 @@
   "mcpServers": {
     "agora-memory": {
       "command": "agora-code",
-      "args": [
-        "memory-server"
-      ]
+      "args": ["memory-server"]
     }
   }
 }
