@@ -34,5 +34,13 @@ export default defineConfig({
         description: 'Translate or restore the current page',
       },
     },
+    // AMO (addons.mozilla.org) requires a stable extension id for signing —
+    // without one, a new random id would get minted on every sign, and each
+    // "version" would look like a brand-new, unrelated add-on to AMO/Firefox
+    // instead of an update to the same one. Harmless on the Chrome build:
+    // Chrome ignores browser_specific_settings entirely.
+    browser_specific_settings: {
+      gecko: { id: 'prism-gen3@bhuvaneshkumar763-del.github.io' },
+    },
   },
 });

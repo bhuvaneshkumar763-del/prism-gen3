@@ -8,6 +8,7 @@
     "bubble-full-parity",
     "builtin-availability",
     "enter-beta-prerelease",
+    "firefox-amo-signing",
     "fix-broken-default-and-silent-failure",
     "fix-source-language-override",
     "graceful-degradation",
