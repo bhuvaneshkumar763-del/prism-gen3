@@ -1,10 +1,11 @@
 # prism-gen3
 
-## 0.3.0-beta.20
+## 0.3.0-beta.21
 
 ### Patch Changes
 
 - Fixed translation not working at all in Firefox — auto/"always" translate, manual translate, and a manually-pinned site language were all affected. Root cause: Firefox's `i18n.detectLanguage` has a long-standing upstream reliability bug (Mozilla bug 1712214) where it can simply never resolve or reject, rather than failing cleanly. Two places in this codebase awaited it with no timeout — the page-load language detector (breaking auto/always-translate) and the new "is this already in the target language?" check added for the source-language-override fix (breaking every translate path, since it runs before every translate). Both now give up after 3 seconds and fall back to their existing safe defaults instead of hanging forever. Chrome was never affected — this is why it went unnoticed until Firefox releases became actually installable.
+- Fixed AMO signing failing on every release after the first: WXT strips the `-beta.N` prerelease suffix when generating the manifest's `version` field, so every beta build produced the identical `"0.3.0"` — AMO correctly rejected each subsequent signing attempt as a duplicate version. The manifest version is now a proper 4-segment number that changes every beta (`0.3.0.20` for beta.20, etc.), with the full original version string preserved as `version_name`. Also hardened the release workflow so a signing failure no longer takes the entire release down with it.
 
 ## 0.3.0-beta.19
 

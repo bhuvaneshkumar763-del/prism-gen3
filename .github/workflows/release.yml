@@ -79,6 +79,15 @@ jobs:
       # already used above.
       - name: Sign Firefox add-on (AMO)
         if: steps.check.outputs.exists == 'false' && env.HAS_AMO_KEYS == 'true'
+        # A signing failure (AMO downtime, a rate limit, a version
+        # conflict) shouldn't take down the whole release — real bug hit
+        # on the very first re-sign attempt (beta.20): the step failed and
+        # aborted the job before "Create GitHub Release" ever ran, so even
+        # the unrelated Chrome zip and changelog notes silently never got
+        # published. continue-on-error lets the job reach that step
+        # regardless; it already falls back to the unsigned zip when no
+        # signed .xpi exists.
+        continue-on-error: true
         env:
           WEB_EXT_API_KEY: ${{ secrets.AMO_JWT_ISSUER }}
           WEB_EXT_API_SECRET: ${{ secrets.AMO_JWT_SECRET }}

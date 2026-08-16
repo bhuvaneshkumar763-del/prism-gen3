@@ -1,4 +1,19 @@
+import { readFileSync } from 'node:fs';
 import { defineConfig } from 'wxt';
+
+// Real bug (0.3.0-beta.20 -> beta.21): WXT derives the manifest's `version`
+// from package.json but strips prerelease suffixes ("0.3.0-beta.20" ->
+// "0.3.0") — every beta build produces the exact same manifest version.
+// Harmless for the Chrome zip (nothing checks it), but AMO signing keys off
+// this field to tell releases apart: the very first beta signed fine, and
+// every beta after it hit "Version 0.3.0 already exists" and failed. Fixed
+// by overriding `manifest.version` below to a 4-segment numeric version
+// (both Chrome's and Firefox's manifest schemas support up to 4 dot-
+// separated integers, no letters/hyphens needed) that actually changes
+// every beta — "0.3.0-beta.20" -> "0.3.0.20".
+const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf-8')) as { version: string };
+const betaMatch = /^(\d+\.\d+\.\d+)-beta\.(\d+)$/.exec(pkg.version);
+const manifestVersion = betaMatch ? `${betaMatch[1]}.${betaMatch[2]}` : pkg.version;
 
 // See https://wxt.dev/api/config.html
 //
@@ -13,6 +28,11 @@ export default defineConfig({
   manifest: {
     name: 'Prism',
     description: 'Prism — AI Page Translator (Gen 3)',
+    version: manifestVersion,
+    // The full original version string (with the beta tag WXT would
+    // otherwise silently drop) — shown to users in about:addons/
+    // chrome://extensions instead of the bare numeric `version` above.
+    version_name: pkg.version,
     // "storage" for provider/settings config. "contextMenus" and
     // "activeTab" back Session 6's right-click translate/restore menu
     // items and getActiveTabId()-based tab targeting — activeTab grants
