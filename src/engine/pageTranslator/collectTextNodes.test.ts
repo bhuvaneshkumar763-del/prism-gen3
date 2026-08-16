@@ -59,6 +59,19 @@ describe('collectTextNodes', () => {
     expect(nodes.map((n) => n.data)).toEqual(['travel', 'user']);
   });
 
+  it('skips text with no letters at all, real bug: chapter-count filter chips ("> 100") came back as "compare 100"', () => {
+    document.body.innerHTML =
+      '<button>&gt; 50</button><button>&gt; 100</button><button>1234</button><button>-- 5 / 6 --</button><p>Translate this prose</p>';
+    const nodes = collectTextNodes(document.body);
+    expect(nodes.map((n) => n.data)).toEqual(['Translate this prose']);
+  });
+
+  it('does not skip text that mixes letters with digits/symbols', () => {
+    document.body.innerHTML = '<p>Chapter 5</p><p>2024 was a good year</p>';
+    const nodes = collectTextNodes(document.body);
+    expect(nodes.map((n) => n.data)).toEqual(['Chapter 5', '2024 was a good year']);
+  });
+
   it('does not skip a marker character that is part of a larger word', () => {
     document.body.innerHTML = '<p>#travel</p>';
     const nodes = collectTextNodes(document.body);

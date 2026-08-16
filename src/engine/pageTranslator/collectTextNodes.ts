@@ -46,6 +46,21 @@ const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEXTAREA', 'PRE', 'CO
  */
 const BARE_MARKER = /^[#@]$/;
 
+/**
+ * Text with no letters at all — digits, punctuation, symbols, whitespace —
+ * has nothing translatable in it and is exactly the kind of short,
+ * context-free fragment a provider is most likely to mangle instead of
+ * passing through unchanged: real site bug, a novel-site's chapter-count
+ * filter chips ("> 50", "> 100", "> 200", ...) came back as "approximately
+ * 50", "compare 100", "> 200" — visibly inconsistent for tokens that are
+ * identical in shape, because Google's endpoint doesn't leave a bare
+ * symbol+number alone the way it leaves prose alone. Skipping these
+ * entirely is strictly safe (nothing here needs translating) and removes
+ * them from the provider's context window, rather than trying to get a
+ * translation provider to consistently no-op on them.
+ */
+const NO_LETTERS = /^[^\p{L}]*$/u;
+
 export function isNoTranslateNode(node: Node): boolean {
   if (node.nodeType === Node.ELEMENT_NODE) {
     const el = node as Element;
@@ -68,7 +83,7 @@ export function collectTextNodes(root: Node): Text[] {
     if (node.nodeType === Node.TEXT_NODE) {
       const parent = node.parentNode;
       const text = node.textContent?.trim();
-      if (text && !BARE_MARKER.test(text) && parent && !isNoTranslateNode(parent)) {
+      if (text && !BARE_MARKER.test(text) && !NO_LETTERS.test(text) && parent && !isNoTranslateNode(parent)) {
         nodes.push(node as Text);
       }
       return;
