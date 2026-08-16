@@ -21,10 +21,16 @@ export function readListsSnapshot(store: ConfigStore): ListsSnapshot {
 }
 
 export async function applyListPatch(store: ConfigStore, patch: ListsPatch): Promise<void> {
-  await Promise.all(
-    (Object.keys(patch) as Array<keyof ListsPatch>).map((key) => {
-      const value = patch[key];
-      return value === undefined ? Promise.resolve() : store.set(key, value);
-    }),
+  // One combined write, not N independent store.set() calls — a patch can
+  // legitimately touch both the always- and never-list at once (e.g. moving
+  // a site from one to the other), and N separate writes meant a failure
+  // partway through could land only some of them, leaving a site on both
+  // lists simultaneously — the exact state listMutations.ts's cross-list
+  // cleanup exists to prevent.
+  const entries = Object.fromEntries(
+    (Object.keys(patch) as Array<keyof ListsPatch>)
+      .filter((key) => patch[key] !== undefined)
+      .map((key) => [key, patch[key]]),
   );
+  await store.setMany(entries);
 }

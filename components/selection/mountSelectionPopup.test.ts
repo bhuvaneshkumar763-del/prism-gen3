@@ -101,6 +101,51 @@ describe('mountSelectionPopup', () => {
     controller.destroy();
   });
 
+  it('discards a stale translation result that resolves after a newer selection was already translated (race condition)', async () => {
+    let resolveFirst!: (outcomes: PieceOutcome[]) => void;
+    const firstRequestPending = new Promise<PieceOutcome[]>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const translator: Translator = {
+      async translateBatch(request) {
+        const text = request.pieces[0]?.[0];
+        if (text === 'first') return firstRequestPending; // deliberately held open
+        return request.pieces.map((piece): PieceOutcome => ok(piece.map((s) => s.toUpperCase())));
+      },
+    };
+    const controller = mountSelectionPopup({
+      translator,
+      getSourceLanguage: () => 'en',
+      getTargetLanguage: () => 'es',
+    });
+
+    // Select "first" and click translate — starts a request that won't
+    // resolve until resolveFirst() is called below.
+    vi.spyOn(window, 'getSelection').mockReturnValue(fakeSelection('first'));
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    const firstTrigger = shadowRoot()?.querySelector('.trigger') as HTMLButtonElement;
+    firstTrigger.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // Before it resolves, select "second" and translate that instead — this
+    // one resolves immediately.
+    vi.spyOn(window, 'getSelection').mockReturnValue(fakeSelection('second'));
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    const secondTrigger = shadowRoot()?.querySelector('.trigger') as HTMLButtonElement;
+    secondTrigger.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(shadowRoot()?.querySelector('.result')?.textContent).toBe('SECOND');
+
+    // Now the stale "first" request finally resolves — it must not
+    // clobber the "second" result the user is actually looking at.
+    resolveFirst([ok(['FIRST'])]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(shadowRoot()?.querySelector('.result')?.textContent).toBe('SECOND');
+    controller.destroy();
+  });
+
   it('destroy() removes the host', () => {
     const controller = mountSelectionPopup({
       translator: uppercaseTranslator(),

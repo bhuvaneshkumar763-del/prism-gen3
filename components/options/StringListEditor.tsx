@@ -23,9 +23,19 @@ export function StringListEditor(props: StringListEditorProps) {
   const [text, setText] = createSignal('');
 
   function commit(value: string): void {
-    const trimmed = value.trim();
-    if (!trimmed) return;
-    props.onAdd(trimmed);
+    // The options page's own hint text promises "one per line (or
+    // comma-separated)" for the free-text site lists this feeds — commit()
+    // used to add the whole raw string as ONE entry regardless, so a pasted
+    // "a.com, b.com" became a single dead list item that never matches
+    // anything. Splits on comma (the reachable case: a single-line
+    // `<input>` never delivers a literal newline in its own `.value`) and
+    // on newline too, so this stays correct if the control ever changes.
+    const parts = value
+      .split(/[,\n]/)
+      .map((part) => part.trim())
+      .filter((part) => part.length > 0);
+    if (parts.length === 0) return;
+    for (const part of parts) props.onAdd(part);
     setText('');
   }
 

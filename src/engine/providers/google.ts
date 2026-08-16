@@ -40,8 +40,13 @@ async function findAuth(): Promise<void> {
     let shouldRefresh = false;
     if (lastRequestAuthTime) {
       const cutoff = new Date();
-      if (translateAuth) cutoff.setMinutes(cutoff.getMinutes() - 20);
-      else if (authNotFound) cutoff.setMinutes(cutoff.getMinutes() - 5);
+      // `authNotFound` must be checked BEFORE `translateAuth`: the fallback
+      // path sets both (translateAuth = the hardcoded spare key, authNotFound
+      // = true), so testing translateAuth first made the shorter
+      // retry-sooner windows unreachable and left a failed scrape stuck on
+      // the spare key for the full 20 minutes.
+      if (authNotFound) cutoff.setMinutes(cutoff.getMinutes() - 5);
+      else if (translateAuth) cutoff.setMinutes(cutoff.getMinutes() - 20);
       else cutoff.setMinutes(cutoff.getMinutes() - 1);
       if (cutoff.getTime() > lastRequestAuthTime) shouldRefresh = true;
     } else {
@@ -162,7 +167,13 @@ function splitPieceResponse(raw: string, dontSortResults: boolean): string[] {
         pending = '';
       }
     }
-    if (pending && out.length > 0) out[out.length - 1] += unescapeHTML(pending);
+    // No tagged segments at all — the normal shape for a single-string piece,
+    // since transformPiece only adds <a i=N> markers when there's more than
+    // one string. Without this, `out` stays empty and the whole translation is
+    // silently returned as a successful-but-empty result. Mirrors the
+    // index-based branch's own no-tags fallback below.
+    if (out.length === 0) return pending ? [unescapeHTML(pending)] : [];
+    if (pending) out[out.length - 1] += unescapeHTML(pending);
     return out;
   }
 
@@ -171,17 +182,40 @@ function splitPieceResponse(raw: string, dontSortResults: boolean): string[] {
   // folds into the nearest PRECEDING tagged index — also confirmed above.
   const byIndex = new Map<number, string>();
   let lastIndex: number | null = null;
+  // Orphan text that arrives BEFORE the first tagged segment has no
+  // preceding index to fold into. Buffer it and prepend it to the first
+  // tagged segment instead of dropping it — Google prepends punctuation for
+  // some target languages (Spanish '¿'/'¡'), and silently losing it is a
+  // visible corruption. The dontSortResults branch above already handles
+  // this case via its own `pending` accumulator.
+  let leading = '';
   for (const token of tokens) {
     if (token.index === null) {
-      if (lastIndex !== null) byIndex.set(lastIndex, (byIndex.get(lastIndex) ?? '') + token.text);
+      if (lastIndex === null) leading += token.text;
+      else byIndex.set(lastIndex, (byIndex.get(lastIndex) ?? '') + token.text);
       continue;
     }
     const existing = byIndex.get(token.index);
-    byIndex.set(token.index, existing ? `${existing} ${token.text}` : token.text);
+    let text = token.text;
+    if (leading) {
+      text = leading + text;
+      leading = '';
+    }
+    byIndex.set(token.index, existing ? `${existing} ${text}` : text);
     lastIndex = token.index;
   }
 
-  if (byIndex.size === 0) return [unescapeHTML(html)];
+  if (byIndex.size === 0) {
+    // No tagged segments matched. For a single-string piece that's the
+    // normal shape and `html` is just the translation. But if the response
+    // clearly DID contain markers we failed to tokenize (e.g. Google added
+    // inline <b>/<i> tags inside a segment, which this file's header notes
+    // was never observed and isn't handled), returning it verbatim would
+    // splice raw markup into the page as visible text — treat that as a
+    // failed parse instead so the caller retries rather than corrupting.
+    if (html.includes('<a i=')) return [];
+    return [unescapeHTML(html)];
+  }
 
   const result: string[] = [];
   for (const [index, text] of byIndex) result[index] = unescapeHTML(text);

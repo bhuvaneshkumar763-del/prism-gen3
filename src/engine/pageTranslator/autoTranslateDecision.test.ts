@@ -70,6 +70,33 @@ describe('shouldAutoTranslateOnLoad', () => {
   it('is false when the detected language matches no list at all', () => {
     expect(shouldAutoTranslateOnLoad(baseInput())).toBe(false);
   });
+
+  it('skips a regional variant matching the target by base tag, even when it also exactly matches an always-translate-langs entry', () => {
+    // alwaysTranslateLangs matches 'pt-BR' EXACTLY, so this would return true
+    // if the same-language base-tag check above it didn't fire first —
+    // proving the skip is real, not just a fallthrough default.
+    expect(
+      shouldAutoTranslateOnLoad(
+        baseInput({ originalLanguage: 'pt-BR', targetLanguage: 'pt', alwaysTranslateLangs: ['pt-BR'] }),
+      ),
+    ).toBe(false);
+  });
+
+  it('honors a never-translate-langs rule against a regional variant, even when it also exactly matches an always-translate-langs entry', () => {
+    // Same structure: alwaysTranslateLangs matches exactly and would return
+    // true if the never-list's base-tag check didn't catch it first.
+    expect(
+      shouldAutoTranslateOnLoad(
+        baseInput({ originalLanguage: 'pt-BR', neverTranslateLangs: ['pt'], alwaysTranslateLangs: ['pt-BR'] }),
+      ),
+    ).toBe(false);
+  });
+
+  it('honors an always-translate-langs rule against a regional variant of the listed base language', () => {
+    expect(shouldAutoTranslateOnLoad(baseInput({ originalLanguage: 'fr-CA', alwaysTranslateLangs: ['fr'] }))).toBe(
+      true,
+    );
+  });
 });
 
 describe('isTranslationServiceHost', () => {

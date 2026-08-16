@@ -28,6 +28,13 @@ export interface ResweepOptions {
   onResweep(): boolean;
   /** Called once per tick when location.href changed since the last tick (SPA navigation). */
   onHrefChange?(): void;
+  /**
+   * Debounced scroll notification (same 400ms debounce that already drives
+   * `bump()`) — lets a caller invalidate anything that depends on "what's
+   * currently in the viewport" (translateLoop.ts's viewport-priority reorder)
+   * without registering its own second scroll listener.
+   */
+  onViewportChanged?(): void;
 }
 
 export function createResweepScheduler(options: ResweepOptions) {
@@ -35,6 +42,7 @@ export function createResweepScheduler(options: ResweepOptions) {
   let delay = RESWEEP_MIN_MS;
   let started = false;
   let lastHref = location.href;
+  let scrollDebounce: ReturnType<typeof setTimeout> | null = null;
 
   function run(): void {
     if (location.href !== lastHref) {
@@ -60,6 +68,19 @@ export function createResweepScheduler(options: ResweepOptions) {
     timer = setTimeout(run, 250);
   }
 
+  function onScroll(): void {
+    if (!options.isTranslated()) return;
+    if (scrollDebounce) clearTimeout(scrollDebounce);
+    scrollDebounce = setTimeout(() => {
+      bump();
+      options.onViewportChanged?.();
+    }, 400);
+  }
+
+  function onPopstate(): void {
+    if (options.isTranslated()) bump();
+  }
+
   function start(): void {
     if (started) {
       bump();
@@ -67,19 +88,8 @@ export function createResweepScheduler(options: ResweepOptions) {
     }
     started = true;
 
-    let scrollDebounce: ReturnType<typeof setTimeout> | null = null;
-    window.addEventListener(
-      'scroll',
-      () => {
-        if (!options.isTranslated()) return;
-        if (scrollDebounce) clearTimeout(scrollDebounce);
-        scrollDebounce = setTimeout(bump, 400);
-      },
-      { passive: true },
-    );
-    window.addEventListener('popstate', () => {
-      if (options.isTranslated()) bump();
-    });
+    window.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener('popstate', onPopstate);
 
     timer = setTimeout(run, delay);
   }
@@ -87,6 +97,10 @@ export function createResweepScheduler(options: ResweepOptions) {
   function stop(): void {
     if (timer) clearTimeout(timer);
     timer = null;
+    if (scrollDebounce) clearTimeout(scrollDebounce);
+    scrollDebounce = null;
+    window.removeEventListener('scroll', onScroll);
+    window.removeEventListener('popstate', onPopstate);
     started = false;
   }
 

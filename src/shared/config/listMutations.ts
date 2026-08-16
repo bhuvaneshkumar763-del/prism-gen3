@@ -29,26 +29,50 @@ function withRemoved(list: string[], value: string): string[] {
   return list.includes(value) ? list.filter((v) => v !== value) : list;
 }
 
+/**
+ * Every site-list check elsewhere in this codebase (`autoTranslateDecision.ts`,
+ * `siteOverrides.ts`) matches against `location.hostname` — always lowercase,
+ * no scheme, no path, per the URL spec. A rule added here from raw user
+ * input (typed `BBC.com`, or a pasted `https://bbc.com/`) that ISN'T
+ * normalized the same way silently never matches anything, while the
+ * options page keeps displaying it as if it were an active rule. Accepts
+ * either a bare hostname or a full URL — prefixing an assumed scheme when
+ * one is missing lets `URL` do the actual stripping either way.
+ */
+export function normalizeHostname(input: string): string {
+  const trimmed = input.trim();
+  if (!trimmed) return trimmed;
+  try {
+    const withScheme = /^[a-zA-Z][a-zA-Z\d+\-.]*:\/\//.test(trimmed) ? trimmed : `https://${trimmed}`;
+    const hostname = new URL(withScheme).hostname;
+    return hostname ? hostname.toLowerCase() : trimmed.toLowerCase();
+  } catch {
+    return trimmed.toLowerCase();
+  }
+}
+
 export function addSiteToAlwaysTranslate(snapshot: ListsSnapshot, hostname: string): ListsPatch {
+  const normalized = normalizeHostname(hostname);
   return {
-    alwaysTranslateSites: withAdded(snapshot.alwaysTranslateSites, hostname),
-    neverTranslateSites: withRemoved(snapshot.neverTranslateSites, hostname),
+    alwaysTranslateSites: withAdded(snapshot.alwaysTranslateSites, normalized),
+    neverTranslateSites: withRemoved(snapshot.neverTranslateSites, normalized),
   };
 }
 
 export function addSiteToNeverTranslate(snapshot: ListsSnapshot, hostname: string): ListsPatch {
+  const normalized = normalizeHostname(hostname);
   return {
-    neverTranslateSites: withAdded(snapshot.neverTranslateSites, hostname),
-    alwaysTranslateSites: withRemoved(snapshot.alwaysTranslateSites, hostname),
+    neverTranslateSites: withAdded(snapshot.neverTranslateSites, normalized),
+    alwaysTranslateSites: withRemoved(snapshot.alwaysTranslateSites, normalized),
   };
 }
 
 export function removeSiteFromAlwaysTranslate(snapshot: ListsSnapshot, hostname: string): ListsPatch {
-  return { alwaysTranslateSites: withRemoved(snapshot.alwaysTranslateSites, hostname) };
+  return { alwaysTranslateSites: withRemoved(snapshot.alwaysTranslateSites, normalizeHostname(hostname)) };
 }
 
 export function removeSiteFromNeverTranslate(snapshot: ListsSnapshot, hostname: string): ListsPatch {
-  return { neverTranslateSites: withRemoved(snapshot.neverTranslateSites, hostname) };
+  return { neverTranslateSites: withRemoved(snapshot.neverTranslateSites, normalizeHostname(hostname)) };
 }
 
 export function addLangToAlwaysTranslate(snapshot: ListsSnapshot, lang: string, hostname?: string): ListsPatch {

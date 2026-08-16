@@ -1,5 +1,6 @@
 import { render } from 'solid-js/web';
 import { findOriginalTextForElement } from '../../src/engine/pageTranslator/hoverOriginalText';
+import { createShadowHost } from '../../src/shared/ui/shadowHost';
 import { HoverTooltip } from './HoverTooltip';
 import { HOVER_TOOLTIP_STYLES } from './hoverTooltipStyles';
 
@@ -31,19 +32,7 @@ export function mountHoverTooltip(pageTranslator: TranslatedNodesSource): HoverT
     return { destroy() {} };
   }
 
-  document.getElementById(HOST_ID)?.remove();
-
-  const host = document.createElement('div');
-  host.id = HOST_ID;
-  const shadow = host.attachShadow({ mode: 'open' });
-
-  const styleEl = document.createElement('style');
-  styleEl.textContent = HOVER_TOOLTIP_STYLES;
-  shadow.appendChild(styleEl);
-
-  const mountPoint = document.createElement('div');
-  shadow.appendChild(mountPoint);
-  document.documentElement.appendChild(host);
+  const { host, mountPoint } = createShadowHost(HOST_ID, HOVER_TOOLTIP_STYLES);
 
   let dispose: (() => void) | null = null;
   let showTimer: ReturnType<typeof setTimeout> | null = null;
@@ -72,6 +61,13 @@ export function mountHoverTooltip(pageTranslator: TranslatedNodesSource): HoverT
     if (!original) return;
 
     showTimer = setTimeout(() => {
+      // Cleared once the debounce actually fires, not just on hide()/a new
+      // target — otherwise `showTimer` stays truthy forever after the first
+      // show, and onMouseMove's `!showTimer` guard below never passes again
+      // for the rest of this hover, silently disabling "follows the cursor
+      // while visible" (this module's own header comment) from the very
+      // first tooltip shown.
+      showTimer = null;
       renderState(true, original, e.clientY + 16, e.clientX + 8);
     }, SHOW_DELAY_MS);
   }

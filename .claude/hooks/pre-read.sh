@@ -27,10 +27,9 @@ if [ "$ACTION" = "summarize" ]; then
     printf '%s' "$RESULT" | python3 -c "
 import sys, json
 d = json.loads(sys.stdin.read())
-print(d.get('summary', ''))
-print()
-print(f'[Read blocked: file has {d.get(\"original_lines\", 0)} lines. Use the summary above — do NOT read this file in chunks.]')
-" 2>/dev/null
+sys.stderr.write(d.get('summary', '') + '\n\n')
+sys.stderr.write(f'[Read blocked: file has {d.get(\"original_lines\", 0)} lines. Use the summary above — do NOT read this file in chunks.]\n')
+"
     exit 2
 fi
 exit 0

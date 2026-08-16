@@ -12,6 +12,7 @@
     "graceful-degradation",
     "new-icon",
     "popup-full-parity",
+    "post-launch-audit-pass",
     "remove-builtin-provider",
     "remove-libretranslate-provider",
     "revert-hover-fix",

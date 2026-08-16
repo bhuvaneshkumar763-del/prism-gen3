@@ -5,6 +5,7 @@ import {
   addRecentTargetLanguage,
   addSiteToAlwaysTranslate,
   addSiteToNeverTranslate,
+  normalizeHostname,
   removeLangFromAlwaysTranslate,
   removeLangFromNeverTranslate,
   removeSiteFromAlwaysTranslate,
@@ -18,11 +19,53 @@ const emptySnapshot = {
   neverTranslateLangs: [],
 };
 
+describe('normalizeHostname', () => {
+  it('lowercases a bare hostname', () => {
+    expect(normalizeHostname('BBC.com')).toBe('bbc.com');
+  });
+
+  it('extracts the hostname from a pasted full URL, stripping scheme/path/query', () => {
+    expect(normalizeHostname('https://BBC.com/news?x=1')).toBe('bbc.com');
+  });
+
+  it('extracts the hostname from a URL with no scheme', () => {
+    expect(normalizeHostname('www.example.com/some/path')).toBe('www.example.com');
+  });
+
+  it('trims surrounding whitespace', () => {
+    expect(normalizeHostname('  example.com  ')).toBe('example.com');
+  });
+
+  it('leaves an empty string as empty rather than throwing', () => {
+    expect(normalizeHostname('')).toBe('');
+    expect(normalizeHostname('   ')).toBe('');
+  });
+});
+
 describe('addSiteToAlwaysTranslate', () => {
   it('adds the host to always and does not touch never when absent', () => {
     const patch = addSiteToAlwaysTranslate(emptySnapshot, 'example.com');
     expect(patch.alwaysTranslateSites).toEqual(['example.com']);
     expect(patch.neverTranslateSites).toEqual([]);
+  });
+
+  it('normalizes a mixed-case hostname and a pasted URL to the same stored entry, matching real page hostnames', () => {
+    // Regression: without normalization, "BBC.com" typed into the options
+    // page never matches location.hostname ("bbc.com") at auto-translate
+    // time — the rule silently never fires, while still displaying as active.
+    const patch = addSiteToAlwaysTranslate(emptySnapshot, 'BBC.com');
+    expect(patch.alwaysTranslateSites).toEqual(['bbc.com']);
+  });
+
+  it('normalizes a pasted full URL down to just its hostname', () => {
+    const patch = addSiteToAlwaysTranslate(emptySnapshot, 'https://BBC.com/news');
+    expect(patch.alwaysTranslateSites).toEqual(['bbc.com']);
+  });
+
+  it('deduplicates against an existing entry once both are normalized to the same hostname', () => {
+    const snapshot = { ...emptySnapshot, alwaysTranslateSites: ['bbc.com'] };
+    const patch = addSiteToAlwaysTranslate(snapshot, 'BBC.com');
+    expect(patch.alwaysTranslateSites).toEqual(['bbc.com']);
   });
   it('removes the host from never-translate (the cross-list cleanup)', () => {
     const snapshot = { ...emptySnapshot, neverTranslateSites: ['example.com', 'other.com'] };

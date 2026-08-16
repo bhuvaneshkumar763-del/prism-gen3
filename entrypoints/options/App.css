@@ -176,6 +176,35 @@ body {
   color: #4ade80;
 }
 
+.saveError {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  color: #b91c1c;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  margin: 0 0 0.75rem;
+  font-size: 13px;
+}
+
+.saveError button {
+  background: none;
+  border: none;
+  color: inherit;
+  font-size: 13px;
+  text-decoration: underline;
+  padding: 0;
+}
+
+:root[data-theme="dark"] .saveError {
+  color: #fca5a5;
+  background: #450a0a;
+  border-color: #7f1d1d;
+}
+
 .app button {
   cursor: pointer;
   padding: 0.5rem 1rem;

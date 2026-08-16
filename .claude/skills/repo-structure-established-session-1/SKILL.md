@@ -9,6 +9,12 @@ description: entrypoints/         WXT entrypoints — one per browser-visible su
 entrypoints/         WXT entrypoints — one per browser-visible surface.
                       This IS the "extension" layer — browser/WXT-specific
                       code lives here, nowhere else.
+components/          Injected UI surfaces mounted from entrypoints/content.ts
+                      (bubble/, hoverTooltip/, selection/) plus the options
+                      page's own components (options/). Each mount* module
+                      (mountBubble.ts, mountHoverTooltip.ts,
+                      mountSelectionPopup.ts) builds its own shadow-DOM host
+                      via src/shared/ui/shadowHost.ts.
 src/
   engine/            The core translation engine. ZERO chrome/browser API
                       imports allowed — enforced by CI
@@ -28,9 +34,12 @@ docs/
                       one per non-obvious "keep vs. diverge" call. Add one
                       whenever a session makes a call worth defending later.
 scripts/
-  check-engine-purity.mjs   The CI-enforced engine-boundary guard.
-.github/workflows/ci.yml    typecheck → engine-purity guard → test+coverage
-                             → build. No lint gate yet (see below), no E2E
-                             yet (later session), Chrome-only (later
-                             session adds Firefox build verification back).
+  check-engine-purity.mjs      The CI-enforced engine-boundary guard.
+  check-solid-reactivity.mjs   The CI-enforced Solid-reactivity guard (see
+                                its own header comment).
+  check-bundle-size.mjs        The CI-enforced bundle-size guardrail.
+.github/workflows/ci.yml    typecheck → lint → engine-purity guard →
+                             Solid-reactivity guard → test+coverage → build
+                             → bundle-size guardrail → E2E smoke test → zip
+                             artifact, plus a parallel Firefox build-only job.
 ```

@@ -1,3 +1,5 @@
+import { nearestBlockAncestor } from './grouping';
+
 /**
  * Viewport-priority reordering — Phase 4a of the graceful-degradation pass.
  * Speed here means *perceived* speed: what the user is actually looking at
@@ -22,23 +24,42 @@ export interface ViewportRect {
 /**
  * Stable-partitions `nodes` into "visible in `viewportRect` right now"
  * first, everything else after — preserving each partition's relative
- * (DOM/queue) order. A node's own bounding rect isn't meaningful for a
- * Text node, so this checks its nearest element ancestor instead.
+ * (DOM/queue) order.
+ *
+ * Partitions by nearest BLOCK ancestor, not immediate parent: partitioning
+ * by immediate parent could split a paragraph's own sibling text nodes (an
+ * inline `<b>`/`<a>` element straddling the fold, say) across the two
+ * partitions, with unrelated content from other blocks interleaved between
+ * them in the result. `groupNodesForBatching()` flushes on every block
+ * change, so those same-block siblings — now non-adjacent — would land in
+ * separate, smaller pieces instead of one grouped piece with shared context.
+ * Partitioning by block keeps a block's nodes contiguous and in their
+ * original relative order either way.
+ *
+ * Also measures each unique block's rect only ONCE (`getBoundingClientRect()`
+ * forces a layout read) rather than once per text node — several text nodes
+ * commonly share one block ancestor (a paragraph split by inline formatting).
  */
 export function prioritizeByViewport(nodes: Text[], viewportRect: ViewportRect): Text[] {
   const visible: Text[] = [];
   const rest: Text[] = [];
+  const blockVisibility = new Map<Element, boolean>();
 
   for (const node of nodes) {
-    const el = node.parentElement;
-    if (el && isElementInViewport(el, viewportRect)) {
-      visible.push(node);
-    } else {
-      rest.push(node);
-    }
+    const block = nearestBlockAncestor(node) ?? node.parentElement;
+    const isVisible = block ? isElementVisible(block, blockVisibility, viewportRect) : false;
+    (isVisible ? visible : rest).push(node);
   }
 
   return visible.length > 0 && visible.length < nodes.length ? [...visible, ...rest] : nodes;
+}
+
+function isElementVisible(el: Element, cache: Map<Element, boolean>, viewportRect: ViewportRect): boolean {
+  const cached = cache.get(el);
+  if (cached !== undefined) return cached;
+  const result = isElementInViewport(el, viewportRect);
+  cache.set(el, result);
+  return result;
 }
 
 function isElementInViewport(el: Element, viewportRect: ViewportRect): boolean {

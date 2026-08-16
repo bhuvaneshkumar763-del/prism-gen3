@@ -24,13 +24,26 @@ import type { Translator } from '../translator';
  */
 
 const MAX_CACHE_ENTRIES = 50;
-const POLL_INTERVAL_MS = 1500;
+const POLL_MIN_MS = 1500;
+const POLL_MAX_MS = 30000;
+const POLL_BACKOFF_FACTOR = 1.5;
 
 export interface TitleTranslatorOptions {
   translator: Translator;
   getSourceLanguage(): string;
   isPageVisible(): boolean;
 }
+
+/**
+ * `'duplicate'` (an in-flight request for the same text) is not a failure
+ * and must not affect poll backoff below; `'failed'` covers both a thrown
+ * request and a resolved `ok: false` outcome — see `translateTitleString`.
+ */
+type TranslateTitleResult =
+  | { status: 'translated'; text: string }
+  | { status: 'unchanged' }
+  | { status: 'duplicate' }
+  | { status: 'failed' };
 
 export function createTitleTranslator(options: TitleTranslatorOptions) {
   const cache = new Map<string, string>();
@@ -47,7 +60,15 @@ export function createTitleTranslator(options: TitleTranslatorOptions) {
   let inFlightKey: string | null = null;
 
   let headObserver: MutationObserver | null = null;
-  let pollHandle: ReturnType<typeof setInterval> | null = null;
+  let pollTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Bumped by every startWatching()/stopWatching() — see schedulePoll below. */
+  let watchGeneration = 0;
+  // Mirrors translateLoop.ts's own surfaced-error backoff: a provider that's
+  // confirmed broken/rate-limited (repeated 'failed' results) grows the
+  // polling interval instead of being hammered every POLL_MIN_MS forever.
+  // Resets to the fast interval the moment a poll succeeds (or has nothing
+  // to do) again.
+  let pollDelay: number = POLL_MIN_MS;
 
   function cacheKey(text: string): string {
     return `${options.getSourceLanguage()}>${currentTargetLanguage}:${text}`;
@@ -59,11 +80,11 @@ export function createTitleTranslator(options: TitleTranslatorOptions) {
    * gets the `<a i=N>` wrapping Google's endpoint needs. See the module
    * header for why a plain single-string request would silently fail.
    */
-  async function translateTitleString(text: string): Promise<string | null> {
+  async function translateTitleString(text: string): Promise<TranslateTitleResult> {
     const key = cacheKey(text);
     const cached = cache.get(key);
-    if (cached !== undefined) return cached;
-    if (inFlightKey === key) return null; // a duplicate observer/poll tick for the same pending request
+    if (cached !== undefined) return { status: 'translated', text: cached };
+    if (inFlightKey === key) return { status: 'duplicate' }; // a duplicate observer/poll tick for the same pending request
 
     inFlightKey = key;
     try {
@@ -77,16 +98,21 @@ export function createTitleTranslator(options: TitleTranslatorOptions) {
         });
       } catch (e) {
         console.error('[prism] title translation request failed', e);
-        return null;
+        return { status: 'failed' };
       }
 
       const outcome = outcomes[0];
-      const translated = outcome?.ok ? outcome.value[0] : undefined;
-      if (!translated || translated === text) return null;
+      if (!outcome?.ok) {
+        console.error('[prism] title translation failed', outcome && !outcome.ok ? outcome.error : outcome);
+        return { status: 'failed' };
+      }
+
+      const translated = outcome.value[0];
+      if (!translated || translated === text) return { status: 'unchanged' };
 
       if (cache.size > MAX_CACHE_ENTRIES) cache.clear();
       cache.set(key, translated);
-      return translated;
+      return { status: 'translated', text: translated };
     } finally {
       if (inFlightKey === key) inFlightKey = null;
     }
@@ -140,9 +166,9 @@ export function createTitleTranslator(options: TitleTranslatorOptions) {
     originalPageTitle = current;
     const result = await translateTitleString(current);
     if (!active) return; // restored/torn down while the request was in flight
-    if (result && result !== current) {
-      translatedPageTitle = result;
-      applyTabTitle(result);
+    if (result.status === 'translated' && result.text !== current) {
+      translatedPageTitle = result.text;
+      applyTabTitle(result.text);
     }
   }
 
@@ -156,10 +182,17 @@ export function createTitleTranslator(options: TitleTranslatorOptions) {
     originalPageTitle = current;
     const result = await translateTitleString(current);
     if (!active) return;
-    if (!result || result === current) return;
-    translatedPageTitle = result;
-    if (document.title !== result) {
-      applyTabTitle(result);
+
+    if (result.status === 'failed') {
+      pollDelay = Math.min(POLL_MAX_MS, Math.round(pollDelay * POLL_BACKOFF_FACTOR));
+      return;
+    }
+    if (result.status !== 'duplicate') pollDelay = POLL_MIN_MS;
+    if (result.status !== 'translated' || result.text === current) return;
+
+    translatedPageTitle = result.text;
+    if (document.title !== result.text) {
+      applyTabTitle(result.text);
     }
   }
 
@@ -179,17 +212,36 @@ export function createTitleTranslator(options: TitleTranslatorOptions) {
     // Some sites' title writes don't reliably fire the observer — a polling
     // fallback catches those too. Only runs while the page is visible;
     // visibilitychange handling in translateLoop.ts does one catch-up check
-    // on refocus.
-    pollHandle = setInterval(() => {
-      if (options.isPageVisible()) void maybeRetranslate();
-    }, POLL_INTERVAL_MS);
+    // on refocus. Self-reschedules (rather than setInterval) so pollDelay's
+    // backoff, grown in maybeRetranslate() on a 'failed' result, actually
+    // takes effect between ticks instead of firing at a fixed cadence
+    // regardless of how many consecutive requests have failed.
+    pollDelay = POLL_MIN_MS;
+    // Captured per startWatching() run. A self-rescheduling timer can
+    // otherwise resurrect itself: stopWatching() clears the pending timer,
+    // but a callback already awaiting maybeRetranslate() resumes afterwards
+    // and re-arms, leaving a timer running for the life of the page. The
+    // generation check makes a stopped (or restarted) watcher's in-flight
+    // callback a no-op.
+    watchGeneration++;
+    const myGeneration = watchGeneration;
+    const schedulePoll = (): void => {
+      if (myGeneration !== watchGeneration) return;
+      pollTimer = setTimeout(async () => {
+        if (options.isPageVisible()) await maybeRetranslate();
+        schedulePoll();
+      }, pollDelay);
+    };
+    schedulePoll();
   }
 
   function stopWatching(): void {
     headObserver?.disconnect();
     headObserver = null;
-    if (pollHandle) clearInterval(pollHandle);
-    pollHandle = null;
+    if (pollTimer) clearTimeout(pollTimer);
+    pollTimer = null;
+    // Invalidate any in-flight poll callback so it can't re-arm after this.
+    watchGeneration++;
   }
 
   /** Called on translatePage() — starts translating the title and watching for changes. */

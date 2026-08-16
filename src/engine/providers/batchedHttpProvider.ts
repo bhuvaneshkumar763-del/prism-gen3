@@ -64,7 +64,16 @@ interface RetryableError extends Error {
 
 interface PendingRequest {
   wireText: string;
-  stringCount: number;
+  /**
+   * The piece's ORIGINAL strings joined — i.e. pre-`transformPiece`, with no
+   * wire-format wrapper or HTML escaping. `isSuspiciousOutcome` compares
+   * against this, not `wireText`: comparing a wrapped request against an
+   * unwrapped response can never match, which silently disabled the
+   * echoed-back-untranslated check for any provider whose `transformPiece`
+   * adds a wrapper (Google wraps every piece in `<pre>`, so the check was
+   * inert there specifically — see google.ts's `transformPiece`).
+   */
+  originalText: string;
   resolve(result: { text: string; detectedLanguage: string | null } | null): void;
 }
 
@@ -72,6 +81,15 @@ const DEFAULT_MAX_BATCH_CHARS = 1100;
 const DEFAULT_MAX_CONCURRENT = 6;
 const REQUEST_TIMEOUT_MS = 20000;
 const MAX_ATTEMPTS = 3;
+// REQUEST_TIMEOUT_MS x MAX_ATTEMPTS (plus inter-attempt delays) is a ~62s
+// worst case with no cap — translationRoutine awaits one sendWithRetry()
+// call synchronously, so a provider that's merely slow (not down; a 5xx/429
+// with no Retry-After) could leave the page visibly untranslated for a full
+// minute with no error. This bounds the WHOLE retry sequence, not any single
+// attempt: the first attempt still gets a real shot even against a fresh
+// REQUEST_TIMEOUT_MS-scale hang, but later attempts get whatever's left of
+// the budget, not a fresh timeout each time.
+const OVERALL_DEADLINE_MS = 30000;
 
 export function createBatchedHttpProvider(options: BatchedProviderOptions): Translator {
   const maxBatchChars = options.maxBatchChars ?? DEFAULT_MAX_BATCH_CHARS;
@@ -80,10 +98,15 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
   /** In-flight dedupe: two identical concurrent piece requests share one HTTP call's result. */
   const inFlightByKey = new Map<string, Promise<{ text: string; detectedLanguage: string | null } | null>>();
 
-  async function sendOnce(sourceLanguage: string, targetLanguage: string, pieceWireTexts: string[]): Promise<unknown> {
+  async function sendOnce(
+    sourceLanguage: string,
+    targetLanguage: string,
+    pieceWireTexts: string[],
+    timeoutMs: number,
+  ): Promise<unknown> {
     const query = options.callbacks.getQueryString?.(sourceLanguage, targetLanguage, pieceWireTexts) ?? '';
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetch(options.baseUrl + query, {
         method: options.method,
@@ -115,6 +138,7 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
     targetLanguage: string,
     pieceWireTexts: string[],
   ): Promise<unknown> {
+    const deadline = Date.now() + OVERALL_DEADLINE_MS;
     let lastError: RetryableError | undefined;
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       if (attempt > 0) {
@@ -143,10 +167,17 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
           // endpoint. Jitter desyncs those waves.
           delay = delay * 0.75 + Math.random() * delay * 0.5;
         }
+        // Never sleep past the overall deadline — a Retry-After longer than
+        // what's left of the budget is a sign this attempt sequence should
+        // end, not extend indefinitely.
+        delay = Math.min(delay, deadline - Date.now());
+        if (delay <= 0) break;
         await new Promise((resolve) => setTimeout(resolve, delay));
       }
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
       try {
-        return await sendOnce(sourceLanguage, targetLanguage, pieceWireTexts);
+        return await sendOnce(sourceLanguage, targetLanguage, pieceWireTexts, Math.min(REQUEST_TIMEOUT_MS, remaining));
       } catch (e) {
         lastError = e as RetryableError;
       }
@@ -178,7 +209,15 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
 
       pending.forEach((p, idx) => {
         const result = results[idx];
-        if (!result || isSuspiciousOutcome(p.wireText, result, sourceLanguage, targetLanguage)) {
+        if (!result) {
+          missing.push(p);
+          return;
+        }
+        // Decode the wire response back to plain text before the sanity
+        // check, so the comparison is original-vs-translation rather than
+        // wrapped-request-vs-unwrapped-response (see PendingRequest.originalText).
+        const decoded = options.callbacks.splitPieceResponse(result.text, false).join('');
+        if (isSuspiciousOutcome(p.originalText, { ...result, text: decoded }, sourceLanguage, targetLanguage)) {
           missing.push(p);
           return;
         }
@@ -232,7 +271,7 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
         });
         resultPromises.push(promise);
 
-        const pending: PendingRequest = { wireText, stringCount: piece.length, resolve: resolveFn };
+        const pending: PendingRequest = { wireText, originalText: piece.join(''), resolve: resolveFn };
         currentBatch.push(pending);
         currentChars += wireText.length;
         if (currentChars > maxBatchChars) {

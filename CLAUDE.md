@@ -75,6 +75,10 @@ _Moved to `.claude/skills/post-launch-pass-three-real-bugs-from-the-speed-persis
 
 _Moved to `.claude/skills/post-launch-provider-removals-builtin-libretranslate-shadow-dom-translation-and-google-reflow-corruption/SKILL.md` — load via `/post-launch-provider-removals-builtin-libretranslate-shadow-dom-translation-and-google-reflow-corruption`._
 
+## Post-launch audit: correctness, speed, accuracy, reliability
+
+_Moved to `.claude/skills/post-launch-audit-correctness-speed-accuracy-reliability/SKILL.md` — load via `/post-launch-audit-correctness-speed-accuracy-reliability`._
+
 ## Explicitly out of scope for v1
 
 _Moved to `.claude/skills/explicitly-out-of-scope-for-v1/SKILL.md` — load via `/explicitly-out-of-scope-for-v1`._

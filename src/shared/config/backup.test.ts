@@ -63,4 +63,12 @@ describe('parseBackup', () => {
     const result = parseBackup('{}');
     expect(result.ok).toBe(true);
   });
+
+  it('falls back a legacy pageTranslatorProvider value (builtin/libretranslate) to google, same as the stored-config migration path, instead of rejecting the whole backup', () => {
+    for (const legacy of ['builtin', 'libretranslate']) {
+      const result = parseBackup(JSON.stringify({ ...defaultConfig, pageTranslatorProvider: legacy }));
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.value.pageTranslatorProvider).toBe('google');
+    }
+  });
 });

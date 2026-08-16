@@ -22,10 +22,14 @@
  * correct fallback for the false-positive case, exactly as it already
  * handles every other kind of request failure.
  *
- * One shared singleton (`connectivity`) rather than a factory per caller —
- * `batchedHttpProvider.ts` and `translateLoop.ts` both need to agree on the
- * same online/offline state at the same moment, not maintain independent
- * `online`/`offline` listeners that could momentarily disagree.
+ * One shared singleton (`connectivity`) rather than a factory per call site —
+ * every caller within the SAME realm agrees on one online/offline state
+ * instead of each maintaining its own `online`/`offline` listener that could
+ * momentarily disagree. (Note: `batchedHttpProvider.ts` and `translateLoop.ts`
+ * actually run in different realms — the provider in the MV3 background
+ * service worker, the loop in the content script — so they're already
+ * separate module instances regardless; the singleton's value is within each
+ * realm, not across the two.)
  */
 
 export interface ConnectivityWatcher {
@@ -51,9 +55,13 @@ export function createConnectivityWatcher(): ConnectivityWatcher {
     });
   }
 
-  if (typeof window !== 'undefined') {
-    window.addEventListener('online', () => notify(true));
-    window.addEventListener('offline', () => notify(false));
+  // `globalThis`, not `window`: an MV3 service worker has no `window` (it
+  // has `self`), so this previously never registered there at all — harmless
+  // today since only `isOnline()` is read in that realm, but silently inert
+  // the moment anything in the background subscribes via onChange().
+  if (typeof globalThis.addEventListener === 'function') {
+    globalThis.addEventListener('online', () => notify(true));
+    globalThis.addEventListener('offline', () => notify(false));
   }
 
   return {

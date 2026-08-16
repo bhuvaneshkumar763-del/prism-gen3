@@ -63,7 +63,7 @@ export function createMutationWatcher(options: MutationWatcherOptions) {
 
   const observer = new MutationObserver((mutations) => {
     const newRoots: Node[] = [];
-    const changedTextNodes: Text[] = [];
+    const changedTextNodes = new Set<Text>();
 
     for (const mutation of mutations) {
       mutation.addedNodes.forEach((node) => {
@@ -78,15 +78,14 @@ export function createMutationWatcher(options: MutationWatcherOptions) {
           lastWritten.get(t) !== t.data &&
           HAS_LETTER.test(t.data || '') &&
           parent &&
-          !options.isNoTranslateNode(parent) &&
-          !changedTextNodes.includes(t)
+          !options.isNoTranslateNode(parent)
         ) {
-          changedTextNodes.push(t);
+          changedTextNodes.add(t);
         }
       }
     }
 
-    if (newRoots.length > 0 || changedTextNodes.length > 0) mutatedSinceLastCheck = true;
+    if (newRoots.length > 0 || changedTextNodes.size > 0) mutatedSinceLastCheck = true;
 
     newRoots.forEach((root) => {
       options.onNewRoot(root);

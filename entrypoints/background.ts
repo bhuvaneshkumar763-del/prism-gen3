@@ -1,5 +1,5 @@
 import { createProvider, type ProviderConfig } from '../src/engine/providers/registry';
-import type { PieceOutcome } from '../src/engine/translator';
+import type { PieceOutcome, Translator } from '../src/engine/translator';
 import { translateOne } from '../src/engine/translator';
 import { cacheKeyFor, translationCache } from '../src/platform/cache/translationCache';
 import { configStore } from '../src/platform/configStore';
@@ -70,11 +70,32 @@ function buildProviderConfig(): ProviderConfig {
   };
 }
 
+// Memoized per worker lifetime instead of constructed fresh on every
+// message. A fresh createProvider() call gets a fresh
+// createBatchedHttpProvider() closure, and that closure is where the
+// maxConcurrent cap and inFlightByKey dedupe actually live (see
+// batchedHttpProvider.ts) — reconstructing it per-message meant every
+// concurrent message (e.g. several tabs translating at once) got its OWN
+// independent rate limiter instead of sharing one, so 3 tabs could fire up
+// to 3x the intended concurrent request count at the provider. The
+// fingerprint check still picks up a live settings change (new API key,
+// switched provider) without needing a separate configStore.onChanged wire-up.
+let cachedProvider: { providerId: string; fingerprint: string; provider: Translator | null } | null = null;
+
+function providerFingerprint(providerId: string, config: ProviderConfig): string {
+  return JSON.stringify(config[providerId as keyof ProviderConfig] ?? null);
+}
+
 async function resolveActiveProvider() {
   await configStore.onReady();
   const providerId = configStore.get('pageTranslatorProvider');
-  const provider = createProvider(providerId, buildProviderConfig());
-  return { providerId, provider };
+  const config = buildProviderConfig();
+  const fingerprint = providerFingerprint(providerId, config);
+
+  if (!cachedProvider || cachedProvider.providerId !== providerId || cachedProvider.fingerprint !== fingerprint) {
+    cachedProvider = { providerId, fingerprint, provider: createProvider(providerId, config) };
+  }
+  return { providerId, provider: cachedProvider.provider };
 }
 
 const TRANSLATE_MENU_ID = 'prism-translate-page';
@@ -132,20 +153,29 @@ export default defineBackground(() => {
       cacheKeyFor(providerId, sourceLanguage, targetLanguage, JSON.stringify(piece)),
     );
     // Caching is purely an optimization — a cache-layer failure (a closed
-    // IndexedDB connection, a quota/permission issue) must never break an
-    // otherwise-successful translation. Treat a failed read as a cache
-    // miss (falls through to a live provider call below) and a failed
-    // write as a no-op, both logged but not propagated.
-    const cachedValues = cacheEnabled
-      ? await Promise.all(
-          pieceKeys.map((key) =>
-            translationCache.get(key).catch((e) => {
-              console.warn('[prism] translation cache read failed, treating as a cache miss', e);
-              return null;
-            }),
-          ),
-        )
+    // IndexedDB connection, a quota/permission issue, or a corrupt/truncated
+    // stored entry) must never break an otherwise-successful translation.
+    // Treat a failed read OR a value that fails to parse as a cache miss
+    // (falls through to a live provider call below) and a failed write as a
+    // no-op, all logged but not propagated. getMany() reads every piece
+    // key in ONE IndexedDB transaction instead of one per key — a tick with
+    // ~40 pieces used to open ~40 separate transactions just to check the
+    // cache.
+    const rawCachedValues = cacheEnabled
+      ? await translationCache.getMany(pieceKeys).catch((e) => {
+          console.warn('[prism] translation cache read failed, treating every piece as a cache miss', e);
+          return pieces.map(() => null);
+        })
       : pieces.map(() => null);
+    const cachedValues: Array<string[] | null> = rawCachedValues.map((raw) => {
+      if (raw === null) return null;
+      try {
+        return JSON.parse(raw) as string[];
+      } catch (e) {
+        console.warn('[prism] cached entry failed to parse, treating as a cache miss', e);
+        return null;
+      }
+    });
 
     const missingIndices: number[] = [];
     pieces.forEach((_, i) => {
@@ -165,40 +195,60 @@ export default defineBackground(() => {
       });
     }
 
+    // Built once so the reconstruction below is O(1) per piece instead of
+    // an indexOf() scan (O(n) per piece, O(n^2) overall — real cost on a
+    // cold/disabled cache, where every piece is "missing").
+    const missingIdxByPiece = new Map(missingIndices.map((i, idx) => [i, idx]));
+
     const outcomes: PieceOutcome[] = pieces.map((_, i) => {
       const cached = cachedValues[i];
-      if (cached !== null && cached !== undefined) return { ok: true, value: JSON.parse(cached) };
-      const missingIdx = missingIndices.indexOf(i);
-      return freshOutcomes[missingIdx] ?? { ok: false, error: { kind: 'parse', message: 'no result for this piece' } };
+      if (cached !== null && cached !== undefined) return { ok: true, value: cached };
+      const missingIdx = missingIdxByPiece.get(i);
+      const fresh = missingIdx !== undefined ? freshOutcomes[missingIdx] : undefined;
+      return fresh ?? { ok: false, error: { kind: 'parse', message: 'no result for this piece' } };
     });
 
     if (cacheEnabled) {
-      await Promise.all(
-        missingIndices.map(async (i, idx) => {
+      // setMany() writes every fresh piece in ONE IndexedDB transaction and
+      // runs ONE eviction pass, instead of set()'s old per-piece path (two
+      // transactions each — up to 2N for N fresh pieces in a tick).
+      const freshEntries = missingIndices
+        .map((i, idx) => {
           const outcome = freshOutcomes[idx];
           const key = pieceKeys[i];
-          if (!outcome?.ok || !key) return;
-          try {
-            await translationCache.set(key, JSON.stringify(outcome.value));
-          } catch (e) {
-            console.warn('[prism] translation cache write failed, continuing without caching this piece', e);
-          }
-        }),
-      );
+          return outcome?.ok && key ? { key, value: JSON.stringify(outcome.value) } : null;
+        })
+        .filter((e): e is { key: string; value: string } => e !== null);
+      try {
+        await translationCache.setMany(freshEntries);
+      } catch (e) {
+        console.warn('[prism] translation cache write failed, continuing without caching these pieces', e);
+      }
     }
 
     return outcomes;
   });
 
-  browser.contextMenus.create({
-    id: TRANSLATE_MENU_ID,
-    title: 'Translate this page',
-    contexts: ['page'],
-  });
-  browser.contextMenus.create({
-    id: RESTORE_MENU_ID,
-    title: 'Show original text',
-    contexts: ['page'],
+  // Registered inside onInstalled (fires on install/update/browser-update),
+  // NOT unconditionally at the top of main() — an MV3 service worker is
+  // fully re-executed on every wake from suspension (unlike a persistent
+  // background page), but context-menu items persist in the browser
+  // independently of the worker's own lifetime. Creating them unconditionally
+  // meant every wake after the first successful install called create() with
+  // an already-existing id, which the browser reports via
+  // runtime.lastError — unread here, so it printed as an unchecked-error
+  // warning on every single wake (which happens constantly: the keepalive
+  // alarm alone fires every ~24s while a page is translating). The callback
+  // reading lastError is a belt-and-braces guard, not the primary fix — a
+  // genuine extension update can still legitimately re-create an id that
+  // survived from the prior version.
+  browser.runtime.onInstalled.addListener(() => {
+    browser.contextMenus.create({ id: TRANSLATE_MENU_ID, title: 'Translate this page', contexts: ['page'] }, () => {
+      void browser.runtime.lastError;
+    });
+    browser.contextMenus.create({ id: RESTORE_MENU_ID, title: 'Show original text', contexts: ['page'] }, () => {
+      void browser.runtime.lastError;
+    });
   });
   browser.contextMenus.onClicked.addListener((info) => {
     if (info.menuItemId === TRANSLATE_MENU_ID) void translateActiveTab();

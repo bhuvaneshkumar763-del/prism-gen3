@@ -22,6 +22,26 @@ describe('collectTextNodes', () => {
     expect(nodes.map((n) => n.data)).toEqual(['Visible']);
   });
 
+  it('skips <pre> and <code> so source samples are not reworded into broken code', () => {
+    document.body.innerHTML =
+      '<pre>if (user.isAdmin) { grantAccess(); }</pre><p>Intro</p><code>npm install</code><p>Outro</p>';
+    const nodes = collectTextNodes(document.body);
+    expect(nodes.map((n) => n.data)).toEqual(['Intro', 'Outro']);
+  });
+
+  it('honors the standard translate="no" and .notranslate opt-out signals', () => {
+    document.body.innerHTML =
+      '<span translate="no">BrandName</span><span class="notranslate">@handle</span><p>Translate me</p>';
+    const nodes = collectTextNodes(document.body);
+    expect(nodes.map((n) => n.data)).toEqual(['Translate me']);
+  });
+
+  it('excludes descendants of a translate="no" subtree, not just the element itself', () => {
+    document.body.innerHTML = '<div translate="no"><p>Keep <b>this</b> as-is</p></div><p>But translate this</p>';
+    const nodes = collectTextNodes(document.body);
+    expect(nodes.map((n) => n.data)).toEqual(['But translate this']);
+  });
+
   it('skips contenteditable subtrees', () => {
     document.body.innerHTML = '<div contenteditable="true">editing this</div><p>Static</p>';
     const nodes = collectTextNodes(document.body);

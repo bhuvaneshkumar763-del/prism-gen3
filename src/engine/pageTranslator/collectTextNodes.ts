@@ -27,7 +27,11 @@
  * separate fix.
  */
 
-const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEXTAREA']);
+// PRE/CODE: source code sent to a translation provider comes back with
+// identifiers reworded, quotes "smartened", and indentation reflowed — the
+// sample renders as broken, uncopyable code. Every mainstream translation
+// tool excludes them.
+const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEXTAREA', 'PRE', 'CODE']);
 
 /**
  * Bare tag/mention markers with nothing else in the node — real-world tag
@@ -47,6 +51,13 @@ export function isNoTranslateNode(node: Node): boolean {
     const el = node as Element;
     if (SKIP_TAGS.has(el.tagName)) return true;
     if ((el as HTMLElement).isContentEditable) return true;
+    // The standard, cross-tool opt-out signals a site uses to protect brand
+    // names, identifiers, usernames and the like. `translate="no"` is the
+    // HTML attribute; `.notranslate` is the long-standing class convention
+    // Google Translate popularised. Both are honored by every major
+    // translation tool, and both were previously ignored here entirely.
+    if (el.getAttribute('translate') === 'no') return true;
+    if (el.classList.contains('notranslate')) return true;
   }
   return false;
 }

@@ -1,4 +1,5 @@
 import { render } from 'solid-js/web';
+import { createShadowHost } from '../../src/shared/ui/shadowHost';
 import { type BubbleViewState, createBubbleState, DEFAULT_BUBBLE_VIEW_STATE } from './bubbleState';
 import { BUBBLE_STYLES } from './bubbleStyles';
 import { FloatingBubble } from './FloatingBubble';
@@ -33,24 +34,7 @@ export interface MountBubbleOptions {
  * JSX so Solid's fine-grained reactivity handles the redraw.
  */
 export function mountBubble(options: MountBubbleOptions): BubbleController {
-  document.getElementById(HOST_ID)?.remove();
-
-  const host = document.createElement('div');
-  host.id = HOST_ID;
-  // 'open' (not 'closed'): the bubble only ever shows a translate/restore
-  // toggle and language/service pickers — no user data — so the isolation
-  // benefit of a closed root is marginal, and 'open' keeps this testable
-  // via `host.shadowRoot` from outside (see mountBubble.test.ts).
-  const shadow = host.attachShadow({ mode: 'open' });
-
-  const styleEl = document.createElement('style');
-  styleEl.textContent = BUBBLE_STYLES;
-  shadow.appendChild(styleEl);
-
-  const mountPoint = document.createElement('div');
-  shadow.appendChild(mountPoint);
-
-  document.documentElement.appendChild(host);
+  const { host, mountPoint } = createShadowHost(HOST_ID, BUBBLE_STYLES);
 
   // A fresh object literal, not the shared DEFAULT_BUBBLE_VIEW_STATE
   // reference — Solid's createStore mutates its target object in place, so

@@ -128,6 +128,110 @@ describe('createPageTranslator', () => {
     pageTranslator.restorePage();
   });
 
+  it('restores the CURRENT original text, not the text captured when the node was first queued', async () => {
+    // Regression: nodesToRestore was only written in queueNode, so a node
+    // whose content legitimately changed while translated (a live score, an
+    // edited comment) restored to its first-ever text — silently discarding
+    // whatever the page had since changed it to.
+    document.body.innerHTML = '<p>hello</p>';
+    const pageTranslator = createPageTranslator({
+      translator: uppercaseTranslator(),
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+
+    await pageTranslator.translatePage('es');
+    await waitFor(() => document.body.textContent === 'HELLO');
+
+    const p = document.body.querySelector('p') as HTMLParagraphElement;
+    const textNode = p.firstChild as Text;
+    p.removeChild(textNode);
+    textNode.data = 'updated by the page';
+    p.appendChild(textNode);
+    await waitFor(() => p.textContent === 'UPDATED BY THE PAGE');
+
+    pageTranslator.restorePage();
+
+    expect(p.textContent).toBe('updated by the page');
+  });
+
+  it('discards a slow batch from an abandoned cycle instead of overwriting the newer translation', async () => {
+    // Ask for one language, switch to another before the first response
+    // lands, then let the stale response arrive. It must not overwrite.
+    document.body.innerHTML = '<p>hello</p>';
+    let releaseFirst!: () => void;
+    const firstHeld = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let callCount = 0;
+    const translator: Translator = {
+      async translateBatch(request) {
+        callCount++;
+        if (callCount === 1) {
+          await firstHeld;
+          return request.pieces.map((piece): PieceOutcome => ok(piece.map(() => 'STALE')));
+        }
+        return request.pieces.map((piece): PieceOutcome => ok(piece.map(() => 'FRESH')));
+      },
+    };
+    const pageTranslator = createPageTranslator({
+      translator,
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+
+    void pageTranslator.translatePage('fr'); // starts, hangs on firstHeld
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await pageTranslator.translatePage('de'); // abandons the first cycle
+    await waitFor(() => document.body.textContent === 'FRESH');
+
+    releaseFirst();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(document.body.textContent).toBe('FRESH');
+    pageTranslator.restorePage();
+  });
+
+  it('retranslates a node that was disconnected while its translation was in flight, once reattached with the same content', async () => {
+    // Regression: a node disconnected between being sent and the response
+    // landing had its result silently dropped (correct), but lastSeenText
+    // still matched its still-untranslated content — so reattaching it
+    // unchanged looked like "nothing changed" and it was never requeued.
+    document.body.innerHTML = '<p>hello</p>';
+    let releaseFirst!: () => void;
+    const firstHeld = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let callCount = 0;
+    const translator: Translator = {
+      async translateBatch(request) {
+        callCount++;
+        if (callCount === 1) await firstHeld;
+        return request.pieces.map((piece): PieceOutcome => ok(piece.map((s) => s.toUpperCase())));
+      },
+    };
+    const pageTranslator = createPageTranslator({
+      translator,
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+
+    void pageTranslator.translatePage('es'); // first batch is now in flight, hanging
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const p = document.body.querySelector('p') as HTMLParagraphElement;
+    const textNode = p.firstChild as Text;
+    p.removeChild(textNode); // detach while the request for it is in flight
+    releaseFirst(); // response now lands for a disconnected node — dropped
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    p.appendChild(textNode); // reattach with the SAME (still-untranslated) content
+    await waitFor(() => p.textContent === 'HELLO');
+
+    expect(p.textContent).toBe('HELLO');
+    pageTranslator.restorePage();
+  });
+
   it('does not re-translate a detached-then-reattached node whose content is unchanged (no spurious requeue)', async () => {
     document.body.innerHTML = '<p>hello</p>';
     const translateBatch = vi.fn(async (request: { pieces: string[][] }) =>
@@ -443,6 +547,56 @@ describe('createPageTranslator', () => {
     pageTranslator.restorePage();
   });
 
+  it('resets the surfaced-error backoff on restore, so a fresh translate starts its first surfaced retry at ~8s, not inheriting a long backoff', async () => {
+    document.body.innerHTML = '<p>hello</p>';
+    const translateBatchSpy = vi.fn(async () => {
+      throw new Error('boom');
+    });
+    const pageTranslator = createPageTranslator({
+      translator: { translateBatch: translateBatchSpy },
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+
+    vi.useFakeTimers();
+    try {
+      void pageTranslator.translatePage('es');
+      // 3 failing ticks at the fast 150ms interval to first surface the error.
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(150);
+      await vi.advanceTimersByTimeAsync(150);
+      expect(pageTranslator.getLastError()).not.toBeNull();
+
+      // Let the surfaced-error streak climb well past its first value —
+      // 30000ms comfortably covers the growing backoff at every step.
+      for (let i = 0; i < 4; i++) {
+        await vi.advanceTimersByTimeAsync(30000);
+      }
+
+      pageTranslator.restorePage();
+
+      void pageTranslator.translatePage('es'); // a brand-new attempt
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(150);
+      await vi.advanceTimersByTimeAsync(150); // 3rd failing tick — surfaces again here
+      const callsAtSurfacing = translateBatchSpy.mock.calls.length;
+
+      // Advance well past the fixed 8000ms first-surfacing delay but well
+      // short of the 30000ms cap a leftover high streak would clamp to.
+      await vi.advanceTimersByTimeAsync(8500);
+
+      // Fixed: streak reset to 0 by restorePage(), so this surfacing's delay
+      // is 8000ms — another retry has already fired within the window.
+      // Unfixed: the streak kept climbing before the restore, so this
+      // delay is clamped to 30000ms and no retry happens within 8500ms.
+      expect(translateBatchSpy.mock.calls.length).toBeGreaterThan(callsAtSurfacing);
+
+      pageTranslator.restorePage();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('restorePage() is safe to call again with nothing pending (no active routine timer)', async () => {
     document.body.innerHTML = '<p>hello</p>';
     const pageTranslator = createPageTranslator({
@@ -539,5 +693,98 @@ describe('createPageTranslator', () => {
       pageTranslator.restorePage();
       isOnlineSpy.mockRestore();
     });
+  });
+});
+
+describe('viewport-priority reordering — dirty-flag gating', () => {
+  afterEach(() => {
+    document.body.innerHTML = '';
+    vi.restoreAllMocks();
+  });
+
+  /** Every paragraph reports itself as visible — content of the rect doesn't matter for these tests, only how many times it's measured. */
+  function stubAllRectsVisible(): void {
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({
+      top: 0,
+      bottom: 10,
+      left: 0,
+      right: 0,
+      width: 0,
+      height: 10,
+      x: 0,
+      y: 0,
+    } as DOMRect);
+  }
+
+  it('does not re-measure node positions on a later tick when nothing changed since the last reorder', async () => {
+    // 250 paragraphs: tick 1 (queue=250, >100) reorders and translates the
+    // first 100, leaving 150 (still >100 — eligible again on tick 2, but
+    // nothing changed since tick 1's reorder).
+    for (let i = 0; i < 250; i++) {
+      const p = document.createElement('p');
+      p.textContent = `hello ${i}`;
+      document.body.appendChild(p);
+    }
+    stubAllRectsVisible();
+    const rectSpy = vi.spyOn(Element.prototype, 'getBoundingClientRect');
+
+    const pageTranslator = createPageTranslator({
+      translator: uppercaseTranslator(),
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+
+    await pageTranslator.translatePage('es');
+    await waitFor(() => rectSpy.mock.calls.length > 0); // tick 1's reorder measured something
+    const callsAfterTick1 = rectSpy.mock.calls.length;
+
+    // Let tick 2 run (150ms cadence while queue.length > 0).
+    await waitFor(
+      () => document.querySelectorAll('p').length === 250 && document.body.textContent?.includes('HELLO 150'),
+      3000,
+    );
+
+    // No NEW measurement calls — tick 2 was eligible by queue size alone,
+    // but the dirty flag (cleared after tick 1) correctly skipped it.
+    expect(rectSpy.mock.calls.length).toBe(callsAfterTick1);
+
+    pageTranslator.restorePage();
+  });
+
+  it('re-measures after a scroll invalidates the previous ordering', async () => {
+    // A large node count keeps `queue.length > MAX_PIECES_PER_TICK` true for
+    // many ticks (~150ms cadence) — comfortably longer than resweep's 400ms
+    // scroll debounce, so there's a real reorder-eligible tick for the
+    // dirty flag to actually take effect on after the scroll.
+    for (let i = 0; i < 1000; i++) {
+      const p = document.createElement('p');
+      p.textContent = `hello ${i}`;
+      document.body.appendChild(p);
+    }
+    stubAllRectsVisible();
+    const rectSpy = vi.spyOn(Element.prototype, 'getBoundingClientRect');
+
+    const pageTranslator = createPageTranslator({
+      translator: uppercaseTranslator(),
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+
+    await pageTranslator.translatePage('es');
+    await waitFor(() => rectSpy.mock.calls.length > 0);
+    const callsAfterTick1 = rectSpy.mock.calls.length;
+
+    // Let at least one "eligible but not dirty" tick pass and confirm it's
+    // correctly skipped, same as the previous test.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(rectSpy.mock.calls.length).toBe(callsAfterTick1);
+
+    // Scroll — resweep.ts's own debounced listener (400ms) marks the
+    // ordering dirty again via onViewportChanged.
+    window.dispatchEvent(new Event('scroll'));
+
+    await waitFor(() => rectSpy.mock.calls.length > callsAfterTick1, 3000);
+
+    pageTranslator.restorePage();
   });
 });

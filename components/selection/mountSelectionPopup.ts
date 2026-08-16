@@ -2,6 +2,7 @@ import { render } from 'solid-js/web';
 import { getSelectionInfo } from '../../src/engine/selection/selectionInfo';
 import type { Translator } from '../../src/engine/translator';
 import { translateOne } from '../../src/engine/translator';
+import { createShadowHost } from '../../src/shared/ui/shadowHost';
 import { SelectionPopup } from './SelectionPopup';
 import { SELECTION_POPUP_STYLES } from './selectionPopupStyles';
 
@@ -25,22 +26,17 @@ export interface MountSelectionPopupOptions {
  * NOT built here (drag, replace-in-place, per-selection pickers, ...).
  */
 export function mountSelectionPopup(options: MountSelectionPopupOptions): SelectionPopupController {
-  document.getElementById(HOST_ID)?.remove();
-
-  const host = document.createElement('div');
-  host.id = HOST_ID;
-  const shadow = host.attachShadow({ mode: 'open' });
-
-  const styleEl = document.createElement('style');
-  styleEl.textContent = SELECTION_POPUP_STYLES;
-  shadow.appendChild(styleEl);
-
-  const mountPoint = document.createElement('div');
-  shadow.appendChild(mountPoint);
-  document.documentElement.appendChild(host);
+  const { host, mountPoint } = createShadowHost(HOST_ID, SELECTION_POPUP_STYLES);
 
   let dispose: (() => void) | null = null;
   let selectedText = '';
+  // Bumped whenever the visible selection changes (new mouseup) or a new
+  // translate click starts — a resolving handleTranslateClick() checks its
+  // own snapshot against the current value before applying its result, so
+  // a slower/earlier request can't clobber what the user is looking at now
+  // (e.g. select A, click translate, select B before A resolves — A's
+  // stale result must not overwrite B's state).
+  let requestId = 0;
   let state: {
     buttonVisible: boolean;
     buttonTop: number;
@@ -77,6 +73,7 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
   renderNow();
 
   async function handleTranslateClick(): Promise<void> {
+    const thisRequestId = ++requestId;
     state = { ...state, panelOpen: true, busy: true, translatedText: '', errorMessage: null };
     renderNow();
     const result = await translateOne(
@@ -85,6 +82,8 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
       options.getSourceLanguage(),
       options.getTargetLanguage(),
     );
+    if (thisRequestId !== requestId) return; // superseded by a newer selection/click — discard
+
     if (result.ok) {
       state = { ...state, busy: false, translatedText: result.value };
     } else {
@@ -100,10 +99,12 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
 
     const info = getSelectionInfo(window.getSelection());
     if (!info) {
+      requestId++;
       state = { ...state, buttonVisible: false, panelOpen: false };
       renderNow();
       return;
     }
+    requestId++;
     selectedText = info.text;
     state = {
       buttonVisible: true,

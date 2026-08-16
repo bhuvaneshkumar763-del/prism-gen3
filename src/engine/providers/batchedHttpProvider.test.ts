@@ -253,6 +253,45 @@ describe('createBatchedHttpProvider — connectivity awareness', () => {
     vi.useRealTimers();
   });
 
+  it('bounds the whole retry sequence to an overall deadline instead of letting 3 full-length slow attempts add up past a minute', async () => {
+    // Regression: with no overall cap, REQUEST_TIMEOUT_MS(20s) x
+    // MAX_ATTEMPTS(3) plus inter-attempt delays could leave a page visibly
+    // untranslated for ~62s against a provider that's merely slow, not down.
+    vi.spyOn(connectivity, 'isOnline').mockReturnValue(true);
+    vi.useFakeTimers();
+    // Simulates a provider that never responds — only settles when THIS
+    // request's own AbortController fires, exactly like a real fetch() does.
+    const fetchMock = vi.fn(
+      (_url: string, init?: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            const err = new Error('The operation was aborted');
+            err.name = 'AbortError';
+            reject(err);
+          });
+        }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const provider = createBatchedHttpProvider({
+      name: 'slow-provider',
+      baseUrl: 'https://example.com',
+      method: 'POST',
+      callbacks: { ...plainCallbacks(), getRequestBody: () => '{}' },
+    });
+
+    const resultPromise = provider.translateBatch({ sourceLanguage: 'en', targetLanguage: 'es', pieces: [['hello']] });
+    await vi.advanceTimersByTimeAsync(35000); // comfortably past the intended ~30s deadline
+    const results = await resultPromise;
+
+    expect(results[0]?.ok).toBe(false);
+    // Attempt 1 consumes the first 20s of the 30s budget; attempt 2 gets
+    // whatever's left (~10s) and exhausts it exactly — leaving none for a
+    // 3rd attempt. Without the deadline, all 3 would each get a fresh 20s.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
+  });
+
   it('jitters the fixed retry delays within the documented +/-25% bounds', async () => {
     vi.spyOn(connectivity, 'isOnline').mockReturnValue(true);
     const delays: number[] = [];

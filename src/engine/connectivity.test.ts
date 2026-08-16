@@ -25,13 +25,16 @@ describe('createConnectivityWatcher', () => {
   });
 
   it('notifies subscribers on a real online/offline window event', () => {
+    // Stubbed on globalThis directly, not a separate `window` object — in a
+    // real browser/content-script realm `window === globalThis`, and (per
+    // the MV3-service-worker fix below) this module now registers via
+    // `globalThis.addEventListener` specifically so it also works in a
+    // realm that has no `window` at all.
     const listeners: Record<string, Array<() => void>> = { online: [], offline: [] };
     vi.stubGlobal('navigator', { onLine: true });
-    vi.stubGlobal('window', {
-      addEventListener: (type: string, cb: () => void) => {
-        listeners[type] = listeners[type] ?? [];
-        listeners[type].push(cb);
-      },
+    vi.stubGlobal('addEventListener', (type: string, cb: () => void) => {
+      listeners[type] = listeners[type] ?? [];
+      listeners[type].push(cb);
     });
 
     const watcher = createConnectivityWatcher();
@@ -51,11 +54,9 @@ describe('createConnectivityWatcher', () => {
   it('unsubscribe stops future notifications', () => {
     const listeners: Record<string, Array<() => void>> = { online: [], offline: [] };
     vi.stubGlobal('navigator', { onLine: true });
-    vi.stubGlobal('window', {
-      addEventListener: (type: string, cb: () => void) => {
-        listeners[type] = listeners[type] ?? [];
-        listeners[type].push(cb);
-      },
+    vi.stubGlobal('addEventListener', (type: string, cb: () => void) => {
+      listeners[type] = listeners[type] ?? [];
+      listeners[type].push(cb);
     });
 
     const watcher = createConnectivityWatcher();
@@ -68,5 +69,28 @@ describe('createConnectivityWatcher', () => {
     });
 
     expect(seen).toEqual([]);
+  });
+
+  it('registers online/offline listeners even in a realm with no `window` (an MV3 service worker)', () => {
+    // Regression: this module used to gate registration on `typeof window
+    // !== 'undefined'`, which is never true in a service worker (it has
+    // `self`, not `window`) — the listeners silently never registered there.
+    const listeners: Record<string, Array<() => void>> = { online: [], offline: [] };
+    vi.stubGlobal('navigator', { onLine: true });
+    vi.stubGlobal('window', undefined);
+    vi.stubGlobal('addEventListener', (type: string, cb: () => void) => {
+      listeners[type] = listeners[type] ?? [];
+      listeners[type].push(cb);
+    });
+
+    const watcher = createConnectivityWatcher();
+    const seen: boolean[] = [];
+    watcher.onChange((online) => seen.push(online));
+
+    listeners.offline?.forEach((cb) => {
+      cb();
+    });
+
+    expect(seen).toEqual([false]);
   });
 });

@@ -41,6 +41,22 @@ export function parseBackup(json: string): Result<Partial<Config>, string> {
   const isWrapped = parsed !== null && typeof parsed === 'object' && 'config' in (parsed as Record<string, unknown>);
   const configCandidate = isWrapped ? (parsed as { config: unknown }).config : parsed;
 
+  // Same fallback migrations.ts applies to stored config (versions 3/4):
+  // a backup exported before the `builtin`/`libretranslate` provider
+  // removals still has one of those values here, and unlike the raw-storage
+  // load path, nothing else remaps it before schema validation — without
+  // this, restoring an old-but-otherwise-valid backup would fail the
+  // `pageTranslatorProvider` enum check and reject the whole import.
+  if (
+    configCandidate !== null &&
+    typeof configCandidate === 'object' &&
+    'pageTranslatorProvider' in configCandidate &&
+    ((configCandidate as Record<string, unknown>).pageTranslatorProvider === 'builtin' ||
+      (configCandidate as Record<string, unknown>).pageTranslatorProvider === 'libretranslate')
+  ) {
+    (configCandidate as Record<string, unknown>).pageTranslatorProvider = 'google';
+  }
+
   const result = configSchema.partial().safeParse(configCandidate);
   if (!result.success) {
     const issue = result.error.issues[0];

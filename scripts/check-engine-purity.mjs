@@ -18,8 +18,81 @@ import { join } from 'node:path';
 
 const GUARDED_DIRS = ['src/engine', 'src/shared'];
 const DISALLOWED_IMPORT_PATTERN = /from\s+['"](wxt|@wxt-dev\/|webextension-polyfill)/;
-const BARE_GLOBAL_PATTERN =
-  /\b(chrome|browser)\.(runtime|storage|tabs|scripting|action|commands|contextMenus|i18n|permissions|alarms|offscreen|extension)\b/;
+// A FIXED namespace list (storage/tabs/runtime/...) used to be the match
+// here — Chrome's extension API surface keeps growing, and nothing
+// documented why that particular subset was chosen, so a genuinely
+// foreseeable new engine-file dependency (chrome.windows, .notifications,
+// .downloads, ...) would silently pass this guard. `chrome`/`browser`
+// should never be referenced under src/engine/ or src/shared/ at all per
+// the purity boundary, so match ANY property access on either identifier
+// rather than trying to keep an allowlist in sync with Chrome's own API
+// surface.
+//
+// Known, accepted gap (not attempted here — needs real static analysis,
+// not a regex guard): aliasing (`const c = chrome; c.storage...`), bracket
+// access (`chrome['storage']`), and dynamic `import('webextension-polyfill')`
+// all evade this. This guard catches the common, accidental case, not
+// every deliberate way around it.
+const BARE_GLOBAL_PATTERN = /\b(chrome|browser)\.\w+/;
+
+/**
+ * Strips `//` and `/* *\/` comments from one line, string-aware — unlike a
+ * plain `line.indexOf('/*')`, which treats ANY literal `/*`-looking
+ * substring as a comment opener, including one that appears inside a
+ * string or regex literal (e.g. a URL, or a regex pattern that happens to
+ * contain those two characters in sequence). That desyncs `inBlockComment`
+ * for the rest of the file, silently disabling the check entirely from
+ * that point on — a real violation later in the same file would never be
+ * reported.
+ *
+ * Known, accepted simplification: `quote` state resets at the start of
+ * every line, so a genuine multi-line template literal isn't tracked
+ * across lines. Rare in this codebase's style for anything that would
+ * contain a chrome/browser reference; full multi-line string tracking
+ * would need a real tokenizer, which is disproportionate for this guard.
+ */
+function stripCommentsFromLine(line, inBlockComment) {
+  let result = '';
+  let quote = null;
+  let i = 0;
+  while (i < line.length) {
+    if (inBlockComment) {
+      const end = line.indexOf('*/', i);
+      if (end === -1) return { result, inBlockComment: true };
+      i = end + 2;
+      inBlockComment = false;
+      continue;
+    }
+    const ch = line[i];
+    if (quote) {
+      result += ch;
+      if (ch === '\\' && i + 1 < line.length) {
+        result += line[i + 1];
+        i += 2;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      i++;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === '`') {
+      quote = ch;
+      result += ch;
+      i++;
+      continue;
+    }
+    if (ch === '/' && line[i + 1] === '/') break; // line comment — rest of the line is gone
+    if (ch === '/' && line[i + 1] === '*') {
+      const end = line.indexOf('*/', i + 2);
+      if (end === -1) return { result, inBlockComment: true };
+      i = end + 2;
+      continue;
+    }
+    result += ch;
+    i++;
+  }
+  return { result, inBlockComment };
+}
 
 function walk(dir, files = []) {
   for (const entry of readdirSync(dir)) {
@@ -49,29 +122,11 @@ for (const dir of GUARDED_DIRS) {
     lines.forEach((rawLine, i) => {
       // Strip comments before matching — a doc comment mentioning
       // "browser.storage" as prose (e.g. explaining why a module DOESN'T
-      // use it) must not trip this check. Simple line-based stripping:
-      // good enough for this codebase's style (no comment syntax inside
-      // string literals containing "chrome."/"browser." expressions,
-      // which would be unusual and easy to spot in review anyway).
-      let line = rawLine;
-      if (inBlockComment) {
-        const end = line.indexOf('*/');
-        if (end === -1) return; // whole line is inside the block comment
-        line = line.slice(end + 2);
-        inBlockComment = false;
-      }
-      const blockStart = line.indexOf('/*');
-      if (blockStart !== -1) {
-        const blockEnd = line.indexOf('*/', blockStart);
-        if (blockEnd === -1) {
-          line = line.slice(0, blockStart);
-          inBlockComment = true;
-        } else {
-          line = line.slice(0, blockStart) + line.slice(blockEnd + 2);
-        }
-      }
-      const lineCommentStart = line.indexOf('//');
-      if (lineCommentStart !== -1) line = line.slice(0, lineCommentStart);
+      // use it) must not trip this check. String-aware (see
+      // stripCommentsFromLine's own doc comment for why that matters).
+      const stripped = stripCommentsFromLine(rawLine, inBlockComment);
+      const line = stripped.result; // empty when the whole line was inside a block comment — matches nothing below
+      inBlockComment = stripped.inBlockComment;
       // Also skip lines that are purely a jsdoc-style " * ..." continuation.
       if (/^\s*\*/.test(rawLine) && !/^\s*\*\//.test(rawLine)) return;
 

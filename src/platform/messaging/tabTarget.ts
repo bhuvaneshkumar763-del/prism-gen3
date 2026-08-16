@@ -7,8 +7,14 @@
  * this same function (see `getActiveTabId.test.ts` for a test exercising
  * it from more than one conceptual call site).
  */
-export async function getActiveTabId(): Promise<number> {
+export async function getActiveTab() {
   const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
   if (!tab?.id) throw new Error('No active tab');
-  return tab.id;
+  return tab;
+}
+
+export async function getActiveTabId(): Promise<number> {
+  const tab = await getActiveTab();
+  // getActiveTab already guarantees tab.id is set.
+  return tab.id as number;
 }

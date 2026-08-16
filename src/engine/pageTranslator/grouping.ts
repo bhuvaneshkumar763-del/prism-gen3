@@ -102,7 +102,12 @@ const SENTENCE_END = /[.!?。!?][)"'’”]*\s*$/;
 /** How far a group may grow past `maxGroupChars` while waiting for a clean sentence boundary, rather than cutting mid-sentence. */
 const SENTENCE_OVERFLOW_FACTOR = 1.5;
 
-function nearestBlockAncestor(node: Text): Element | null {
+/**
+ * Exported for `viewportPriority.ts`'s block-level partitioning — reuses
+ * this exact block-tag walk instead of duplicating `BLOCK_TAGS`, so the two
+ * modules can't silently drift on what counts as a "block."
+ */
+export function nearestBlockAncestor(node: Text): Element | null {
   let el = node.parentElement;
   while (el && !BLOCK_TAGS.has(el.tagName)) {
     el = el.parentElement;

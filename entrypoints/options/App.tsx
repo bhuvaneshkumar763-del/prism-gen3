@@ -62,7 +62,21 @@ function App() {
   const [cacheCleared, setCacheCleared] = createSignal(false);
   const [backupMessage, setBackupMessage] = createSignal<string | null>(null);
   const [restoredDefaults, setRestoredDefaults] = createSignal(false);
+  /**
+   * A single general-purpose save-error message — this whole file had NO
+   * error handling at all: every storage write (setField, import,
+   * restore-defaults, clear-cache) assumed success. A rejected write (quota
+   * exceeded, extension context invalidated, a transient storage error)
+   * left the page showing a value that was never actually persisted, with
+   * only the ABSENCE of the "Saved" flash as the only (easy to miss) sign
+   * something went wrong.
+   */
+  const [saveError, setSaveError] = createSignal<string | null>(null);
   let fileInput: HTMLInputElement | undefined;
+
+  function describeError(e: unknown): string {
+    return e instanceof Error ? e.message : String(e);
+  }
 
   async function handleRunDiagnostics(): Promise<void> {
     setDiagnosticsRunning(true);
@@ -71,10 +85,14 @@ function App() {
   }
 
   async function handleClearCache(): Promise<void> {
-    await translationCache.clear();
-    setCacheCleared(true);
-    setTimeout(() => setCacheCleared(false), 1200);
-    if (diagnostics()) await handleRunDiagnostics();
+    try {
+      await translationCache.clear();
+      setCacheCleared(true);
+      setTimeout(() => setCacheCleared(false), 1200);
+      if (diagnostics()) await handleRunDiagnostics();
+    } catch (e) {
+      setSaveError(`Couldn't clear the cache: ${describeError(e)}`);
+    }
   }
 
   let savedTimeout: ReturnType<typeof setTimeout> | undefined;
@@ -98,9 +116,18 @@ function App() {
   onCleanup(unsubscribe);
 
   async function setField<K extends ConfigKey>(key: K, value: Config[K]): Promise<void> {
+    const previous = settings[key];
     setSettings(key, value as never);
-    await configStore.set(key, value);
-    flashSaved(key);
+    try {
+      await configStore.set(key, value);
+      flashSaved(key);
+    } catch (e) {
+      // Roll back the optimistic update — otherwise the field keeps
+      // showing the new value as if it had saved, when it never actually
+      // persisted.
+      setSettings(key, previous as never);
+      setSaveError(`Couldn't save this setting: ${describeError(e)}`);
+    }
   }
 
   function listsSnapshot(): ListsSnapshot {
@@ -142,25 +169,35 @@ function App() {
   }
 
   async function handleImportFile(e: Event): Promise<void> {
-    const file = (e.currentTarget as HTMLInputElement).files?.[0];
+    const input = e.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
     if (!file) return;
     const text = await file.text();
     const result = parseBackup(text);
     if (!result.ok) {
       setBackupMessage(result.error);
+      input.value = '';
       return;
     }
-    await configStore.import(JSON.stringify(result.value));
-    setBackupMessage('Settings imported.');
-    setTimeout(() => setBackupMessage(null), 3000);
-    (e.currentTarget as HTMLInputElement).value = '';
+    try {
+      await configStore.import(JSON.stringify(result.value));
+      setBackupMessage('Settings imported.');
+      setTimeout(() => setBackupMessage(null), 3000);
+    } catch (e2) {
+      setBackupMessage(`Import failed: ${describeError(e2)}`);
+    }
+    input.value = '';
   }
 
   async function handleRestoreDefaults(): Promise<void> {
     if (!confirm('Restore all settings to their defaults? This cannot be undone.')) return;
-    await configStore.restoreToDefault();
-    setRestoredDefaults(true);
-    setTimeout(() => setRestoredDefaults(false), 2000);
+    try {
+      await configStore.restoreToDefault();
+      setRestoredDefaults(true);
+      setTimeout(() => setRestoredDefaults(false), 2000);
+    } catch (e) {
+      setSaveError(`Couldn't restore defaults: ${describeError(e)}`);
+    }
   }
 
   function bubbleHostEntries(): Array<[string, boolean]> {
@@ -184,6 +221,15 @@ function App() {
       <header class="header">
         <h1>Prism Settings</h1>
       </header>
+
+      <Show when={saveError()}>
+        <div class="saveError" role="alert">
+          <span>{saveError()}</span>
+          <button type="button" onClick={() => setSaveError(null)}>
+            Dismiss
+          </button>
+        </div>
+      </Show>
 
       <Show when={ready()} fallback={<p class="loading">Loading…</p>}>
         <TabSwitcher tabs={TABS} activeId={activeTab()} onSelect={setActiveTab} />

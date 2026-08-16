@@ -4,7 +4,7 @@ import { providerDescriptors } from '../../src/engine/providers/descriptors';
 import { applyListPatch, readListsSnapshot } from '../../src/platform/configMutations';
 import { configStore } from '../../src/platform/configStore';
 import { sendMessage } from '../../src/platform/messaging/protocol';
-import { getActiveTabId } from '../../src/platform/messaging/tabTarget';
+import { getActiveTab, getActiveTabId } from '../../src/platform/messaging/tabTarget';
 import {
   addLangToAlwaysTranslate,
   addRecentTargetLanguage,
@@ -82,9 +82,9 @@ function App() {
     setReady(true);
 
     try {
-      const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
-      if (tab?.id) tabId = tab.id;
-      if (tab?.url) {
+      const tab = await getActiveTab();
+      tabId = tab.id ?? null;
+      if (tab.url) {
         setTabUrl(tab.url);
         try {
           setHostname(new URL(tab.url).hostname);
@@ -97,6 +97,14 @@ function App() {
         setPageState(state);
         const lang = await sendMessage('getOriginalLanguage', undefined, tabId);
         setOriginalLanguage(lang);
+        // A translation can keep failing in the background well after the
+        // page reports 'translated' (translateLoop.ts never reverts
+        // pageLanguageState on error — see refreshError()'s own comment).
+        // Without this, opening the popup for a tab that's already
+        // mid-error shows a plain "Translated" state with no error, while
+        // the on-page bubble (live-subscribed to onError()) correctly
+        // shows one for the same tab — the popup actively contradicted it.
+        await refreshError();
       }
     } catch {
       // No content script alive yet in this tab (e.g. a chrome:// page, or

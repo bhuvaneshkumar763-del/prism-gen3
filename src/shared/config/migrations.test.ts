@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyConfigMigrations, CONFIG_SCHEMA_VERSION, configMigrations } from './migrations';
+import { applyConfigMigrations, CONFIG_SCHEMA_VERSION, type ConfigMigration, configMigrations } from './migrations';
 
 describe('applyConfigMigrations', () => {
   it('is a no-op at or above the current version', () => {
@@ -53,27 +53,61 @@ describe('applyConfigMigrations', () => {
   });
 
   it('applies migrations in ascending toVersion order and threads the result through each', () => {
+    // Regression: this test used to build a local fakeMigrations array and
+    // sort/reduce it inline, asserting against its OWN reimplementation of
+    // applyConfigMigrations' logic — it never called applyConfigMigrations
+    // at all, so a real bug in that function's ordering or threading would
+    // have passed silently. Registered deliberately out of order (2 before
+    // 1) so this only passes if applyConfigMigrations does the sorting.
     const order: string[] = [];
-    const fakeMigrations = [
+    const fakeMigrations: ConfigMigration[] = [
       {
         toVersion: 2,
-        migrate: (e: Record<string, unknown>) => {
+        migrate: (e) => {
           order.push('v2');
           return { ...e, v2Ran: true };
         },
       },
       {
         toVersion: 1,
-        migrate: (e: Record<string, unknown>) => {
+        migrate: (e) => {
           order.push('v1');
           return { ...e, v1Ran: true };
         },
       },
     ];
-    const applicable = fakeMigrations.slice().sort((a, b) => a.toVersion - b.toVersion);
-    const result = applicable.reduce((entries, m) => m.migrate(entries), {} as Record<string, unknown>);
+
+    const result = applyConfigMigrations({}, 0, fakeMigrations);
+
     expect(order).toEqual(['v1', 'v2']);
     expect(result).toEqual({ v1Ran: true, v2Ran: true });
+  });
+
+  it('only applies migrations above the stored version, via the real filter/sort/reduce pipeline', () => {
+    const order: string[] = [];
+    const fakeMigrations: ConfigMigration[] = [
+      { toVersion: 1, migrate: (e) => ({ ...e, v1Ran: true }) },
+      {
+        toVersion: 2,
+        migrate: (e) => {
+          order.push('v2');
+          return { ...e, v2Ran: true };
+        },
+      },
+      {
+        toVersion: 3,
+        migrate: (e) => {
+          order.push('v3');
+          return { ...e, v3Ran: true };
+        },
+      },
+    ];
+
+    // Already at version 1 — that migration must be skipped.
+    const result = applyConfigMigrations({}, 1, fakeMigrations);
+
+    expect(order).toEqual(['v2', 'v3']);
+    expect(result).toEqual({ v2Ran: true, v3Ran: true });
   });
 
   it('CONFIG_SCHEMA_VERSION matches the highest registered migration', () => {

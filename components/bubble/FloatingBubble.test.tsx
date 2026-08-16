@@ -68,6 +68,24 @@ describe('FloatingBubble', () => {
     expect(primary.disabled).toBe(true);
   });
 
+  it('clicking the ball while a translation is already in flight does not fire a second onTranslate', () => {
+    // Regression: the ball button (unlike the panel's .primary button) has
+    // no `disabled` binding at all — only a fixed 600ms local debounce,
+    // far shorter than a real translation on a slow page/provider. A click
+    // while props.state.busy is true used to fire another onTranslate.
+    const onTranslate = vi.fn();
+    const { el } = mount({
+      state: { pageState: 'original', busy: true, errorMessage: null, errorKind: null },
+      onTranslate,
+    });
+    const ball = el.querySelector('.ball') as HTMLButtonElement;
+
+    ball.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1, clientX: 10, clientY: 10 }));
+    ball.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1, clientX: 10, clientY: 10 }));
+
+    expect(onTranslate).not.toHaveBeenCalled();
+  });
+
   it('invokes onRestore when the primary button is clicked while translated', () => {
     const onRestore = vi.fn();
     const { el } = mount({

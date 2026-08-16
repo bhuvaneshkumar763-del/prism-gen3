@@ -119,6 +119,26 @@ describe('createResweepScheduler', () => {
     expect(onResweep).not.toHaveBeenCalled();
   });
 
+  it('stop() removes the scroll/popstate listeners so a later start() does not stack a second pair', () => {
+    const onResweep = vi.fn(() => false);
+    const scheduler = createResweepScheduler({ isTranslated: () => true, isPageVisible: () => true, onResweep });
+
+    // Two full start/stop cycles (e.g. two language changes) — if stop()
+    // leaked the listeners, this would leave 2 scroll + 2 popstate
+    // listeners registered instead of 1 each.
+    scheduler.start();
+    scheduler.stop();
+    scheduler.start();
+    vi.advanceTimersByTime(20000); // let the delay back off first
+    onResweep.mockClear();
+
+    window.dispatchEvent(new Event('scroll'));
+    vi.advanceTimersByTime(400 + 250);
+    expect(onResweep).toHaveBeenCalledTimes(1);
+
+    scheduler.stop();
+  });
+
   it('a scroll event bumps the cadence back to the min interval while translated', () => {
     const onResweep = vi.fn(() => false);
     const scheduler = createResweepScheduler({ isTranslated: () => true, isPageVisible: () => true, onResweep });

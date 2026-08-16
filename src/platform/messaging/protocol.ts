@@ -21,7 +21,7 @@ import type { Result } from '../../shared/result';
  * boundary (see `src/engine/README.md`), not in a "pure types" file that
  * happens to also do that.
  */
-export interface ProtocolMap {
+interface ProtocolMap {
   /** Popup/content-script → background: translate one string through the configured provider. */
   translateText(data: { text: string; sourceLanguage: string; targetLanguage: string }): Result<string, TranslateError>;
   /** Content-script (via remoteTranslator.ts) → background: translate a batch of grouped pieces. */

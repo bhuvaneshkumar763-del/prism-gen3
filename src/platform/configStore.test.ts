@@ -138,6 +138,35 @@ describe('configStore', () => {
     expect(store.get('targetLanguage')).toBe('ja');
     expect(getSpy).toHaveBeenCalledTimes(1);
   });
+
+  it('retries on the next onReady() call after a transient failure, instead of wedging on the rejected promise forever', async () => {
+    // Regression: onReady() cached whatever promise initConfig() first
+    // returned, including a REJECTED one — a rejected promise is still
+    // truthy, so a single transient storage failure poisoned every future
+    // onReady() call in that context permanently.
+    const { createConfigStore } = await import('./configStore');
+    let failNextGetAll = true;
+    const backend = {
+      async getAll() {
+        if (failNextGetAll) {
+          failNextGetAll = false;
+          throw new Error('transient storage failure');
+        }
+        return {};
+      },
+      async set() {},
+      async remove() {},
+      onChanged() {
+        return () => {};
+      },
+    };
+    const store = createConfigStore(backend);
+
+    await expect(store.onReady()).rejects.toThrow('transient storage failure');
+    // The next call must actually retry, not return the same dead rejection.
+    await expect(store.onReady()).resolves.toBeUndefined();
+    expect(store.isReady()).toBe(true);
+  });
 });
 
 describe('configStore — migration (CONFIG_SCHEMA_VERSION 4)', () => {

@@ -67,6 +67,23 @@ describe('resolveDockedPoint', () => {
   it('handles a zero-size viewport without throwing', () => {
     const point = resolveDockedPoint({ side: 'right', yFrac: 0.5 }, { width: 0, height: 0 });
     expect(point.y).toBe(4);
+    expect(point.x).toBe(4);
+  });
+
+  it('clamps x on a viewport narrower than the ball itself, instead of going negative (right side)', () => {
+    // Regression: `x = viewport.width - ballSize - 6` was never clamped —
+    // on a viewport narrower than ballSize+6 (an embedded iframe, a
+    // heavily split/snapped window), the right-docked ball's x went
+    // negative with no self-correction, unlike every other point this
+    // module computes.
+    const point = resolveDockedPoint({ side: 'right', yFrac: 0 }, { width: 20, height: 800 });
+    expect(point.x).toBeGreaterThanOrEqual(0);
+  });
+
+  it('clamps x on the left side too, on a viewport narrower than the fixed 6px offset', () => {
+    const point = resolveDockedPoint({ side: 'left', yFrac: 0 }, { width: 4, height: 800 });
+    expect(point.x).toBeGreaterThanOrEqual(0);
+    expect(point.x).toBeLessThanOrEqual(4);
   });
 });
 

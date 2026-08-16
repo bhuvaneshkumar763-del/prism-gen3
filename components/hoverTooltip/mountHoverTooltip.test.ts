@@ -60,6 +60,31 @@ describe('mountHoverTooltip', () => {
     controller.destroy();
   });
 
+  it("follows the cursor while visible, matching this module's own documented behavior", () => {
+    // Regression: showTimer was only ever cleared by hide()/a new target,
+    // never by its own callback firing — so onMouseMove's `!showTimer`
+    // guard stayed false forever after the FIRST tooltip shown, silently
+    // freezing the tooltip in its initial position for the rest of that hover.
+    const p = document.getElementById('target') as HTMLParagraphElement;
+    const textNode = p.firstChild as Text;
+    const source: TranslatedNodesSource = {
+      getTranslatedNodes: () => [{ node: textNode, original: 'Hello' }],
+    };
+    const controller = mountHoverTooltip(source);
+
+    dispatchMouseEvent('mouseover', p, { clientX: 10, clientY: 10 });
+    vi.advanceTimersByTime(350);
+    const tooltip = tooltipShadowRoot()?.querySelector('.tooltip') as HTMLElement;
+    const initialLeft = tooltip.style.left;
+
+    dispatchMouseEvent('mousemove', p, { clientX: 200, clientY: 200 });
+
+    const movedTooltip = tooltipShadowRoot()?.querySelector('.tooltip') as HTMLElement;
+    expect(movedTooltip.style.left).not.toBe(initialLeft);
+
+    controller.destroy();
+  });
+
   it('does not show a tooltip for an element with no translated node', () => {
     const p = document.getElementById('target') as HTMLParagraphElement;
     const source: TranslatedNodesSource = { getTranslatedNodes: () => [] };

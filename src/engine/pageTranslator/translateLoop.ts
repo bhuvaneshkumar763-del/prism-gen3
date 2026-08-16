@@ -55,8 +55,33 @@ export function createPageTranslator(options: PageTranslatorOptions) {
 
   let pageLanguageState: PageLanguageState = 'original';
   let queue: Text[] = [];
-  let nodesToRestore: Array<{ node: Text; original: string }> = [];
+  // Keyed by node so a resweep tick can prune entries for nodes the page
+  // itself has since removed — without this, a node discovered while
+  // translated (queueNode, below) never leaves this map until
+  // restorePage(), so a long-lived SPA that keeps adding/removing content
+  // (infinite scroll, chat) leaks a strong reference to every detached Text
+  // node it ever translated for the life of the tab.
+  let nodesToRestore = new Map<Text, string>();
   let currentTargetLanguage = '';
+  /**
+   * Set whenever the viewport-priority ordering could have gone stale — a
+   * scroll (via resweep.ts's `onViewportChanged`) or a newly-queued node —
+   * and cleared right after a reorder actually runs. Without this,
+   * `prioritizeByViewport` re-measured EVERY queued node's position on
+   * EVERY tick regardless of whether anything had actually changed since
+   * the last reorder — real cost on a long page (thousands of forced
+   * `getBoundingClientRect()` layout reads per tick, repeated every ~150ms).
+   */
+  let viewportDirty = true;
+  /**
+   * Bumped by every translatePage()/restorePage(). A `translateBatch()` call
+   * already awaiting when the cycle ends cannot be cancelled, so its results
+   * are checked against the generation they were requested under before
+   * being spliced in — otherwise a slow response from an abandoned cycle
+   * (e.g. French, then the user switches to German) overwrites the newer
+   * translation while state still reports the newer language.
+   */
+  let cycleGeneration = 0;
   let translationRoutineHandle: ReturnType<typeof setTimeout> | null = null;
 
   /** The last content this engine actually processed for a tracked node — see `queueOrRequeueIfChanged`'s doc comment for why this exists alongside `dedupe`. */
@@ -115,7 +140,8 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     // too, or restorePage() silently leaves them translated forever — the
     // initial batch records this in bulk in translatePage() itself, this
     // covers everything found afterwards.
-    nodesToRestore.push({ node, original: node.data });
+    nodesToRestore.set(node, node.data);
+    viewportDirty = true;
     return true;
   }
 
@@ -123,6 +149,15 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     requeueAt.set(node, Date.now());
     dedupe.track([node]);
     lastSeenText.set(node, node.data);
+    // The node's content genuinely changed since we last saw it, so THIS is
+    // now its pre-translation text. Without this, nodesToRestore kept the
+    // text captured the first time the node was ever queued, and
+    // restorePage() would roll a live-updating node (a score, an edited
+    // comment) back to stale content — silently discarding whatever the
+    // page had legitimately changed it to. Same stale value fed
+    // getTranslatedNodes(), so the hover-original tooltip lied too.
+    nodesToRestore.set(node, node.data);
+    viewportDirty = true;
     queue.push(node);
     wakeRoutine();
   }
@@ -191,11 +226,13 @@ export function createPageTranslator(options: PageTranslatorOptions) {
       // everything this tick regardless of order. This only changes which
       // nodes land in `batch` below; grouping still runs on whatever comes
       // out, unmodified.
-      if (queue.length > MAX_PIECES_PER_TICK) {
+      if (queue.length > MAX_PIECES_PER_TICK && viewportDirty) {
         queue = prioritizeByViewport(queue, { top: 0, bottom: window.innerHeight });
+        viewportDirty = false;
       }
       const batch = queue.splice(0, MAX_PIECES_PER_TICK);
       const groups = groupNodesForBatching(batch, options.getBatchingHint());
+      const requestedUnderGeneration = cycleGeneration;
       try {
         const outcomes = await options.translator.translateBatch({
           sourceLanguage: options.getSourceLanguage(),
@@ -203,6 +240,12 @@ export function createPageTranslator(options: PageTranslatorOptions) {
           pieces: groups.map((group) => group.map((node) => node.data)),
           dontSortResults: options.getDontSortResults?.() ?? false,
         });
+
+        // The page was restored or re-translated while this request was in
+        // flight — these results belong to an abandoned cycle. Dropping them
+        // is correct: whatever replaced this cycle has its own queue and
+        // will translate the current content itself.
+        if (requestedUnderGeneration !== cycleGeneration) return;
 
         // The common real-world failure mode (a provider HTTP call that's
         // rate-limited, unauthenticated, or otherwise fails outright) does
@@ -248,12 +291,26 @@ export function createPageTranslator(options: PageTranslatorOptions) {
           groups.forEach((group, groupIdx) => {
             const outcome = outcomes[groupIdx];
             group.forEach((node, nodeIdx) => {
-              if (!node.isConnected) return;
+              if (!node.isConnected) {
+                // The node left the DOM while its translation was in flight
+                // (routine in virtualized/recycled lists). Forget the text we
+                // last saw for it, so that if it reappears with that same
+                // still-untranslated content, queueOrRequeueIfChanged sees a
+                // mismatch and queues it again. Without this, dedupe still
+                // considers it tracked and lastSeenText still matches, so it
+                // would sit untranslated forever with no error.
+                lastSeenText.delete(node);
+                return;
+              }
               const translated = outcome?.ok ? outcome.value[nodeIdx] : undefined;
               if (translated) {
                 mutationWatcher.noteOwnWrite(node, translated);
                 node.data = translated;
                 lastSeenText.set(node, translated);
+                // A prior missing-result episode for this node is over —
+                // don't let it count against the lifetime give-up cap in
+                // noteMissingResult below.
+                missingResultAttempts.delete(node);
               } else {
                 noteMissingResult(node);
               }
@@ -261,6 +318,9 @@ export function createPageTranslator(options: PageTranslatorOptions) {
           });
         }
       } catch (e) {
+        // Same abandoned-cycle check as the success path — don't requeue an
+        // old cycle's nodes into a queue that now belongs to a new one.
+        if (requestedUnderGeneration !== cycleGeneration) return;
         console.error('[prism] translation batch failed', e);
         // Transient failure (network blip, background restart) — retry next tick.
         queue.unshift(...batch.filter((n) => n.isConnected));
@@ -310,9 +370,23 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     isTranslated: () => pageLanguageState === 'translated',
     isPageVisible: () => document.visibilityState === 'visible',
     onResweep() {
+      // Bound nodesToRestore's growth: drop entries for nodes the page has
+      // since removed from the DOM, so a long-lived SPA session doesn't
+      // hold onto every detached Text node it ever translated — see the
+      // field's declaration comment above.
+      for (const node of nodesToRestore.keys()) {
+        if (!node.isConnected) nodesToRestore.delete(node);
+      }
       const added = collectTextNodes(document.body).filter((n) => queueOrRequeueIfChanged(n)).length;
       if (added > 0) wakeRoutine();
       return added > 0;
+    },
+    onViewportChanged() {
+      // The user scrolled — whatever prioritizeByViewport last computed no
+      // longer necessarily reflects what's on screen now. Reuses resweep's
+      // own already-debounced scroll listener rather than registering a
+      // second one.
+      viewportDirty = true;
     },
     onHrefChange() {
       // SPA navigation / chapter switch — re-check the title the same way a
@@ -358,15 +432,20 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     }
 
     currentTargetLanguage = targetLanguage;
+    cycleGeneration++;
 
     const nodes = collectTextNodes(document.body);
-    nodesToRestore = nodes.map((node) => ({ node, original: node.data }));
+    nodesToRestore = new Map(nodes.map((node) => [node, node.data]));
     dedupe.reset();
     dedupe.track(nodes);
     nodes.forEach((node) => {
       lastSeenText.set(node, node.data);
     });
     queue = [...nodes];
+    // A fresh cycle's queue is entirely new — the previous cycle's
+    // measurements (if any) don't apply to it. Bypasses queueNode()'s own
+    // viewportDirty=true (this populates `queue` directly, not through it).
+    viewportDirty = true;
 
     consecutiveBatchFailures = 0;
     setError(null);
@@ -378,20 +457,26 @@ export function createPageTranslator(options: PageTranslatorOptions) {
   }
 
   function restorePage(): void {
-    nodesToRestore.forEach(({ node, original }) => {
+    nodesToRestore.forEach((original, node) => {
       if (node.isConnected && node.data !== original) {
         mutationWatcher.noteOwnWrite(node, original);
         node.data = original;
       }
     });
-    nodesToRestore = [];
+    nodesToRestore = new Map();
     queue = [];
+    cycleGeneration++;
     if (translationRoutineHandle) clearTimeout(translationRoutineHandle);
     translationRoutineHandle = null;
     mutationWatcher.disable();
     resweep.stop();
     titleTranslator.restore();
     consecutiveBatchFailures = 0;
+    // Reset alongside consecutiveBatchFailures: this drives the surfaced-error
+    // backoff (8s → 30s), and a fresh translate after a restore is a brand-new
+    // attempt. Leaving it set made the next run's very first error start near
+    // the 30s cap instead of 8s, contradicting this file's own backoff comment.
+    surfacedErrorStreak = 0;
     setError(null);
     setState('original');
   }
@@ -404,8 +489,9 @@ export function createPageTranslator(options: PageTranslatorOptions) {
       stateListeners.add(cb);
       return () => stateListeners.delete(cb);
     },
-    /** Currently-translated text nodes and their pre-translation text — used by a future "hover to see original" tooltip. */
-    getTranslatedNodes: (): ReadonlyArray<{ node: Text; original: string }> => nodesToRestore,
+    /** Currently-translated text nodes and their pre-translation text — used by the "hover to see original" tooltip (`components/hoverTooltip/mountHoverTooltip.ts`). */
+    getTranslatedNodes: (): ReadonlyArray<{ node: Text; original: string }> =>
+      Array.from(nodesToRestore, ([node, original]) => ({ node, original })),
     /** Non-null once translation has been failing for `CONSECUTIVE_FAILURES_BEFORE_SURFACING` ticks in a row (or immediately, for `'offline'`) — see the header comment on that constant above. */
     getLastError: (): string | null => lastErrorMessage,
     /** `'offline'` vs `'provider'` vs `null` — see the `ErrorKind` doc comment. */

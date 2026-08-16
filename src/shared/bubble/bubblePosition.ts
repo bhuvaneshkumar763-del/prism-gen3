@@ -17,10 +17,10 @@
 export const BALL_SIZE = 40;
 export const DRAG_THRESHOLD_PX = 4;
 export const LONG_PRESS_MS = 450;
-export const PANEL_EDGE_GAP = 8;
-export const PANEL_BALL_GAP = 10;
-export const DEFAULT_PANEL_WIDTH = 296;
-export const DEFAULT_PANEL_HEIGHT = 200;
+const PANEL_EDGE_GAP = 8;
+const PANEL_BALL_GAP = 10;
+const DEFAULT_PANEL_WIDTH = 296;
+const DEFAULT_PANEL_HEIGHT = 200;
 
 export const DEFAULT_BUBBLE_POSITION: BubblePosition = { side: 'right', yFrac: 0.55 };
 
@@ -67,7 +67,15 @@ export function normalizeBubblePosition(raw: unknown): BubblePosition {
  */
 export function resolveDockedPoint(position: BubblePosition, viewport: Viewport, ballSize = BALL_SIZE): Point {
   const maxY = viewport.height - ballSize - 4;
-  const x = position.side === 'right' ? viewport.width - ballSize - 6 : 6;
+  const maxX = viewport.width - ballSize - 4;
+  const rawX = position.side === 'right' ? viewport.width - ballSize - 6 : 6;
+  // Unlike clampDragPoint (a live drag, always kept in-bounds by construction),
+  // this is a stored side+fraction reapplied on every reflow/resize — on a
+  // viewport narrower than ballSize+6 (an embedded iframe, a heavily
+  // split/snapped window), the unclamped right-side x went negative with no
+  // self-correction. min(4, maxX) keeps this from inverting into an empty
+  // range on a viewport narrower than the ball itself.
+  const x = clamp(rawX, 4, Math.max(4, maxX));
   const y = clamp(Math.round(position.yFrac * maxY), 4, maxY);
   return { x, y };
 }

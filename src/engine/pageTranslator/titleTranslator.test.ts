@@ -138,6 +138,67 @@ describe('createTitleTranslator', () => {
     expect(document.title).toBe('Hello World');
   });
 
+  it('logs a provider-error (ok: false) outcome instead of failing silently, same as a thrown request', async () => {
+    setDocumentTitle('Hello World');
+    mockTranslateOnce({ ok: false, error: { kind: 'network', message: 'boom' } });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const titleTranslator = newTranslator({ getSourceLanguage: () => 'en', isPageVisible: () => true });
+
+    await titleTranslator.start('es');
+
+    expect(errorSpy).toHaveBeenCalled();
+  });
+
+  it('does not leave a poll timer running when restore() happens mid-request', async () => {
+    // Regression: the poll loop re-arms itself at the end of each tick. If
+    // stopWatching() ran while a request was in flight, the clear happened
+    // first and the re-arm happened after — resurrecting the timer for the
+    // life of the page.
+    vi.useFakeTimers();
+    let visible = true;
+    try {
+      setDocumentTitle('Hello World');
+      mockTranslateOnce(ok(['Hola Mundo', ' ']));
+      const titleTranslator = newTranslator({ getSourceLanguage: () => 'en', isPageVisible: () => visible });
+      const started = titleTranslator.start('es');
+      await vi.advanceTimersByTimeAsync(0);
+      await started;
+
+      // Change the title while hidden, so the <head> MutationObserver's own
+      // tick early-returns and does NOT claim the request — leaving the work
+      // for the poll tick, which is the callback that can resurrect itself.
+      visible = false;
+      setDocumentTitle('Changed By The Page');
+      await vi.advanceTimersByTimeAsync(0);
+
+      let releaseRequest!: () => void;
+      const held = new Promise<void>((resolve) => {
+        releaseRequest = resolve;
+      });
+      translateBatch.mockImplementation(async () => {
+        await held;
+        return [ok(['Hola de nuevo', ' '])];
+      });
+
+      visible = true;
+      await vi.advanceTimersByTimeAsync(1600); // poll tick fires; its request hangs
+
+      titleTranslator.restore(); // stop while that request is still in flight
+      releaseRequest();
+      // Let the suspended callback fully resume (several await hops) without
+      // advancing far enough to fire a newly-armed poll timer.
+      for (let i = 0; i < 5; i++) await vi.advanceTimersByTimeAsync(1);
+
+      // Assert on the timer itself, not on translateBatch: a resurrected
+      // timer still fires, it just early-returns inside maybeRetranslate()
+      // because `active` is false — so it burns work forever while looking
+      // idle from the outside.
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('restore() writes the original (pre-translation) title back', async () => {
     setDocumentTitle('Hello World');
     mockTranslateOnce(ok(['Hola Mundo', ' ']));

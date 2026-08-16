@@ -126,8 +126,10 @@ export const configMigrations: ConfigMigration[] = [
 export function applyConfigMigrations(
   rawEntries: Record<string, unknown>,
   storedVersion: number,
+  /** Injectable for tests that need to verify the ordering/threading contract in isolation from the real, ever-growing migration list. Defaults to the real one. */
+  migrations: ConfigMigration[] = configMigrations,
 ): Record<string, unknown> {
-  return configMigrations
+  return migrations
     .filter((m) => m.toVersion > storedVersion)
     .sort((a, b) => a.toVersion - b.toVersion)
     .reduce((entries, m) => m.migrate(entries), rawEntries);

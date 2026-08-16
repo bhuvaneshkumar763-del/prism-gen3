@@ -85,12 +85,12 @@ export function createConfigStore(backend: StorageBackend = localStorageBackend)
   async function applyValidatedConfig(json: string): Promise<void> {
     const parsed: unknown = JSON.parse(json);
     const validated = configSchema.partial().parse(parsed);
-    await Promise.all(
-      (Object.keys(validated) as ConfigKey[]).map((key) => {
-        const value = validated[key];
-        return value === undefined ? Promise.resolve() : backend.set({ [key]: value });
-      }),
+    const entries = Object.fromEntries(
+      (Object.keys(validated) as ConfigKey[])
+        .filter((key) => validated[key] !== undefined)
+        .map((key) => [key, validated[key]]),
     );
+    if (Object.keys(entries).length > 0) await backend.set(entries);
     // Reflect the change immediately in this instance's own state too — the
     // onChanged round trip above will also eventually update it, but
     // callers that read get() right after shouldn't see stale values while
@@ -103,7 +103,18 @@ export function createConfigStore(backend: StorageBackend = localStorageBackend)
 
   return {
     onReady(): Promise<void> {
-      if (!readyPromise) readyPromise = initConfig();
+      if (!readyPromise) {
+        readyPromise = initConfig().catch((e) => {
+          // A rejected promise is still truthy, so without clearing it here
+          // a single transient failure (a storage API hiccup, a quota edge
+          // case) would wedge every future onReady() call in this context
+          // onto the same dead rejection forever — including this store's
+          // own diagnostics tool, whose whole job is to help debug exactly
+          // this kind of failure. Clearing it lets the next call retry.
+          readyPromise = null;
+          throw e;
+        });
+      }
       return readyPromise;
     },
     isReady(): boolean {
@@ -118,6 +129,22 @@ export function createConfigStore(backend: StorageBackend = localStorageBackend)
       // backend.onChanged fires for this same write too (chrome.storage's
       // own onChanged event covers same-context writes), so listeners
       // aren't notified twice — see the localBackend doc comment.
+    },
+    /**
+     * Writes several keys as ONE storage operation instead of N independent
+     * `set()` calls. Needed anywhere a caller's own invariant spans more than
+     * one key — e.g. `configMutations.ts`'s `applyListPatch`, which can touch
+     * both the always- and never-translate lists in a single site-list patch.
+     * N separate `backend.set()` calls means a mid-sequence failure can land
+     * only some of them, leaving the two lists in a state neither surface
+     * ever intended (a site on both simultaneously). One combined call
+     * either fully applies or fully fails.
+     */
+    async setMany(entries: Partial<Config>): Promise<void> {
+      const keys = Object.keys(entries) as ConfigKey[];
+      if (keys.length === 0) return;
+      for (const key of keys) (state as Record<ConfigKey, unknown>)[key] = entries[key];
+      await backend.set(entries);
     },
     /** Returns an unsubscribe function. */
     onChanged(callback: (name: ConfigKey, value: unknown) => void): () => void {

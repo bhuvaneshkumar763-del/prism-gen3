@@ -34,7 +34,39 @@ const GUARDED_DIRS = ['entrypoints', 'components'];
 // contexts a value gets interpolated in (an attribute/prop, or as a
 // child) — but not e.g. `onMount(() => { ...configStore.get(...) })`,
 // which runs once imperatively and isn't a reactivity bug.
-const JSX_UNREACTIVE_READ_PATTERN = /[=>]\{[^}]*\bconfigStore\.get\(/;
+//
+// `\s*` between the `=`/`>` and the `{` (not the original bare `[=>]\{`):
+// a JSX child expression routinely sits on its OWN line —
+//   <span>
+//     {configStore.get('theme')}
+//   </span>
+// — with the closing `>` and the opening `{` on separate lines. The
+// original pattern required them adjacent on one line, so it only ever
+// caught the (rarer) same-line attribute form and silently missed this
+// multi-line child form, which is this codebase's actually-dominant JSX
+// style — exactly the bug class this guard exists to catch.
+//
+// `(?<!=)>` instead of a bare `>`: this codebase writes `createMemo(() =>`
+// / `onMount(async () =>` constantly, and an arrow function's `=>` is a
+// `>` too — spanning multiple lines to find the `{` (a JSX guard needs to,
+// per the above) means an arrow immediately followed by its own `{ ... }`
+// body just a couple of lines above an unrelated, legitimately-imperative
+// `configStore.get(` call (inside that same onMount, say) would otherwise
+// match. Excluding `=>` specifically keeps real JSX closing tags matching
+// while ruling out the single most common false-positive source.
+//
+// Matched against the whole file (not line-by-line) so the gap can span
+// real newlines — but bounded to `{0,80}` characters of arbitrary content,
+// NOT the unbounded `[^}]*` a naive fix would reach for. A regex can't
+// track nested-brace depth, so an unbounded `[^}]*` doesn't stop at the
+// end of the JSX expression that opened it — it keeps matching through
+// any number of intervening `{`/other-non-`}` characters until the FIRST
+// `}` anywhere later in the file, which can bridge clean across a large,
+// entirely unrelated function body to a `configStore.get(` inside a
+// totally different context and misreport it as a JSX read. 80 chars
+// comfortably covers a short prefix expression on the same or next line
+// without being able to reach that far.
+const JSX_UNREACTIVE_READ_PATTERN = /(?:(?<!=)>|=)\s*\{[^}]{0,80}\bconfigStore\.get\(/g;
 
 function walk(dir, files = []) {
   for (const entry of readdirSync(dir)) {
@@ -58,12 +90,17 @@ for (const dir of GUARDED_DIRS) {
     continue;
   }
   for (const file of files) {
-    const lines = readFileSync(file, 'utf8').split('\n');
-    lines.forEach((line, i) => {
-      if (JSX_UNREACTIVE_READ_PATTERN.test(line)) {
-        violations.push(`${file}:${i + 1}: reads configStore.get() directly inside JSX — ${line.trim()}`);
-      }
-    });
+    const content = readFileSync(file, 'utf8');
+    const lines = content.split('\n');
+    const pattern = new RegExp(JSX_UNREACTIVE_READ_PATTERN);
+    let match = pattern.exec(content);
+    while (match !== null) {
+      const lineNum = content.slice(0, match.index).split('\n').length;
+      violations.push(
+        `${file}:${lineNum}: reads configStore.get() directly inside JSX — ${lines[lineNum - 1]?.trim() ?? ''}`,
+      );
+      match = pattern.exec(content);
+    }
   }
 }
 

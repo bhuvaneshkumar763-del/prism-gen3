@@ -52,6 +52,51 @@ description: deliberate Session 4 deferral, see
   release-notes page, and the toolbar icon's translated/original state
   swap were never scoped into any Gen 3 session — see the parity
   checklist above for the full "Deliberately Not Built" list.
+- The LLM provider has real, unfixed gaps — deliberately left as-is per
+  the user's own direction during the post-launch audit pass below (the
+  free `google` provider is what's actually used; LLM issues are written
+  down, not fixed):
+  - `llm.ts`'s `parseResponse` ignores the `pieceCount` argument its own
+    interface passes it. If the model returns fewer/more strings than
+    requested, every piece after the mismatch point gets a different
+    piece's translation, permanently and silently — no test exercises a
+    length-mismatched model response.
+  - Whitespace can be lost at the `PIECE_PART_SEPARATOR` join/split
+    boundary for a `groupByBlock` piece (LLMs routinely trim whitespace at
+    string boundaries), visibly welding two words together
+    (`Bonjourmonde`).
+  - There are no `host_permissions` in the manifest, and an MV3 service
+    worker's `fetch` is CORS-governed. Google's endpoints evidently send
+    permissive CORS headers (it works today); a user-supplied LLM
+    `baseUrl` (OpenAI, Ollama, LM Studio) generally does not, and this has
+    **only ever been exercised against mocks** (`vi.stubGlobal('fetch')`
+    in unit tests, a localhost mock server in E2E) — never a real
+    third-party endpoint. `docs/decisions/0006-permission-model.md`
+    reasons carefully about content-script injection permissions and
+    never addresses the fetch path.
+  - `translateLoop.ts` slices the queue into `MAX_PIECES_PER_TICK`-sized
+    batches before `groupNodesForBatching()` ever runs, and that function
+    keeps no state across calls — so a paragraph whose nodes straddle a
+    100-node tick boundary loses shared grouping context. Only affects
+    `groupByBlock` (the LLM provider); `google`/`googleCloudTranslate`
+    don't use it.
+- Selection-translation (`getSelectionInfo`/`window.getSelection()`)
+  cannot see text inside an open shadow root — `window.getSelection()`
+  doesn't reach into one, even though page translation itself
+  (`collectTextNodes`) deliberately does. A user can highlight
+  shadow-DOM text but the "translate selection" trigger never appears.
+  Fixing this needs Chromium's non-standard `ShadowRoot.getSelection()`
+  (no cross-browser spec, and `happy-dom` doesn't implement it, so it
+  couldn't be verified automatically) — flagged during the post-launch
+  audit pass below, not fixed.
+- The floating bubble's panel (language pickers, Service, Always/
+  Settings/Hide) is keyboard-unreachable — visibility is CSS
+  `:hover`/`.pinned` only, with `.pinned` set solely by a 450ms
+  pointer long-press. A keyboard user can trigger translate/restore via
+  the ball itself (Enter/Space), but can't reach anything inside the
+  panel. Flagged during the post-launch audit pass below; fixing it needs
+  a `:focus-within` CSS path plus a real keyboard-open affordance on the
+  ball, not just a guard-script-sized change.
 - ~~Icons/branding are still the WXT template defaults~~ **Resolved**
   post-launch: `public/icon/*.png` now ships a real icon (two rounded
   arcs forming an exchange loop, cyan→blue gradient) plus a source

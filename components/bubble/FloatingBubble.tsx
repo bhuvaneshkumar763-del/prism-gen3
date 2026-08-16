@@ -158,7 +158,14 @@ export function FloatingBubble(props: FloatingBubbleProps) {
 
   let actionBusy = false;
   function toggleTranslate(): void {
-    if (actionBusy) return; // ignore rapid double clicks/taps
+    // actionBusy alone (a fixed 600ms local guard) only protects against a
+    // rapid double click/tap — a real translation on a slow page/provider
+    // easily outlasts 600ms, and the ball button (unlike the panel's
+    // .primary button) has no `disabled` binding, since disabling it would
+    // also block the pointerdown/pointermove/pointerup drag handlers this
+    // same element uses to reposition the bubble. Checking the real
+    // props.state.busy here closes that gap without losing drag-while-busy.
+    if (actionBusy || props.state.busy) return;
     actionBusy = true;
     setTimeout(() => {
       actionBusy = false;

@@ -28,6 +28,70 @@ describe('translationCache', () => {
     expect(await cache.get('hello')).toBe('hola mundo');
   });
 
+  it("getMany() returns each key's value in the same order, null for a miss", async () => {
+    const cache = createTranslationCache();
+    await cache.set('a', '1');
+    await cache.set('c', '3');
+
+    expect(await cache.getMany(['a', 'missing', 'c'])).toEqual(['1', null, '3']);
+  });
+
+  it('getMany() returns one entry per key even for an empty key list', async () => {
+    const cache = createTranslationCache();
+    expect(await cache.getMany([])).toEqual([]);
+  });
+
+  it('setMany() writes every entry in one transaction — get() and getMany() see all of them afterward', async () => {
+    const cache = createTranslationCache();
+    await cache.setMany([
+      { key: 'a', value: '1' },
+      { key: 'b', value: '2' },
+      { key: 'c', value: '3' },
+    ]);
+
+    expect(await cache.getMany(['a', 'b', 'c'])).toEqual(['1', '2', '3']);
+  });
+
+  it('setMany() runs exactly one cursor scan for the whole batch (the cold-start seed), not one per entry', async () => {
+    const cache = createTranslationCache(100_000);
+    let openCursorCalls = 0;
+    const originalOpenCursor = IDBObjectStore.prototype.openCursor;
+    IDBObjectStore.prototype.openCursor = function (...args: Parameters<typeof originalOpenCursor>) {
+      openCursorCalls++;
+      return originalOpenCursor.apply(this, args);
+    };
+    try {
+      await cache.setMany([
+        { key: 'a', value: 'x'.repeat(1000) },
+        { key: 'b', value: 'x'.repeat(1000) },
+        { key: 'c', value: 'x'.repeat(1000) },
+      ]);
+      // Exactly one cursor scan for ensureRunningTotal()'s cold-start seed —
+      // not one per entry, and no eviction scan on top since the batch is
+      // well under the 100_000-byte budget.
+      expect(openCursorCalls).toBe(1);
+    } finally {
+      IDBObjectStore.prototype.openCursor = originalOpenCursor;
+    }
+  });
+
+  it("setMany() adjusts the running total by each entry's size delta, matching N individual set() calls", async () => {
+    const cacheA = createTranslationCache();
+    await cacheA.setMany([
+      { key: 'a', value: 'x'.repeat(1000) },
+      { key: 'b', value: 'x'.repeat(2000) },
+    ]);
+    const sizeA = await cacheA.getSizeBytes();
+
+    globalThis.indexedDB = new IDBFactory(); // independent storage — same keys, must not share cacheA's
+    const cacheB = createTranslationCache();
+    await cacheB.set('a', 'x'.repeat(1000));
+    await cacheB.set('b', 'x'.repeat(2000));
+    const sizeB = await cacheB.getSizeBytes();
+
+    expect(sizeA).toBe(sizeB);
+  });
+
   it('getSizeBytes() reflects the stored entries', async () => {
     const cache = createTranslationCache();
     expect(await cache.getSizeBytes()).toBe(0);
@@ -144,6 +208,33 @@ describe('translationCache', () => {
 
     expect(size).toBeGreaterThan(0);
     expect(await second.get('a')).toBe('x'.repeat(1000));
+  });
+
+  it('shares one scan across concurrent cold-start calls instead of each running its own (which would let one silently overwrite the other)', async () => {
+    // Seed real persisted data through a first instance, then create a
+    // genuinely fresh instance whose running total starts uninitialized —
+    // same cold-start setup as the "seeds the running total..." test above,
+    // but this time firing two calls concurrently before either scan
+    // resolves.
+    const first = createTranslationCache();
+    await first.set('a', 'x'.repeat(1000));
+
+    const second = createTranslationCache();
+    const openCursorCalls: number[] = [];
+    const originalOpenCursor = IDBObjectStore.prototype.openCursor;
+    IDBObjectStore.prototype.openCursor = function (...args: Parameters<typeof originalOpenCursor>) {
+      openCursorCalls.push(1);
+      return originalOpenCursor.apply(this, args);
+    };
+    try {
+      const [sizeA, sizeB] = await Promise.all([second.getSizeBytes(), second.getSizeBytes()]);
+      // Exactly one real cursor scan, not two independent ones.
+      expect(openCursorCalls).toHaveLength(1);
+      expect(sizeA).toBe(sizeB);
+      expect(sizeA).toBeGreaterThan(0);
+    } finally {
+      IDBObjectStore.prototype.openCursor = originalOpenCursor;
+    }
   });
 
   it('overwriting an existing key adjusts the running total by the size delta, not by double-counting', async () => {

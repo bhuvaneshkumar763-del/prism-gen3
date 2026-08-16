@@ -52,3 +52,16 @@ export const COMMON_LANGUAGES: LanguageOption[] = [
 export function languageName(code: string): string {
   return COMMON_LANGUAGES.find((l) => l.code === code)?.name ?? code;
 }
+
+/**
+ * Strips a region/script subtag ('pt-BR' -> 'pt', 'zh-Hans' -> 'zh') so
+ * language-equality checks treat a regional variant the same as its base
+ * language — without this, `autoTranslateDecision.ts`'s exact-string
+ * comparisons treat "Portuguese" and "Brazilian Portuguese" as unrelated:
+ * a pt-BR page against target 'pt' fails the same-language skip (so it gets
+ * pointlessly "translated" into Portuguese), and a `neverTranslateLangs:
+ * ['pt']` rule silently never matches it.
+ */
+export function baseLanguageTag(code: string): string {
+  return code.split('-')[0]?.toLowerCase() ?? code;
+}

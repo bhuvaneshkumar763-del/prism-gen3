@@ -107,6 +107,10 @@ function scanTotalBytes(db: IDBDatabase): Promise<number> {
 export interface TranslationCache {
   get(key: string): Promise<string | null>;
   set(key: string, value: string): Promise<void>;
+  /** One IndexedDB transaction for the whole batch instead of one per key — see getMany's doc comment. */
+  getMany(keys: string[]): Promise<Array<string | null>>;
+  /** One IndexedDB transaction (and one eviction pass) for the whole batch instead of one per key — see setMany's doc comment. */
+  setMany(entries: Array<{ key: string; value: string }>): Promise<void>;
   getSizeBytes(): Promise<number>;
   evictUntilUnderBudget(maxBytes?: number): Promise<void>;
   clear(): Promise<void>;
@@ -116,6 +120,15 @@ export function createTranslationCache(defaultMaxBytes: number = DEFAULT_MAX_BYT
   let dbPromise: Promise<IDBDatabase> | null = null;
   /** Seeded lazily (once) from a real scan, then kept accurate incrementally — see the module header comment. */
   let runningTotalBytes: number | null = null;
+  /**
+   * Shares one in-flight `scanTotalBytes()` scan across concurrent callers
+   * instead of each starting its own — without this, two `set()` calls
+   * landing before the first scan resolves (e.g. a batch of cache misses
+   * written via `Promise.all`) would each independently scan and then
+   * independently overwrite `runningTotalBytes`, silently dropping
+   * whichever one finished first.
+   */
+  let scanInFlight: Promise<number> | null = null;
 
   function getDb(): Promise<IDBDatabase> {
     if (!dbPromise) {
@@ -129,6 +142,14 @@ export function createTranslationCache(defaultMaxBytes: number = DEFAULT_MAX_BYT
         db.addEventListener('close', () => {
           dbPromise = null;
           runningTotalBytes = null;
+          // A scan in flight against the now-dead connection is doomed to
+          // reject, but scanInFlight itself isn't cleared until that
+          // rejection's own .finally() runs. A caller that calls
+          // ensureRunningTotal() against the newly-reopened connection in
+          // that window would otherwise see scanInFlight still set and
+          // await — inheriting the OLD scan's failure even though a healthy
+          // new connection now exists.
+          scanInFlight = null;
         });
         return db;
       });
@@ -156,54 +177,99 @@ export function createTranslationCache(defaultMaxBytes: number = DEFAULT_MAX_BYT
   }
 
   async function ensureRunningTotal(db: IDBDatabase): Promise<number> {
-    if (runningTotalBytes === null) runningTotalBytes = await scanTotalBytes(db);
-    return runningTotalBytes;
+    if (runningTotalBytes !== null) return runningTotalBytes;
+    if (!scanInFlight) {
+      scanInFlight = scanTotalBytes(db).finally(() => {
+        scanInFlight = null;
+      });
+    }
+    const total = await scanInFlight;
+    runningTotalBytes = total;
+    return total;
   }
 
-  async function get(key: string): Promise<string | null> {
+  /**
+   * One IndexedDB transaction for the whole key list, instead of `keys.map(get)`
+   * opening one transaction per key — a translatePieces tick with ~40 cache
+   * lookups paid for ~40 separate transaction setups/commits for what's
+   * conceptually one read. Same recency-touch and miss-on-failure behavior
+   * as `get()`, just batched.
+   */
+  async function getMany(keys: string[]): Promise<Array<string | null>> {
+    if (keys.length === 0) return [];
     return withDb(
       (db) =>
-        new Promise<string | null>((resolve, reject) => {
+        new Promise<Array<string | null>>((resolve, reject) => {
           const tx = db.transaction(STORE_NAME, 'readwrite');
           const store = tx.objectStore(STORE_NAME);
-          const request = store.get(key);
-          request.onsuccess = () => {
-            const record = request.result as CacheRecord | undefined;
-            if (!record) {
-              resolve(null);
-              return;
-            }
-            // Touch lastUsed so oldest-first eviction reflects real recency,
-            // not just insertion order.
-            store.put({ ...record, lastUsed: Date.now() });
-            resolve(record.value);
-          };
-          request.onerror = () => reject(request.error);
+          const results: Array<string | null> = new Array(keys.length).fill(null);
+          keys.forEach((key, i) => {
+            const request = store.get(key);
+            request.onsuccess = () => {
+              const record = request.result as CacheRecord | undefined;
+              if (!record) return; // stays null — a real cache miss
+              results[i] = record.value;
+              // Touch lastUsed so oldest-first eviction reflects real
+              // recency, not just insertion order. Best-effort, like get()'s
+              // single-key touch — logged, not fatal to the read.
+              const touchRequest = store.put({ ...record, lastUsed: Date.now() });
+              touchRequest.onerror = () => {
+                console.warn('[prism] translation cache recency touch failed', touchRequest.error);
+              };
+            };
+          });
+          tx.oncomplete = () => resolve(results);
+          tx.onerror = () => reject(tx.error);
         }),
     );
   }
 
-  async function set(key: string, value: string): Promise<void> {
+  async function get(key: string): Promise<string | null> {
+    const [value] = await getMany([key]);
+    return value ?? null;
+  }
+
+  /**
+   * One IndexedDB transaction (and one `evictUntilUnderBudget()` eviction
+   * pass) for the whole batch, instead of one transaction-pair-plus-eviction
+   * PER entry — `set()`'s old per-key path was the dominant cost of a
+   * translatePieces tick with several cache misses (up to 2N transactions
+   * for N fresh pieces). Resolves on tx.oncomplete, same reasoning as the
+   * single-key set() this replaces: crediting the byte counter before the
+   * write is actually confirmed lets a failed write (e.g. quota exceeded)
+   * drift the counter from what's really on disk.
+   */
+  async function setMany(entries: Array<{ key: string; value: string }>): Promise<void> {
+    if (entries.length === 0) return;
     await withDb(async (db) => {
       await ensureRunningTotal(db);
-      const size = estimateSize(key, value);
-      const record: CacheRecord = { key, value, size, lastUsed: Date.now() };
+      const sizes = entries.map(({ key, value }) => estimateSize(key, value));
 
-      const previousSize = await new Promise<number>((resolve, reject) => {
+      const previousSizes = await new Promise<number[]>((resolve, reject) => {
         const tx = db.transaction(STORE_NAME, 'readwrite');
         const store = tx.objectStore(STORE_NAME);
-        const getRequest = store.get(key);
-        getRequest.onsuccess = () => {
-          const existing = getRequest.result as CacheRecord | undefined;
-          store.put(record);
-          resolve(existing?.size ?? 0);
-        };
-        getRequest.onerror = () => reject(getRequest.error);
+        const existingSizes: number[] = new Array(entries.length).fill(0);
+        entries.forEach(({ key, value }, i) => {
+          const getRequest = store.get(key);
+          getRequest.onsuccess = () => {
+            const existing = getRequest.result as CacheRecord | undefined;
+            existingSizes[i] = existing?.size ?? 0;
+            store.put({ key, value, size: sizes[i] ?? 0, lastUsed: Date.now() });
+          };
+          getRequest.onerror = () => reject(getRequest.error);
+        });
+        tx.oncomplete = () => resolve(existingSizes);
+        tx.onerror = () => reject(tx.error);
       });
 
-      runningTotalBytes = (runningTotalBytes ?? 0) - previousSize + size;
+      const delta = sizes.reduce((sum, size, i) => sum + size - (previousSizes[i] ?? 0), 0);
+      runningTotalBytes = (runningTotalBytes ?? 0) + delta;
     });
     await evictUntilUnderBudget(defaultMaxBytes);
+  }
+
+  async function set(key: string, value: string): Promise<void> {
+    await setMany([{ key, value }]);
   }
 
   async function getSizeBytes(): Promise<number> {
@@ -215,6 +281,15 @@ export function createTranslationCache(defaultMaxBytes: number = DEFAULT_MAX_BYT
       const total = await ensureRunningTotal(db);
       if (total <= maxBytes) return;
 
+      // Track the walk's progress locally and only commit it to
+      // runningTotalBytes once tx.oncomplete confirms every delete in this
+      // walk actually landed — cursor.delete() has no error handler of its
+      // own, and an aborted transaction rolls back every delete performed in
+      // it (including earlier ones in the same walk) without undoing any
+      // JS-side decrement already applied. Decrementing eagerly, per
+      // cursor.delete() call, let a mid-walk failure permanently under-count
+      // the real total.
+      let remaining = total;
       await new Promise<void>((resolve, reject) => {
         const tx = db.transaction(STORE_NAME, 'readwrite');
         const store = tx.objectStore(STORE_NAME);
@@ -222,16 +297,16 @@ export function createTranslationCache(defaultMaxBytes: number = DEFAULT_MAX_BYT
         const evictCursorRequest = index.openCursor();
         evictCursorRequest.onsuccess = () => {
           const cursor = evictCursorRequest.result;
-          if (!cursor || (runningTotalBytes ?? 0) <= maxBytes) {
-            resolve();
-            return;
-          }
-          runningTotalBytes = (runningTotalBytes ?? 0) - (cursor.value as CacheRecord).size;
+          if (!cursor || remaining <= maxBytes) return; // let the transaction complete
+          remaining -= (cursor.value as CacheRecord).size;
           cursor.delete();
           cursor.continue();
         };
         evictCursorRequest.onerror = () => reject(evictCursorRequest.error);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
       });
+      runningTotalBytes = remaining;
     });
   }
 
@@ -248,7 +323,7 @@ export function createTranslationCache(defaultMaxBytes: number = DEFAULT_MAX_BYT
     runningTotalBytes = 0;
   }
 
-  return { get, set, getSizeBytes, evictUntilUnderBudget, clear };
+  return { get, set, getMany, setMany, getSizeBytes, evictUntilUnderBudget, clear };
 }
 
 export const translationCache = createTranslationCache();

@@ -255,8 +255,11 @@ slice) are complete.** What Session 2 landed:
     Ported the old repo's proven design as-is: the `[[title, ' ']]`
     two-item batching workaround for Google's `arr.length > 1` quirk (see
     that file's header comment), the dual-write to both `document.title`
-    and the `<title>` element, the own-write MutationObserver guard, the
-    ~1.5s polling fallback, and the 50-entry cache. Wired into
+    and the `<title>` element, the own-write MutationObserver guard, and
+    the 50-entry cache. The polling fallback backs off adaptively (1.5s →
+    30s, resetting to 1.5s on any real change) rather than a fixed
+    interval — a post-launch audit fix, since a fixed interval kept
+    hammering a confirmed-broken/rate-limited provider forever. Wired into
     `translateLoop.ts`: `start()`/`restore()` on translate/restore,
     `catchUp()` on tab refocus and on `resweep.ts`'s `onHrefChange` (SPA
     navigation).
@@ -811,3 +814,18 @@ libretranslate, llm, builtin):
 | CI (typecheck/lint/guards/tests/build/bundle-size/E2E/zip) | Deliberately Improved | Session 9 — engine-purity and Solid-reactivity guards are structural checks the old repo only added reactively, after 3 incidents |
 | Release automation (Changesets + CI-triggered release workflow) | Ported | Session 9, fresh implementation of the old repo's "triggered by CI completion" pattern |
 | Firefox build | Ported (build-validation only) | Parallel CI job, Session 9; Chrome-only at launch per the plan's Round 2 scoping, same as the old repo's own equivalent-stage gap |
+
+**Post-launch audit (correctness, speed, accuracy, reliability):** a
+two-part pass covering all 117 source files — see
+`.claude/skills/post-launch-audit-correctness-speed-accuracy-reliability/SKILL.md`
+for the full findings list. Notably fixed `translationCache.ts`'s
+`getMany()`/`setMany()` batching (N transactions → 1 per tick),
+`viewportPriority.ts`'s dirty-flag-gated + per-block reordering, a
+`configStore.onReady()` permanent-wedge-on-first-failure bug, and several
+Google-provider-specific correctness bugs (`isSuspiciousOutcome`'s
+echo-detection was silently inert for Google specifically, an
+orphan-text-before-first-tag drop, and others — see the skill file). Also
+fixed both CI guard scripts (`check-solid-reactivity.mjs`,
+`check-engine-purity.mjs`), which each had real gaps letting exactly the
+bug class they exist to catch through, and a genuinely vacuous test in
+`migrations.test.ts`.

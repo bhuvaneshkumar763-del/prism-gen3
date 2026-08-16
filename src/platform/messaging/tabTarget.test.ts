@@ -1,6 +1,6 @@
 import { fakeBrowser } from '@webext-core/fake-browser';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { getActiveTabId } from './tabTarget';
+import { getActiveTab, getActiveTabId } from './tabTarget';
 
 describe('getActiveTabId', () => {
   let windowId: number | undefined;
@@ -45,5 +45,29 @@ describe('getActiveTabId', () => {
 
     expect(fromCallSiteA).toBe(active.id);
     expect(fromCallSiteB).toBe(active.id);
+  });
+});
+
+describe('getActiveTab', () => {
+  let windowId: number | undefined;
+
+  beforeEach(async () => {
+    fakeBrowser.reset();
+    const win = await fakeBrowser.windows.create({ focused: true });
+    if (!win?.id) throw new Error('expected a window id');
+    windowId = win.id;
+  });
+
+  it('resolves the full active tab (id and url), not just its id', async () => {
+    const active = await fakeBrowser.tabs.create({ active: true, windowId, url: 'https://example.com/' });
+
+    const tab = await getActiveTab();
+
+    expect(tab.id).toBe(active.id);
+    expect(tab.url).toBe('https://example.com/');
+  });
+
+  it('throws when there is no active tab', async () => {
+    await expect(getActiveTab()).rejects.toThrow('No active tab');
   });
 });

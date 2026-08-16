@@ -29,10 +29,15 @@ export function escapeHTML(unsafe: string): string {
 }
 
 export function unescapeHTML(unsafe: string): string {
+  // &amp; must decode last: decoding it first would turn text that was
+  // legitimately double-escaped (e.g. the literal prose "&lt;br&gt;",
+  // escaped by escapeHTML into "&amp;lt;br&amp;gt;") into a string that
+  // then matches &lt;/&gt; below and gets decoded a second time, corrupting
+  // it into "<br>" instead of round-tripping back to "&lt;br&gt;".
   return unsafe
-    .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'");
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&');
 }

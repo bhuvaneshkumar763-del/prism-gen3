@@ -11,6 +11,7 @@
  * carve-out, but visiting someone else's translate-result page would
  * otherwise get auto-translated again on top of their translation.
  */
+import { baseLanguageTag } from '../../shared/languages';
 
 const TRANSLATION_SERVICE_HOSTS = new Set([
   'translate.googleusercontent.com',
@@ -41,6 +42,10 @@ export interface AutoTranslateDecisionInput {
  * list) is honored unconditionally — the user already told us what this
  * site is, which is just as explicit a signal as a language match. Absent
  * that, falls through to the detected-language allow/deny lists.
+ *
+ * If a hostname somehow ends up on BOTH site lists at once, never wins (it's
+ * checked first, below) — `src/shared/config/listMutations.ts`'s add/remove
+ * helpers exist specifically so normal UI use can't produce that state.
  */
 export function shouldAutoTranslateOnLoad(input: AutoTranslateDecisionInput): boolean {
   if (input.pageLanguageState !== 'original') return false;
@@ -51,9 +56,13 @@ export function shouldAutoTranslateOnLoad(input: AutoTranslateDecisionInput): bo
   if (input.alwaysTranslateSites.includes(input.hostname)) return true;
 
   if (input.originalLanguage === 'und') return false;
-  if (input.originalLanguage === input.targetLanguage) return false;
-  if (input.neverTranslateLangs.includes(input.originalLanguage)) return false;
-  if (input.alwaysTranslateLangs.includes(input.originalLanguage)) return true;
+  // Compared by base tag (see baseLanguageTag's doc comment) — a regional
+  // variant like 'pt-BR' should match a plain 'pt' target/rule the same way
+  // a user would expect "Portuguese" to.
+  const originalBase = baseLanguageTag(input.originalLanguage);
+  if (originalBase === baseLanguageTag(input.targetLanguage)) return false;
+  if (input.neverTranslateLangs.some((code) => baseLanguageTag(code) === originalBase)) return false;
+  if (input.alwaysTranslateLangs.some((code) => baseLanguageTag(code) === originalBase)) return true;
 
   return false;
 }
