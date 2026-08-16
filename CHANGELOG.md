@@ -1,5 +1,11 @@
 # prism-gen3
 
+## 0.3.0-beta.19
+
+### Patch Changes
+
+- No code changes — AMO signing credentials are now configured, so this release exercises the actual signing path added in beta.18 for the first time and should ship with a real signed `.xpi` instead of the unsigned-zip fallback.
+
 ## 0.3.0-beta.18
 
 ### Patch Changes

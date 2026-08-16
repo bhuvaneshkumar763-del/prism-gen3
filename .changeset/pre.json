@@ -22,6 +22,7 @@
     "shadow-dom-and-google-reflow",
     "speed-dynamic-tags",
     "tag-anchor-isolation",
-    "three-bugfixes"
+    "three-bugfixes",
+    "verify-amo-signing"
   ]
 }
