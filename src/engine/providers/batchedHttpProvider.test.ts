@@ -82,6 +82,45 @@ describe('createBatchedHttpProvider — batching budget', () => {
       { ok: true, value: ['BBBBBBBBBB'] },
     ]);
   });
+
+  it("defaults the batch budget to 800 chars, matching TWP's real upstream value (verified against their live source, not assumed) — was previously 1100 based on a since-corrected comment", async () => {
+    // Echoes back one text per piece actually sent in each call's body —
+    // avoids a false pass via the missing-piece repair retry (a single
+    // under-800 batch that got a too-short mock response would also
+    // trigger a second fetch call, for the wrong reason).
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      const sent = JSON.parse(init.body as string) as string[];
+      return jsonResponse({ texts: sent.map(() => 'x') });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const provider = createBatchedHttpProvider({
+      name: 'default-budget',
+      baseUrl: 'https://example.com',
+      method: 'POST',
+      // No maxBatchChars override — exercising the real default.
+      callbacks: {
+        ...plainCallbacks(),
+        getRequestBody: (_s, _t, texts) => JSON.stringify(texts),
+      },
+    });
+
+    // Each 850-char piece alone exceeds an 800-char budget (forcing a
+    // batch flush right after it) but not a 1100-char one (where both
+    // pieces land in a single 1700-char batch instead) — this only splits
+    // into two single-piece requests under the new default.
+    await provider.translateBatch({
+      sourceLanguage: 'en',
+      targetLanguage: 'es',
+      pieces: [['a'.repeat(850)], ['b'.repeat(850)]],
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const piecesPerCall = fetchMock.mock.calls.map(
+      ([, init]) => (JSON.parse((init as RequestInit).body as string) as string[]).length,
+    );
+    expect(piecesPerCall).toEqual([1, 1]);
+  });
 });
 
 describe('createBatchedHttpProvider — lifecycle hooks and concurrency', () => {

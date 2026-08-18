@@ -62,6 +62,58 @@ describe('createPageTranslator', () => {
     expect(pageTranslator.getState()).toBe('original');
   });
 
+  it('an ordinary translatePage() always uses the ambient getSourceLanguage(), real bug this replaced: a manually-pinned site language used to be forced onto every request forever, mistranslating content that was already correct', async () => {
+    document.body.innerHTML = '<p>hello</p>';
+    const sourceLanguagesSeen: string[] = [];
+    const spyTranslator: Translator = {
+      async translateBatch(request) {
+        sourceLanguagesSeen.push(request.sourceLanguage);
+        return request.pieces.map((piece): PieceOutcome => ok(piece.map((s) => s.toUpperCase())));
+      },
+    };
+    const pageTranslator = createPageTranslator({
+      translator: spyTranslator,
+      getSourceLanguage: () => 'auto',
+      getBatchingHint: () => undefined,
+    });
+
+    await pageTranslator.translatePage('es');
+    await waitFor(() => document.body.textContent === 'HELLO');
+
+    expect(sourceLanguagesSeen).toEqual(['auto']);
+    pageTranslator.restorePage();
+  });
+
+  it('an explicit source language passed to translatePage() forces it for that translate, and keeps applying to later translates on the same page load until a fresh one is explicitly passed', async () => {
+    document.body.innerHTML = '<p>hello</p>';
+    const sourceLanguagesSeen: string[] = [];
+    const spyTranslator: Translator = {
+      async translateBatch(request) {
+        sourceLanguagesSeen.push(request.sourceLanguage);
+        return request.pieces.map((piece): PieceOutcome => ok(piece.map((s) => s.toUpperCase())));
+      },
+    };
+    const pageTranslator = createPageTranslator({
+      translator: spyTranslator,
+      getSourceLanguage: () => 'auto',
+      getBatchingHint: () => undefined,
+    });
+
+    // The bubble's From picker: force 'vi' for this one retranslate.
+    await pageTranslator.translatePage('en', 'vi');
+    await waitFor(() => sourceLanguagesSeen.length === 1);
+    expect(sourceLanguagesSeen).toEqual(['vi']);
+
+    // A later ordinary translate (e.g. the plain Translate button) on this
+    // same page load keeps using the forced language — matches TWP's
+    // improveTranslation semantics, which this was modeled on.
+    await pageTranslator.translatePage('fr');
+    await waitFor(() => sourceLanguagesSeen.length === 2);
+    expect(sourceLanguagesSeen).toEqual(['vi', 'vi']);
+
+    pageTranslator.restorePage();
+  });
+
   it('groups sibling text nodes under the same block into one piece when a batching hint is given', async () => {
     document.body.innerHTML = '<p>Hello <b>world</b></p>';
     const translateBatch = vi.fn(async (request: { pieces: string[][] }) =>
@@ -786,69 +838,5 @@ describe('viewport-priority reordering — dirty-flag gating', () => {
     await waitFor(() => rectSpy.mock.calls.length > callsAfterTick1, 3000);
 
     pageTranslator.restorePage();
-  });
-
-  it('excludes content the block-language filter says is already in the target language, real bug: manual source-language override force-translated already-English UI chrome', async () => {
-    document.body.innerHTML = '<p id="already-english">Keep me as-is</p><p id="translate-me">hello</p>';
-    const alreadyEnglish = document.getElementById('already-english');
-    if (!alreadyEnglish) throw new Error('unreachable');
-
-    const pageTranslator = createPageTranslator({
-      translator: uppercaseTranslator(),
-      getSourceLanguage: () => 'vi',
-      getBatchingHint: () => undefined,
-      blockLanguageFilter: {
-        computeSkipElements: async () => new Set([alreadyEnglish]),
-      },
-    });
-
-    await pageTranslator.translatePage('en');
-    await waitFor(() => document.getElementById('translate-me')?.textContent === 'HELLO');
-
-    expect(document.getElementById('already-english')?.textContent).toBe('Keep me as-is');
-
-    pageTranslator.restorePage();
-  });
-
-  it('a stale translatePage() call does not corrupt state once a newer call has already started, real risk: the new await for block-language detection', async () => {
-    document.body.innerHTML = '<p>hello</p>';
-    let resolveFirst: (value: Set<Element>) => void = () => {};
-    const firstDetection = new Promise<Set<Element>>((resolve) => {
-      resolveFirst = resolve;
-    });
-    let callCount = 0;
-
-    const pageTranslator = createPageTranslator({
-      translator: uppercaseTranslator(),
-      getSourceLanguage: () => 'en',
-      getBatchingHint: () => undefined,
-      blockLanguageFilter: {
-        computeSkipElements: async () => {
-          callCount++;
-          if (callCount === 1) return firstDetection;
-          return new Set();
-        },
-      },
-    });
-
-    // Fire the first call but don't await it yet — it's now suspended
-    // inside computeSkipElements.
-    const firstCall = pageTranslator.translatePage('fr');
-    // A second, newer call starts and completes fully before the first's
-    // await ever resolves.
-    await pageTranslator.translatePage('es');
-    await waitFor(() => document.body.textContent === 'HELLO');
-
-    // Now let the first (stale) call's await resolve.
-    resolveFirst(new Set());
-    await firstCall;
-
-    // The clearest observable symptom of the race: without the generation
-    // guard, the stale call resumes and overwrites nodesToRestore using
-    // the DOM's *current* (already-translated) text as if it were the
-    // original — so restoring afterward leaves the translated text in
-    // place instead of actually restoring it.
-    pageTranslator.restorePage();
-    expect(document.body.textContent).toBe('hello');
   });
 });

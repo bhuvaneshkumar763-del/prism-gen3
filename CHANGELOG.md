@@ -1,5 +1,11 @@
 # prism-gen3
 
+## 0.3.0-beta.22
+
+### Minor Changes
+
+- Fixed the deeper cause behind manually-pinned-language mistranslation, informed by comparing this project's real translation pipeline line-by-line against its original inspiration (TWP)'s live, current source: a manually selected site language used to be forced onto *every* translate request for that site forever, fighting the provider's own per-request auto-detection and mistranslating content that was already correct — confirmed against the live Google endpoint (the same English text came back unchanged with `auto`, and mistranslated when a language was forced). Selecting a language now force-retranslates the page immediately (still fully supported, still remembered so you can see what you picked), but a fresh page load goes back to auto-detection rather than staying pinned forever. Removed the block-level "is this already in my language?" heuristic added as a stopgap for this in a previous release — it's no longer needed now that the actual cause is fixed, and it carried its own risk of confidently-but-wrongly skipping real content on some sites. Also lowered the free Google provider's per-request batching budget to reduce how many unrelated short pieces can share one request, shrinking the surface area for the kind of cross-piece scrambling this project has hit before.
+
 ## 0.3.0-beta.21
 
 ### Patch Changes

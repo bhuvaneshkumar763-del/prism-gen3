@@ -13,7 +13,7 @@ export interface BubbleController {
 
 export interface MountBubbleOptions {
   hostname: string;
-  onTranslate(targetLanguage: string): void;
+  onTranslate(targetLanguage: string, sourceLanguage?: string): void;
   onRestore(): void;
   onClose(): void;
 }

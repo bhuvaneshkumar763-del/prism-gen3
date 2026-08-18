@@ -50,7 +50,14 @@ export interface FloatingBubbleProps {
   state: BubbleViewState;
   hostname: string;
   shadowHost: HTMLElement;
-  onTranslate(targetLanguage: string): void;
+  /**
+   * `sourceLanguage`, when passed, forces that language for this one
+   * retranslate — the From picker's use — rather than persisting into
+   * every future request the way it used to (real bug: that forced
+   * mistranslation of already-correct content, see `onSourceLanguageChange`
+   * below).
+   */
+  onTranslate(targetLanguage: string, sourceLanguage?: string): void;
   onRestore(): void;
   onClose(): void;
 }
@@ -375,6 +382,19 @@ export function FloatingBubble(props: FloatingBubbleProps) {
     props.onClose();
   }
 
+  /**
+   * Force-retranslates the current page from `code` right now — a one-off
+   * correction for when auto-detection got the whole page wrong, not a
+   * standing rule. `code` is still persisted to `sourceLanguageByHost` (so
+   * the picker shows what you last chose, and it still feeds the
+   * auto-translate-on-load decision), but it's no longer sent as the
+   * source language on every future request the way it used to be: real
+   * bug, confirmed against the live Google endpoint — a forced source
+   * language on an already-correct-language fragment ("History" sent as
+   * source=vi) came back mistranslated ("Association"), while the same
+   * text sent as source=auto came back unchanged. A fresh page load goes
+   * back to auto regardless of what's picked here.
+   */
   function onSourceLanguageChange(e: Event): void {
     e.stopPropagation();
     const code = (e.currentTarget as HTMLSelectElement).value;
@@ -389,7 +409,7 @@ export function FloatingBubble(props: FloatingBubbleProps) {
         setSourceLanguageSignal(previous);
       });
     setSourceLanguageSignal(code);
-    props.onTranslate(targetLanguage());
+    props.onTranslate(targetLanguage(), code);
   }
 
   function onTargetLanguageChange(e: Event): void {
@@ -492,7 +512,7 @@ export function FloatingBubble(props: FloatingBubbleProps) {
                 title={
                   sourceLanguage() === 'auto'
                     ? 'Detect each request automatically (recommended for mixed-language pages)'
-                    : "Pinned — tells the translator every request on this site is in this language, overriding its own per-request detection. Content that's already in your target language can come back garbled. Prefer Auto unless detection is genuinely wrong for this site."
+                    : 'Force-retranslates this page from this language right now — a one-off correction for when auto-detection got it wrong, not a standing rule. A fresh page load goes back to Auto.'
                 }
               >
                 <For each={sourceLangOptions()}>

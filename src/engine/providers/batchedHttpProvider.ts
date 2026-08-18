@@ -43,7 +43,19 @@ export interface BatchedProviderOptions {
   baseUrl: string;
   method: 'GET' | 'POST';
   callbacks: BatchedProviderCallbacks;
-  /** Soft per-HTTP-request character budget across bundled pieces. Default 1100 — matches the old repo's tuning (bumped up from an original 800 for more context per request and fewer round trips). */
+  /**
+   * Soft per-HTTP-request character budget across bundled pieces. Default
+   * 800 — matches TWP's real, current upstream value (verified against
+   * their live source directly, not assumed). Previously 1100: the
+   * comment justifying that number claimed it matched "the old repo's
+   * tuning," but that turned out to reference a different fork's decision,
+   * not upstream TWP, which has used 800 the whole time. A smaller budget
+   * also directly shrinks the blast radius of the cross-piece marker-
+   * scrambling class of bug this project has hit before (tag-cluster
+   * scrambling, chip-label mistranslation on filter-heavy pages) — fewer
+   * unrelated short pieces sharing one request means less for Google's
+   * endpoint to misalign.
+   */
   maxBatchChars?: number;
   /** Cap on concurrent in-flight HTTP requests. Default 6 — firing every chunk of a long page at once tends to trip rate limiters. */
   maxConcurrent?: number;
@@ -87,7 +99,7 @@ interface PendingRequest {
   resolve(result: { text: string; detectedLanguage: string | null } | null): void;
 }
 
-const DEFAULT_MAX_BATCH_CHARS = 1100;
+const DEFAULT_MAX_BATCH_CHARS = 800;
 const DEFAULT_MAX_CONCURRENT = 6;
 const REQUEST_TIMEOUT_MS = 20000;
 const MAX_ATTEMPTS = 3;

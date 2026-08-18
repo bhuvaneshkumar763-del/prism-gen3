@@ -2,15 +2,13 @@ import { mountBubble } from '../components/bubble/mountBubble';
 import { mountHoverTooltip } from '../components/hoverTooltip/mountHoverTooltip';
 import { mountSelectionPopup } from '../components/selection/mountSelectionPopup';
 import { shouldAutoTranslateOnLoad } from '../src/engine/pageTranslator/autoTranslateDecision';
-import { createBlockLanguageFilter } from '../src/engine/pageTranslator/blockLanguageFilter';
 import { createPageTranslator } from '../src/engine/pageTranslator/translateLoop';
 import { getBatchingHint } from '../src/engine/providers/descriptors';
 import { configStore } from '../src/platform/configStore';
-import { createLanguageDetector } from '../src/platform/languageDetector';
 import { onMessage, sendMessage } from '../src/platform/messaging/protocol';
 import { createOriginalLanguageTracker } from '../src/platform/originalLanguageTracker';
 import { createRemoteTranslator } from '../src/platform/remoteTranslator';
-import { resolveBubbleVisibility, resolveSourceLanguageForHost } from '../src/shared/config/siteOverrides';
+import { resolveBubbleVisibility } from '../src/shared/config/siteOverrides';
 
 /** The bubble/hover tooltip/selection popup would be inert (and just clutter) on an extension-owned page. */
 const SKIP_UI_PROTOCOLS = ['chrome-extension:', 'moz-extension:', 'about:'];
@@ -75,14 +73,17 @@ export default defineContentScript({
 
     const pageTranslator = createPageTranslator({
       translator: createRemoteTranslator(),
-      getSourceLanguage: () =>
-        resolveSourceLanguageForHost(
-          configStore.get('sourceLanguageByHost'),
-          location.hostname,
-          configStore.get('sourceLanguage'),
-        ),
+      // Always 'auto' — real bug this replaced: this used to resolve
+      // sourceLanguageByHost/sourceLanguage and forced that language onto
+      // EVERY request forever, fighting Google's own per-request
+      // auto-detection and mistranslating content that was already
+      // correct (confirmed against the live endpoint). A manually-picked
+      // source language is still fully supported — see
+      // FloatingBubble.tsx's From picker, which now passes it as an
+      // explicit one-off override straight to translatePage() instead of
+      // persisting it into this ambient callback.
+      getSourceLanguage: () => 'auto',
       getBatchingHint: () => getBatchingHint(configStore.get('pageTranslatorProvider')),
-      blockLanguageFilter: createBlockLanguageFilter(createLanguageDetector()),
     });
 
     if (window.self === window.top && !SKIP_UI_PROTOCOLS.includes(location.protocol)) {
@@ -109,7 +110,7 @@ export default defineContentScript({
         if (!bubble) {
           bubble = mountBubble({
             hostname: location.hostname,
-            onTranslate: (targetLanguage) => void handleTranslateClick(targetLanguage),
+            onTranslate: (targetLanguage, sourceLanguage) => void handleTranslateClick(targetLanguage, sourceLanguage),
             onRestore: () => pageTranslator.restorePage(),
             onClose: () => {
               bubble = null;
@@ -123,11 +124,11 @@ export default defineContentScript({
         }
       }
 
-      async function handleTranslateClick(targetLanguage: string): Promise<void> {
+      async function handleTranslateClick(targetLanguage: string, sourceLanguage?: string): Promise<void> {
         bubble?.update({ busy: true });
         await configStore.onReady();
         try {
-          await pageTranslator.translatePage(targetLanguage);
+          await pageTranslator.translatePage(targetLanguage, sourceLanguage);
         } finally {
           // Only the awaiting caller clears `busy` — deliberately NOT done
           // from the onStateChange listener below, which fires synchronously

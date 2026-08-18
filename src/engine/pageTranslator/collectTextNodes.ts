@@ -78,14 +78,6 @@ export interface CollectTextNodesOptions {
    * language known yet, e.g. before the config/detector is ready).
    */
   targetLanguage?: string;
-  /**
-   * Elements to skip entirely, alongside the structural skip rules below —
-   * populated by `blockLanguageFilter.ts`'s block-level "this container is
-   * already confidently in the target language" detection. A separate,
-   * async, best-effort pass computes this set; this function itself stays
-   * synchronous and just consults it.
-   */
-  skipElements?: Set<Element>;
 }
 
 export function isNoTranslateNode(node: Node): boolean {
@@ -142,7 +134,6 @@ export function collectTextNodes(root: Node, options: CollectTextNodesOptions = 
       continue;
     }
     if (isNoTranslateNode(node)) continue;
-    if (options.skipElements?.has(node as Element)) continue;
     // Push in reverse so the stack pops children in original document
     // order, then push the shadow root last so it's on top of the stack
     // and pops first — matching the original recursive walk's order

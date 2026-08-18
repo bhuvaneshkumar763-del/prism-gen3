@@ -91,14 +91,6 @@ describe('collectTextNodes', () => {
     expect(nodes.map((n) => n.data)).toEqual(['History']);
   });
 
-  it('skips elements passed via skipElements, alongside the structural skip rules', () => {
-    document.body.innerHTML = '<div id="a">Keep this</div><div id="b">Skip this</div>';
-    const skipMe = document.getElementById('b');
-    if (!skipMe) throw new Error('unreachable');
-    const nodes = collectTextNodes(document.body, { skipElements: new Set([skipMe]) });
-    expect(nodes.map((n) => n.data)).toEqual(['Keep this']);
-  });
-
   // No dedicated "N-level-deep DOM doesn't stack-overflow" test: happy-dom's
   // own appendChild is itself recursive (Node.ts's connectedToNode walks the
   // full ancestor chain on every call), and the exact depth at which IT

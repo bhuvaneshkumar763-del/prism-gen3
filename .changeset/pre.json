@@ -23,6 +23,7 @@
     "settings-full-parity",
     "shadow-dom-and-google-reflow",
     "speed-dynamic-tags",
+    "stop-forcing-source-language",
     "tag-anchor-isolation",
     "three-bugfixes",
     "verify-amo-signing"
