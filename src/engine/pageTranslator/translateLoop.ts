@@ -368,9 +368,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     isTranslated: () => pageLanguageState === 'translated',
     isNoTranslateNode,
     onNewRoot(root) {
-      const added = collectTextNodes(root, { targetLanguage: currentTargetLanguage }).filter((n) =>
-        queueOrRequeueIfChanged(n),
-      ).length;
+      const added = collectTextNodes(root).filter((n) => queueOrRequeueIfChanged(n)).length;
       if (added > 0) wakeRoutine();
     },
     onChangedTextNode(node) {
@@ -395,9 +393,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
       for (const node of nodesToRestore.keys()) {
         if (!node.isConnected) nodesToRestore.delete(node);
       }
-      const added = collectTextNodes(document.body, { targetLanguage: currentTargetLanguage }).filter((n) =>
-        queueOrRequeueIfChanged(n),
-      ).length;
+      const added = collectTextNodes(document.body).filter((n) => queueOrRequeueIfChanged(n)).length;
       if (added > 0) wakeRoutine();
       return added > 0;
     },
@@ -464,7 +460,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     currentTargetLanguage = targetLanguage;
     cycleGeneration++;
 
-    const nodes = collectTextNodes(document.body, { targetLanguage });
+    const nodes = collectTextNodes(document.body);
     nodesToRestore = new Map(nodes.map((node) => [node, node.data]));
     dedupe.reset();
     dedupe.track(nodes);

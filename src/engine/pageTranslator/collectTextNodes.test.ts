@@ -72,23 +72,15 @@ describe('collectTextNodes', () => {
     expect(nodes.map((n) => n.data)).toEqual(['Chapter 5', '2024 was a good year']);
   });
 
-  it('skips a node under an ancestor whose lang attribute already matches the target language', () => {
-    document.body.innerHTML =
-      '<div lang="en"><button>History</button></div><div lang="vi"><button>Lịch sử</button></div><p>Translate this</p>';
-    const nodes = collectTextNodes(document.body, { targetLanguage: 'en' });
-    expect(nodes.map((n) => n.data)).toEqual(['Lịch sử', 'Translate this']);
-  });
-
-  it('matches a lang attribute by base tag, ignoring region ("en-US" matches target "en")', () => {
-    document.body.innerHTML = '<div lang="en-US"><button>History</button></div>';
-    const nodes = collectTextNodes(document.body, { targetLanguage: 'en' });
-    expect(nodes).toEqual([]);
-  });
-
-  it('does not apply the lang check when no targetLanguage is given', () => {
-    document.body.innerHTML = '<div lang="en"><button>History</button></div>';
-    const nodes = collectTextNodes(document.body);
-    expect(nodes.map((n) => n.data)).toEqual(['History']);
+  it('does not skip content under a document-level lang attribute, real bug: pixiv.net sets <html lang="en"> from the UI language preference, unrelated to the actual (Chinese) novel content being viewed — a per-node lang check previously excluded 100% of every page whose <html lang> happened to match the target language', () => {
+    document.documentElement.lang = 'en';
+    document.body.innerHTML = '<p>你好世界</p><div lang="en"><p>Real English</p></div>';
+    try {
+      const nodes = collectTextNodes(document.body);
+      expect(nodes.map((n) => n.data)).toEqual(['你好世界', 'Real English']);
+    } finally {
+      document.documentElement.removeAttribute('lang');
+    }
   });
 
   // No dedicated "N-level-deep DOM doesn't stack-overflow" test: happy-dom's

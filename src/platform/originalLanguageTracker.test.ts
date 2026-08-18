@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { fakeBrowser } from '@webext-core/fake-browser';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { onMessage } from './messaging/protocol';
 import { createOriginalLanguageTracker } from './originalLanguageTracker';
 
 /**
@@ -102,6 +103,50 @@ describe('createOriginalLanguageTracker', () => {
     await startPromise;
 
     expect(tracker.get()).toBe('und');
+  });
+
+  it("prefers a successful tabs.detectLanguage relay over the text-sample fallback, real gap this closed: previously never called tabs.detectLanguage at all, matching TWP's fallback-only path instead of its actual primary one", async () => {
+    const unsub = onMessage('detectTabLanguage', () => 'pt');
+    // If the fallback were used instead, this would report the mocked
+    // i18n.detectLanguage language below, not 'pt' — proves the relay
+    // result wins without ever falling through.
+    const detectLanguage = spyOnDetectLanguage();
+    detectLanguage.mockResolvedValue({ isReliable: true, languages: [{ language: 'fr', percentage: 90 }] });
+
+    try {
+      const tracker = createOriginalLanguageTracker();
+      await tracker.start();
+
+      expect(tracker.get()).toBe('pt');
+      expect(detectLanguage).not.toHaveBeenCalled();
+    } finally {
+      unsub();
+    }
+  });
+
+  it('falls back to the text-sample method when the tabs.detectLanguage relay reports "und"', async () => {
+    const unsub = onMessage('detectTabLanguage', () => 'und');
+    spyOnDetectLanguage().mockResolvedValue({ isReliable: true, languages: [{ language: 'es', percentage: 92 }] });
+
+    try {
+      const tracker = createOriginalLanguageTracker();
+      await tracker.start();
+
+      expect(tracker.get()).toBe('es');
+    } finally {
+      unsub();
+    }
+  });
+
+  it('falls back to the text-sample method when nothing answers the tabs.detectLanguage relay at all', async () => {
+    // No onMessage('detectTabLanguage', ...) handler registered — simulates
+    // the message going unanswered (e.g. background not ready yet).
+    spyOnDetectLanguage().mockResolvedValue({ isReliable: true, languages: [{ language: 'it', percentage: 91 }] });
+
+    const tracker = createOriginalLanguageTracker();
+    await tracker.start();
+
+    expect(tracker.get()).toBe('it');
   });
 
   it('does not wait for visibility when the page is already visible', async () => {

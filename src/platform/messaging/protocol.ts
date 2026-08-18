@@ -50,6 +50,21 @@ interface ProtocolMap {
   reportFrameLanguageDecision(data: FrameLanguageDecision): void;
   /** A same-origin sub-frame → background: asks for the main frame's decision, if it's reported one yet. */
   getFrameLanguageDecision(): FrameLanguageDecision | null;
+  /**
+   * Content script → background: detect this tab's language via
+   * `browser.tabs.detectLanguage()` — a background-only, privileged API a
+   * content script can't call directly. TWP's real, current source
+   * (confirmed live) uses this as its *primary* detection method, falling
+   * back to a content-script text-sample heuristic only when it's
+   * unavailable; this project previously only ever had the fallback.
+   * Inspects the browser's own view of the tab's actual content rather
+   * than a client-side `innerText` slice we build ourselves — real gap on
+   * pages where nav/header chrome (often in the site's UI language)
+   * dominates the first few thousand characters of body text before
+   * reaching the real content. Returns `'und'` on any failure (no throw),
+   * same convention as every other detection path in this codebase.
+   */
+  detectTabLanguage(): string;
 }
 
 export interface FrameLanguageDecision {

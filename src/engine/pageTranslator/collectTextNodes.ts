@@ -1,5 +1,3 @@
-import { baseLanguageTag } from '../../shared/languages';
-
 /**
  * Depth-first walk collecting translatable Text nodes under `root`,
  * skipping script/style/noscript/textarea subtrees and editable content.
@@ -70,16 +68,6 @@ const BARE_MARKER = /^[#@]$/;
  */
 const NO_LETTERS = /^[^\p{L}]*$/u;
 
-export interface CollectTextNodesOptions {
-  /**
-   * Skip a text node whose nearest `[lang]` ancestor's base tag matches
-   * this. Free, zero-API-call signal — some sites mark mixed-language
-   * regions explicitly. Omit to skip this check entirely (no target
-   * language known yet, e.g. before the config/detector is ready).
-   */
-  targetLanguage?: string;
-}
-
 export function isNoTranslateNode(node: Node): boolean {
   if (node.nodeType === Node.ELEMENT_NODE) {
     const el = node as Element;
@@ -96,23 +84,31 @@ export function isNoTranslateNode(node: Node): boolean {
   return false;
 }
 
-/** True if the nearest `[lang]` ancestor's base tag (e.g. "en" out of "en-US") matches `targetBase`. */
-function nearestLangMatches(parent: Node, targetBase: string): boolean {
-  if (!(parent instanceof Element)) return false;
-  const lang = parent.closest('[lang]')?.getAttribute('lang');
-  return !!lang && baseLanguageTag(lang) === targetBase;
-}
-
 /**
  * Iterative (explicit stack, not recursive) — a pathologically deep DOM
  * (real risk: infinite-scroll/virtualized-list pages that nest a nearly
  * flat structure hundreds of levels deep) would blow the call stack with a
  * recursive walk and kill translation outright with a `RangeError` instead
  * of just costing more time.
+ *
+ * Deliberately no `lang`-attribute-based skip check: an earlier version had
+ * one ("if a site marks this exact text as already the target language,
+ * skip it"), but real sites almost never annotate individual paragraphs —
+ * they set `lang` once on `<html>` to describe their own UI's language, not
+ * to describe what's actually written on the page. Real bug this caused:
+ * pixiv sets `<html lang="en">` from the logged-in user's UI-language
+ * preference, completely independent of the actual language of whatever
+ * novel/manga/post is being viewed (confirmed live: `<html lang>` was
+ * "en" while the page's own title was Chinese) — `closest('[lang]')`
+ * resolves to that root `<html>` for every single text node with no closer
+ * override, so the old check silently excluded 100% of the page whenever
+ * the target language happened to match the site's UI language. TWP
+ * (confirmed against their live source) has no equivalent check at all —
+ * removing this matches that, and removes the whole bug class rather than
+ * just this one page's specific shape of it.
  */
-export function collectTextNodes(root: Node, options: CollectTextNodesOptions = {}): Text[] {
+export function collectTextNodes(root: Node): Text[] {
   const nodes: Text[] = [];
-  const targetBase = options.targetLanguage ? baseLanguageTag(options.targetLanguage) : null;
 
   const stack: Node[] = [root];
   while (stack.length > 0) {
@@ -121,14 +117,7 @@ export function collectTextNodes(root: Node, options: CollectTextNodesOptions = 
     if (node.nodeType === Node.TEXT_NODE) {
       const parent = node.parentNode;
       const text = node.textContent?.trim();
-      if (
-        text &&
-        !BARE_MARKER.test(text) &&
-        !NO_LETTERS.test(text) &&
-        parent &&
-        !isNoTranslateNode(parent) &&
-        !(targetBase && nearestLangMatches(parent, targetBase))
-      ) {
+      if (text && !BARE_MARKER.test(text) && !NO_LETTERS.test(text) && parent && !isNoTranslateNode(parent)) {
         nodes.push(node as Text);
       }
       continue;

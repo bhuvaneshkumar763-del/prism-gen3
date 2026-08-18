@@ -12,6 +12,7 @@
     "firefox-detect-language-hang",
     "firefox-manifest-version-conflict",
     "fix-broken-default-and-silent-failure",
+    "fix-lang-attr-and-add-tabs-detect",
     "fix-source-language-override",
     "graceful-degradation",
     "new-icon",

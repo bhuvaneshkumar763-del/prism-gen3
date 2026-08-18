@@ -24,6 +24,7 @@
  */
 
 import { withTimeout } from '../shared/withTimeout';
+import { sendMessage } from './messaging/protocol';
 
 /**
  * Resolves when the tab becomes visible — but never waits forever. The cap
@@ -89,6 +90,27 @@ async function detectFromPageText(): Promise<string> {
   }
 }
 
+/**
+ * The primary detection path, matching TWP's real, current design
+ * (confirmed against their live source, not assumed): relay to the
+ * background so it can call `browser.tabs.detectLanguage()` — a
+ * background-only API that inspects the browser's own view of the tab's
+ * actual content, rather than a client-side `innerText` slice this file
+ * builds itself (see `detectFromPageText` above, kept as the fallback for
+ * whenever this returns `'und'`). `withTimeout`-guarded for the same
+ * reason as `detectFromPageText`'s own call: a message round trip that
+ * never resolves must not hang the entire auto-translate decision.
+ */
+async function detectViaTab(): Promise<string> {
+  try {
+    const result = await withTimeout(sendMessage('detectTabLanguage', undefined), DETECT_LANGUAGE_TIMEOUT_MS);
+    return result || 'und';
+  } catch (e) {
+    console.warn('[prism] tabs.detectLanguage relay failed, falling back to text-sample detection', e);
+    return 'und';
+  }
+}
+
 export function createOriginalLanguageTracker() {
   let language = 'und';
 
@@ -101,7 +123,8 @@ export function createOriginalLanguageTracker() {
     try {
       await new Promise((resolve) => setTimeout(resolve, 150));
       await waitUntilVisible();
-      language = await detectFromPageText();
+      language = await detectViaTab();
+      if (language === 'und') language = await detectFromPageText();
     } catch (e) {
       console.warn('[prism] original-language tracking failed, continuing as "und"', e);
       language = 'und';

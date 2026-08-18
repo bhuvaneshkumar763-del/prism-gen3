@@ -312,4 +312,15 @@ export default defineBackground(() => {
     if (tabId === undefined) return null;
     return frameLanguageDecisions.get(tabId) ?? null;
   });
+
+  onMessage('detectTabLanguage', async (message) => {
+    const tabId = message.sender.tab?.id;
+    if (tabId === undefined) return 'und';
+    try {
+      return (await browser.tabs.detectLanguage(tabId)) || 'und';
+    } catch (e) {
+      console.warn('[prism] tabs.detectLanguage failed', e);
+      return 'und';
+    }
+  });
 });
