@@ -76,16 +76,18 @@ export const configSchema = z.object({
   theme: z.enum(['auto', 'light', 'dark']),
   translationCacheEnabled: z.boolean(),
   /**
-   * Whether `<pre>` blocks get translated. Default off, matching TWP's own
-   * default (confirmed against their live source — a per-user setting,
-   * `translateTag_pre`, off unless explicitly enabled) — real bug this
-   * setting exists to let a user recover from: some sites use `<pre>`
-   * purely to preserve line breaks in plain prose (a forum post, e.g.),
-   * not for code, and the previous hardcoded "always skip `<pre>`" (added
-   * to protect genuine code samples from being reworded) silently excluded
-   * the bulk of those pages' content with no way to turn it back on.
-   * `<code>` stays protected regardless of this setting — real code
-   * samples almost always use it, nested inside `<pre>` or standalone.
+   * Whether `<pre>` blocks get translated. Default **on** — matches TWP's
+   * real default exactly (`translateTag_pre: "yes"` in their actual
+   * `defaultConfig`, re-verified directly against their source after
+   * shipping this backwards the first time — see this field's own
+   * changeset history for the correction). Real bug this setting exists to
+   * let a user recover from: some sites use `<pre>` purely to preserve
+   * line breaks in plain prose (a forum post, e.g.), not for code, and the
+   * previous hardcoded "always skip `<pre>`" (added to protect genuine
+   * code samples from being reworded) silently excluded the bulk of those
+   * pages' content with no way to turn it back on. `<code>` stays
+   * protected regardless of this setting — real code samples almost
+   * always use it, nested inside `<pre>` or standalone.
    */
   translatePreTags: z.boolean(),
 });
@@ -116,5 +118,5 @@ export const defaultConfig: Config = {
   selectionPopupEnabled: true,
   theme: 'auto',
   translationCacheEnabled: true,
-  translatePreTags: false,
+  translatePreTags: true,
 };

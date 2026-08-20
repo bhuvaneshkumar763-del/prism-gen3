@@ -102,7 +102,12 @@ export function isNoTranslateNode(node: Node, options: NoTranslateOptions = {}):
   if (node.nodeType === Node.ELEMENT_NODE) {
     const el = node as Element;
     if (SKIP_TAGS.has(el.tagName)) return true;
-    if (el.tagName === 'PRE' && !options.translatePreTags && !isWholePageBarePre()) return true;
+    // Explicit `false` opts out; omitted/`true` both mean "translate",
+    // matching the config default (`true`) so this function's own
+    // no-options behavior agrees with the shipped product default instead
+    // of silently defaulting the opposite way when a caller (or a test)
+    // omits the option.
+    if (el.tagName === 'PRE' && options.translatePreTags === false && !isWholePageBarePre()) return true;
     if ((el as HTMLElement).isContentEditable) return true;
     // The standard, cross-tool opt-out signals a site uses to protect brand
     // names, identifiers, usernames and the like. `translate="no"` is the
