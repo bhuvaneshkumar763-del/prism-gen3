@@ -258,4 +258,114 @@ describe('groupNodesForBatching', () => {
       expect(groups).toEqual([[a, bText, c]]);
     });
   });
+
+  describe('link-cluster isolation', () => {
+    it('isolates each link in a chapter-nav row into its own piece (real gap: all 3 landed in one multi-item piece today)', () => {
+      // <nav>« <a>Prev</a> | <a>Chapter 12</a> | <a>Next</a> »</nav> —
+      // collectTextNodes.ts already drops the letterless " | "/"«"/"»"
+      // connector nodes, so grouping only ever sees the three link nodes.
+      const nav = document.createElement('nav');
+      const words = ['Prev', 'Chapter 12', 'Next'].map((text) => {
+        const a = document.createElement('a');
+        const wordNode = textNode(text);
+        a.append(wordNode);
+        nav.append(a, textNode(' | '));
+        return wordNode;
+      });
+
+      const groups = groupNodesForBatching(words, { groupByBlock: true, maxGroupChars: 2000 });
+
+      expect(groups).toEqual([[words[0]], [words[1]], [words[2]]]);
+    });
+
+    it('isolates each crumb in an all-link breadcrumb trail', () => {
+      const p = document.createElement('p');
+      const words = ['Home', 'Category', 'Product'].map((text) => {
+        const a = document.createElement('a');
+        const wordNode = textNode(text);
+        a.append(wordNode);
+        p.append(a, textNode(' > '));
+        return wordNode;
+      });
+
+      const groups = groupNodesForBatching(words, { groupByBlock: true, maxGroupChars: 2000 });
+
+      expect(groups).toEqual([[words[0]], [words[1]], [words[2]]]);
+    });
+
+    it('does not isolate a single inline link sitting inside an ordinary sentence (true negative)', () => {
+      const p = document.createElement('p');
+      const a = textNode('For more details, see ');
+      const link = document.createElement('a');
+      const linkText = textNode('our documentation');
+      link.append(linkText);
+      const b = textNode(' which explains everything.');
+      p.append(a, link, b);
+
+      const groups = groupNodesForBatching([a, linkText, b], { groupByBlock: true, maxGroupChars: 2000 });
+
+      expect(groups).toEqual([[a, linkText, b]]);
+    });
+
+    it('does not isolate a link whose own text is long (a real inline link, not a nav/breadcrumb item)', () => {
+      const p = document.createElement('p');
+      const link = document.createElement('a');
+      const linkText = textNode('this much longer link title that reads like a real sentence, not a short nav item');
+      link.append(linkText);
+      const other = document.createElement('a');
+      const otherText = textNode('another link');
+      other.append(otherText);
+      p.append(link, textNode(' | '), other);
+
+      const groups = groupNodesForBatching([linkText, otherText], { groupByBlock: true, maxGroupChars: 2000 });
+
+      expect(groups).toEqual([[linkText, otherText]]);
+    });
+
+    it('does not isolate a single short link with no sibling links (needs at least 2 to read as a cluster)', () => {
+      const p = document.createElement('p');
+      const a = textNode('Read ');
+      const link = document.createElement('a');
+      const linkText = textNode('more');
+      link.append(linkText);
+      p.append(a, link);
+
+      const groups = groupNodesForBatching([a, linkText], { groupByBlock: true, maxGroupChars: 2000 });
+
+      expect(groups).toEqual([[a, linkText]]);
+    });
+
+    it('does not isolate links whose container has a non-link, non-text element sibling (e.g. an <img> in a nav row)', () => {
+      const nav = document.createElement('nav');
+      const link = document.createElement('a');
+      const linkText = textNode('Prev');
+      link.append(linkText);
+      const icon = document.createElement('img');
+      const other = document.createElement('a');
+      const otherText = textNode('Next');
+      other.append(otherText);
+      nav.append(link, icon, other);
+
+      const groups = groupNodesForBatching([linkText, otherText], { groupByBlock: true, maxGroupChars: 2000 });
+
+      expect(groups).toEqual([[linkText, otherText]]);
+    });
+
+    it('does not isolate links whose container also has real prose text (letter-bearing connector disqualifies the whole container)', () => {
+      const p = document.createElement('p');
+      const a = document.createElement('a');
+      const aText = textNode('Alice');
+      a.append(aText);
+      const and = textNode(' and ');
+      const b = document.createElement('a');
+      const bText = textNode('Bob');
+      b.append(bText);
+      const rest = textNode(' both replied.');
+      p.append(a, and, b, rest);
+
+      const groups = groupNodesForBatching([aText, and, bText, rest], { groupByBlock: true, maxGroupChars: 2000 });
+
+      expect(groups).toEqual([[aText, and, bText, rest]]);
+    });
+  });
 });

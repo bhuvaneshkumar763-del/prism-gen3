@@ -74,6 +74,32 @@ import { isPureTagText } from './tagText';
  *    isolating the word — the anchor-text check still reads the marker
  *    off the live DOM to recognize the cluster as a tag in the first
  *    place.)
+ *
+ * 5. **Isolate each link in a nav-row/chapter-title/breadcrumb link
+ *    cluster into its own group**, the same class of fix as point 4 but
+ *    for a DOM shape point 4's `isPureTagText` check doesn't recognize at
+ *    all: several short `<a>` siblings under one shared container
+ *    (`« Prev | Chapter 12 | Next »`, a breadcrumb trail, a category link
+ *    list) with no `#`/`@` marker in sight. Confirmed via a real repro
+ *    (not assumed): a chapter-nav row's three link texts land in exactly
+ *    one multi-item piece today, the identical Google `<a i=N>`-marker
+ *    scrambling risk points 3/4 already exist to prevent, just untreated
+ *    for this shape. `isLinkClusterContainer` recognizes the pattern
+ *    conservatively — every direct child of the container must be either
+ *    a short `<a>` or letterless connector text (a real prose paragraph's
+ *    own letter-bearing text nodes, e.g. "Hello <b>world</b>.", disqualify
+ *    it immediately, since `nodes` here has already had every letterless
+ *    node filtered out upstream by `collectTextNodes.ts` — a plain text
+ *    child bearing a letter is exactly the "this is real prose, not a
+ *    link row" signal). A single inline link inside an otherwise-ordinary
+ *    sentence never matches (needs `LINK_CLUSTER_MIN_LINKS` siblings), so
+ *    the true-negative "see our documentation for details" case is left
+ *    grouped with its surrounding sentence, unaffected. Deliberately
+ *    narrower than TWP's own later refinement round (which also handled a
+ *    trailing non-link "current page" breadcrumb crumb) — that shape needs
+ *    isolating a plain element, not just an anchor, and risked exactly the
+ *    over-eager-isolation problem that round had to correct for in the
+ *    other direction; left as a documented follow-up rather than guessed.
  */
 
 const BLOCK_TAGS = new Set([
@@ -125,11 +151,50 @@ function nearestTagAnchor(node: Text): Element | null {
   return null;
 }
 
-/** The isolation key for a node isolated by point 3 or point 4 above — `null` means "not isolated, use normal grouping." Point 3 keys on the node itself (always its own group); point 4 keys on the shared anchor (so sibling nodes under the same tag anchor merge into one group). */
+/** An individual link's own text may be at most this long to still read as a nav/breadcrumb/chapter-title item rather than a real inline link sitting in prose. */
+const LINK_CLUSTER_MAX_ITEM_CHARS = 40;
+
+/** How many short-link siblings a container needs before it's treated as a cluster, not one link incidentally sitting in an ordinary sentence. */
+const LINK_CLUSTER_MIN_LINKS = 2;
+
+/** A connector between cluster links (` | `, ` > `, `»`, ...) may be at most this long and must carry no letters — see point 5's header comment for why a letter-bearing child disqualifies the whole container. */
+const LINK_CLUSTER_MAX_CONNECTOR_CHARS = 10;
+const HAS_LETTER = /\p{L}/u;
+
+function isClusterConnectorText(text: string): boolean {
+  const trimmed = text.trim();
+  return trimmed.length === 0 || (trimmed.length <= LINK_CLUSTER_MAX_CONNECTOR_CHARS && !HAS_LETTER.test(trimmed));
+}
+
+/** See point 5 in this file's header comment. */
+function isLinkClusterContainer(container: Element): boolean {
+  let linkCount = 0;
+  for (const child of Array.from(container.childNodes)) {
+    if (child.nodeType === Node.TEXT_NODE) {
+      if (!isClusterConnectorText(child.textContent ?? '')) return false;
+    } else if (child.nodeType === Node.ELEMENT_NODE && (child as Element).tagName === 'A') {
+      const text = (child.textContent ?? '').trim();
+      if (text.length === 0 || text.length > LINK_CLUSTER_MAX_ITEM_CHARS) return false;
+      linkCount++;
+    } else {
+      // Any other element type (a <b>/<em>/<span> wrapping real prose,
+      // an <img>, ...) is conservatively treated as "not a cluster" —
+      // see point 5's header comment for why a false negative here is
+      // cheap (today's existing grouping behavior) but a false positive
+      // isn't.
+      return false;
+    }
+  }
+  return linkCount >= LINK_CLUSTER_MIN_LINKS;
+}
+
+/** The isolation key for a node isolated by point 3, 4, or 5 above — `null` means "not isolated, use normal grouping." Point 3 keys on the node itself (always its own group); points 4 and 5 key on the shared anchor (so sibling nodes under the same tag anchor merge into one group, while different anchors in the same cluster stay isolated from each other). */
 function isolationKeyFor(node: Text): Text | Element | null {
   if (isPureTagText(node.data.trim())) return node;
   const anchor = nearestTagAnchor(node);
-  if (anchor && isPureTagText((anchor.textContent ?? '').trim())) return anchor;
+  if (!anchor) return null;
+  if (isPureTagText((anchor.textContent ?? '').trim())) return anchor;
+  if (anchor.parentElement && isLinkClusterContainer(anchor.parentElement)) return anchor;
   return null;
 }
 

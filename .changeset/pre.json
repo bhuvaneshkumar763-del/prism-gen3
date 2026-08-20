@@ -16,6 +16,7 @@
     "fix-pre-tags-default",
     "fix-source-language-override",
     "graceful-degradation",
+    "link-cluster-isolation",
     "new-icon",
     "popup-full-parity",
     "post-launch-audit-pass",
