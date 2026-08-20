@@ -84,6 +84,7 @@ export default defineContentScript({
       // persisting it into this ambient callback.
       getSourceLanguage: () => 'auto',
       getBatchingHint: () => getBatchingHint(configStore.get('pageTranslatorProvider')),
+      getTranslatePreTags: () => configStore.get('translatePreTags'),
     });
 
     if (window.self === window.top && !SKIP_UI_PROTOCOLS.includes(location.protocol)) {

@@ -435,6 +435,21 @@ function App() {
               onRemove={(lang) => void applyPatch(removeLangFromNeverTranslate(listsSnapshot(), lang))}
             />
           </section>
+
+          <section class="section">
+            <h2>Content handling</h2>
+            <label class="toggleRow">
+              <input
+                type="checkbox"
+                checked={settings.translatePreTags}
+                onChange={(e) => void setField('translatePreTags', e.currentTarget.checked)}
+              />
+              <span>
+                Translate text inside &lt;pre&gt; blocks (off by default to protect code samples — turn this on if a
+                site uses &lt;pre&gt; for plain text instead, and its content isn't being translated)
+              </span>
+            </label>
+          </section>
         </TabPanel>
 
         <TabPanel id="bubble" active={activeTab() === 'bubble'}>

@@ -22,11 +22,35 @@ describe('collectTextNodes', () => {
     expect(nodes.map((n) => n.data)).toEqual(['Visible']);
   });
 
-  it('skips <pre> and <code> so source samples are not reworded into broken code', () => {
+  it('skips <pre> and <code> by default so source samples are not reworded into broken code', () => {
     document.body.innerHTML =
       '<pre>if (user.isAdmin) { grantAccess(); }</pre><p>Intro</p><code>npm install</code><p>Outro</p>';
     const nodes = collectTextNodes(document.body);
     expect(nodes.map((n) => n.data)).toEqual(['Intro', 'Outro']);
+  });
+
+  it('translates inside <pre> when translatePreTags is on, real bug: cool18.com wraps a forum post\'s prose in a bare <pre> purely to preserve line breaks, not to mark code — the old hardcoded "always skip <pre>" silently excluded 60% of that page\'s content with no way to turn it back on', () => {
+    document.body.innerHTML = '<div><pre>Some plain prose, not code.</pre><p>Intro</p></div>';
+    const nodes = collectTextNodes(document.body, { translatePreTags: true });
+    expect(nodes.map((n) => n.data)).toEqual(['Some plain prose, not code.', 'Intro']);
+  });
+
+  it('still skips <code> nested inside a <pre> even when translatePreTags is on — <code> is the real code-sample signal, matching TWP', () => {
+    document.body.innerHTML = '<pre>See <code>npm install</code> below.</pre>';
+    const nodes = collectTextNodes(document.body, { translatePreTags: true });
+    expect(nodes.map((n) => n.data)).toEqual(['See ', ' below.']);
+  });
+
+  it("translates a bare <pre> regardless of translatePreTags when it is the ENTIRE page (viewing a raw text/JSON response), matching TWP's exact exception", () => {
+    document.body.innerHTML = '<pre>{"raw": "response body"}</pre>';
+    const nodes = collectTextNodes(document.body);
+    expect(nodes.map((n) => n.data)).toEqual(['{"raw": "response body"}']);
+  });
+
+  it('does not apply the bare-page exception when <pre> is one of several body children', () => {
+    document.body.innerHTML = '<pre>Not the only child.</pre><p>Other content</p>';
+    const nodes = collectTextNodes(document.body);
+    expect(nodes.map((n) => n.data)).toEqual(['Other content']);
   });
 
   it('honors the standard translate="no" and .notranslate opt-out signals', () => {

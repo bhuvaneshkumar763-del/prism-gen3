@@ -27,11 +27,36 @@
  * separate fix.
  */
 
-// PRE/CODE: source code sent to a translation provider comes back with
-// identifiers reworded, quotes "smartened", and indentation reflowed — the
-// sample renders as broken, uncopyable code. Every mainstream translation
-// tool excludes them.
-const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEXTAREA', 'PRE', 'CODE']);
+// Always skipped: source code sent to a translation provider comes back
+// with identifiers reworded, quotes "smartened", and indentation reflowed
+// — the sample renders as broken, uncopyable code. `<code>` is the
+// standard semantic tag for exactly this, whether standalone or nested
+// inside a `<pre>` block.
+const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEXTAREA', 'CODE']);
+
+/**
+ * `<pre>` is skipped separately from `SKIP_TAGS` (not always, not never) —
+ * real bug, confirmed live against cool18.com: an old-school forum's post
+ * body was a single `<pre>` wrapping 60% of the page's actual content
+ * (10,750 of 17,754 characters), used purely to preserve the author's
+ * original line breaks, not to mark code. `<pre>` alone doesn't mean
+ * "code" the way `<code>` does — plenty of sites use it just for
+ * whitespace-sensitive prose. TWP (confirmed against their live source)
+ * gets this exactly right: `<pre>` skipping is a per-user setting
+ * (`translateTag_pre`, default off) with one automatic exception — if the
+ * *entire* page is nothing but one bare `<pre>` (viewing a raw text/JSON
+ * response, which browsers render this way natively), it's always
+ * translated regardless of the setting, since there's nothing there to be
+ * "code embedded in an article." Matched here as `translatePreTags`
+ * (`src/shared/config/schema.ts`) plus `isWholePageBarePre` below.
+ */
+export function isWholePageBarePre(): boolean {
+  return (
+    typeof document !== 'undefined' &&
+    document.body?.childElementCount === 1 &&
+    document.body.firstElementChild?.tagName === 'PRE'
+  );
+}
 
 /**
  * Bare tag/mention markers with nothing else in the node — real-world tag
@@ -68,10 +93,16 @@ const BARE_MARKER = /^[#@]$/;
  */
 const NO_LETTERS = /^[^\p{L}]*$/u;
 
-export function isNoTranslateNode(node: Node): boolean {
+export interface NoTranslateOptions {
+  /** See `isWholePageBarePre`'s doc comment above — when false (the config default), `<pre>` is treated as a skip tag same as `SKIP_TAGS`. */
+  translatePreTags?: boolean;
+}
+
+export function isNoTranslateNode(node: Node, options: NoTranslateOptions = {}): boolean {
   if (node.nodeType === Node.ELEMENT_NODE) {
     const el = node as Element;
     if (SKIP_TAGS.has(el.tagName)) return true;
+    if (el.tagName === 'PRE' && !options.translatePreTags && !isWholePageBarePre()) return true;
     if ((el as HTMLElement).isContentEditable) return true;
     // The standard, cross-tool opt-out signals a site uses to protect brand
     // names, identifiers, usernames and the like. `translate="no"` is the
@@ -107,7 +138,7 @@ export function isNoTranslateNode(node: Node): boolean {
  * removing this matches that, and removes the whole bug class rather than
  * just this one page's specific shape of it.
  */
-export function collectTextNodes(root: Node): Text[] {
+export function collectTextNodes(root: Node, options: NoTranslateOptions = {}): Text[] {
   const nodes: Text[] = [];
 
   const stack: Node[] = [root];
@@ -117,12 +148,12 @@ export function collectTextNodes(root: Node): Text[] {
     if (node.nodeType === Node.TEXT_NODE) {
       const parent = node.parentNode;
       const text = node.textContent?.trim();
-      if (text && !BARE_MARKER.test(text) && !NO_LETTERS.test(text) && parent && !isNoTranslateNode(parent)) {
+      if (text && !BARE_MARKER.test(text) && !NO_LETTERS.test(text) && parent && !isNoTranslateNode(parent, options)) {
         nodes.push(node as Text);
       }
       continue;
     }
-    if (isNoTranslateNode(node)) continue;
+    if (isNoTranslateNode(node, options)) continue;
     // Push in reverse so the stack pops children in original document
     // order, then push the shadow root last so it's on top of the stack
     // and pops first — matching the original recursive walk's order

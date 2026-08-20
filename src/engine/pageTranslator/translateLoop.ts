@@ -48,6 +48,8 @@ export interface PageTranslatorOptions {
   /** Looked up per translate cycle to decide chunking — see descriptors.ts's `batchingHint`. */
   getBatchingHint(): BatchingHint | undefined;
   getDontSortResults?(): boolean;
+  /** See `collectTextNodes.ts`'s `translatePreTags` doc comment. Omit to keep the default (skip `<pre>`, matching every prior release's behavior). */
+  getTranslatePreTags?(): boolean;
 }
 
 export function createPageTranslator(options: PageTranslatorOptions) {
@@ -364,11 +366,16 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     translationRoutineHandle = setTimeout(translationRoutine, nextDelay);
   }
 
+  /** Read fresh each call, not cached — the options.getTranslatePreTags() source (config) can change live via the settings page. */
+  function noTranslateOptions() {
+    return { translatePreTags: options.getTranslatePreTags?.() ?? false };
+  }
+
   const mutationWatcher = createMutationWatcher({
     isTranslated: () => pageLanguageState === 'translated',
-    isNoTranslateNode,
+    isNoTranslateNode: (node) => isNoTranslateNode(node, noTranslateOptions()),
     onNewRoot(root) {
-      const added = collectTextNodes(root).filter((n) => queueOrRequeueIfChanged(n)).length;
+      const added = collectTextNodes(root, noTranslateOptions()).filter((n) => queueOrRequeueIfChanged(n)).length;
       if (added > 0) wakeRoutine();
     },
     onChangedTextNode(node) {
@@ -393,7 +400,9 @@ export function createPageTranslator(options: PageTranslatorOptions) {
       for (const node of nodesToRestore.keys()) {
         if (!node.isConnected) nodesToRestore.delete(node);
       }
-      const added = collectTextNodes(document.body).filter((n) => queueOrRequeueIfChanged(n)).length;
+      const added = collectTextNodes(document.body, noTranslateOptions()).filter((n) =>
+        queueOrRequeueIfChanged(n),
+      ).length;
       if (added > 0) wakeRoutine();
       return added > 0;
     },
@@ -460,7 +469,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     currentTargetLanguage = targetLanguage;
     cycleGeneration++;
 
-    const nodes = collectTextNodes(document.body);
+    const nodes = collectTextNodes(document.body, noTranslateOptions());
     nodesToRestore = new Map(nodes.map((node) => [node, node.data]));
     dedupe.reset();
     dedupe.track(nodes);
