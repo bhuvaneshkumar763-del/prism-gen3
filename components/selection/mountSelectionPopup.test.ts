@@ -20,6 +20,20 @@ function fakeSelection(text: string): Selection {
   } as unknown as Selection;
 }
 
+/**
+ * `browser.i18n.detectLanguage`'s type is an overloaded
+ * (Promise-returning / callback-returning-void) signature from
+ * webextension-polyfill's types — `vi.spyOn` resolves to the callback
+ * overload's `void` return type in that situation, so `mockResolvedValue`/
+ * `mockRejectedValue` need a cast to accept a real detection result. Same
+ * pattern as `originalLanguageTracker.test.ts`'s `spyOnDetectLanguage`.
+ */
+function spyOnDetectLanguage() {
+  return vi.spyOn(browser.i18n, 'detectLanguage') as unknown as ReturnType<
+    typeof vi.fn<() => Promise<{ isReliable: boolean; languages: Array<{ language: string; percentage: number }> }>>
+  >;
+}
+
 function uppercaseTranslator(): Translator {
   return {
     async translateBatch(request) {
@@ -187,6 +201,92 @@ describe('mountSelectionPopup', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(shadowRoot()?.querySelector('.result')?.textContent).toBe('SECOND');
+    controller.destroy();
+  });
+
+  it('hides the trigger for a selection with nothing translatable in it, by default', () => {
+    vi.spyOn(window, 'getSelection').mockReturnValue(fakeSelection('123'));
+    const controller = mountSelectionPopup({
+      translator: uppercaseTranslator(),
+      getSourceLanguage: () => 'en',
+      getTargetLanguage: () => 'es',
+    });
+
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+
+    expect(shadowRoot()?.querySelector('.trigger')).toBeNull();
+    controller.destroy();
+  });
+
+  it('still shows the trigger for invalid text when getSkipInvalidText explicitly returns false', () => {
+    vi.spyOn(window, 'getSelection').mockReturnValue(fakeSelection('123'));
+    const controller = mountSelectionPopup({
+      translator: uppercaseTranslator(),
+      getSourceLanguage: () => 'en',
+      getTargetLanguage: () => 'es',
+      getSkipInvalidText: () => false,
+    });
+
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+
+    expect(shadowRoot()?.querySelector('.trigger')).not.toBeNull();
+    controller.destroy();
+  });
+
+  it('hides the trigger when getSkipTargetLanguageText is on and the selection is detected as the target language', async () => {
+    vi.spyOn(window, 'getSelection').mockReturnValue(fakeSelection('hola mundo'));
+    spyOnDetectLanguage().mockResolvedValue({
+      isReliable: true,
+      languages: [{ language: 'es', percentage: 95 }],
+    });
+    const controller = mountSelectionPopup({
+      translator: uppercaseTranslator(),
+      getSourceLanguage: () => 'en',
+      getTargetLanguage: () => 'es',
+      getSkipTargetLanguageText: () => true,
+    });
+
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(shadowRoot()?.querySelector('.trigger')).toBeNull();
+    controller.destroy();
+  });
+
+  it('still shows the trigger when getSkipTargetLanguageText is on but the detected language does not match target', async () => {
+    vi.spyOn(window, 'getSelection').mockReturnValue(fakeSelection('hello world'));
+    spyOnDetectLanguage().mockResolvedValue({
+      isReliable: true,
+      languages: [{ language: 'en', percentage: 95 }],
+    });
+    const controller = mountSelectionPopup({
+      translator: uppercaseTranslator(),
+      getSourceLanguage: () => 'en',
+      getTargetLanguage: () => 'es',
+      getSkipTargetLanguageText: () => true,
+    });
+
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(shadowRoot()?.querySelector('.trigger')).not.toBeNull();
+    controller.destroy();
+  });
+
+  it('still shows the trigger when getSkipTargetLanguageText is on but detection fails/returns "und"', async () => {
+    vi.spyOn(window, 'getSelection').mockReturnValue(fakeSelection('hello world'));
+    spyOnDetectLanguage().mockRejectedValue(new Error('boom'));
+    const controller = mountSelectionPopup({
+      translator: uppercaseTranslator(),
+      getSourceLanguage: () => 'en',
+      getTargetLanguage: () => 'es',
+      getSkipTargetLanguageText: () => true,
+    });
+
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(shadowRoot()?.querySelector('.trigger')).not.toBeNull();
     controller.destroy();
   });
 

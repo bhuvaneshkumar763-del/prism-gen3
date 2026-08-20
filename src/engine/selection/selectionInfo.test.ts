@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, expect, it } from 'vitest';
-import { getSelectionInfo } from './selectionInfo';
+import { getSelectionInfo, isValidSelectionText } from './selectionInfo';
 
 function fakeSelection(overrides: Partial<Selection> & { text: string; rect: Partial<DOMRect> }): Selection {
   const base = { width: 10, height: 10, top: 0, left: 0, ...overrides.rect };
@@ -88,5 +88,32 @@ describe('getSelectionInfo', () => {
     const info = getSelectionInfo(selection);
 
     expect(info?.rect).toMatchObject({ left: 10, top: 10, right: 60, bottom: 30 });
+  });
+});
+
+describe('isValidSelectionText', () => {
+  it('rejects a selection shorter than 2 characters, real gap: TWP hides its trigger for these by default, ours previously showed it for any non-empty selection', () => {
+    expect(isValidSelectionText('a')).toBe(false);
+    expect(isValidSelectionText('')).toBe(false);
+  });
+
+  it('rejects a selection with no letters at all (punctuation/digits/whitespace only)', () => {
+    expect(isValidSelectionText('123')).toBe(false);
+    expect(isValidSelectionText('...')).toBe(false);
+    expect(isValidSelectionText('  ')).toBe(false);
+  });
+
+  it('accepts an ordinary word or phrase', () => {
+    expect(isValidSelectionText('hello')).toBe(true);
+    expect(isValidSelectionText('a b')).toBe(true);
+  });
+
+  it("accepts non-Latin scripts, unlike TWP's own ASCII-only punctuation regex would", () => {
+    expect(isValidSelectionText('你好')).toBe(true);
+    expect(isValidSelectionText('こんにちは')).toBe(true);
+  });
+
+  it('accepts text mixing letters with digits/punctuation', () => {
+    expect(isValidSelectionText('Chapter 5')).toBe(true);
   });
 });

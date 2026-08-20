@@ -44,3 +44,22 @@ export function getSelectionInfo(selection: Selection | null): SelectionInfo | n
   } as DOMRect;
   return { text, rect };
 }
+
+/**
+ * True for selections worth offering a translate trigger for — false for a
+ * single stray character or a selection that's only punctuation/digits/
+ * whitespace with nothing translatable in it (an accidental double-click
+ * on a bullet or a lone number). Matches TWP's real, default-on behavior
+ * (confirmed against their live source: `dontShowIfIsNotValidText` is
+ * `"yes"` by default, the only one of their selection-popup visibility
+ * settings that is) — this project's selection popup previously showed
+ * the trigger for any non-empty selection at all, with no equivalent
+ * filter. Reuses the same "has at least one Unicode letter" signal
+ * `collectTextNodes.ts`'s `NO_LETTERS` already established for the
+ * analogous whole-page-translation case, rather than TWP's own
+ * ASCII-only punctuation regex — more correct for non-Latin scripts.
+ */
+const HAS_LETTER = /\p{L}/u;
+export function isValidSelectionText(text: string): boolean {
+  return text.length >= 2 && HAS_LETTER.test(text);
+}

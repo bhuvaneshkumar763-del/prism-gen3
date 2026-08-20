@@ -190,6 +190,8 @@ export default defineContentScript({
             translator: createRemoteTranslator(),
             getSourceLanguage: () => configStore.get('sourceLanguage'),
             getTargetLanguage: () => configStore.get('targetLanguage'),
+            getSkipInvalidText: () => configStore.get('selectionPopupSkipInvalidText'),
+            getSkipTargetLanguageText: () => configStore.get('selectionPopupSkipTargetLanguageText'),
           });
         } else if (!enabled && selectionPopup) {
           selectionPopup.destroy();

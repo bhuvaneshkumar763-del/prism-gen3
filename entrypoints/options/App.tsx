@@ -513,12 +513,27 @@ function App() {
               />
               <span>Show a button to translate selected text</span>
             </label>
+            <label class="toggleRow">
+              <input
+                type="checkbox"
+                checked={settings.selectionPopupSkipInvalidText}
+                onChange={(e) => void setField('selectionPopupSkipInvalidText', e.currentTarget.checked)}
+              />
+              <span>Don't show the button for a single character or a selection with nothing to translate</span>
+            </label>
+            <label class="toggleRow">
+              <input
+                type="checkbox"
+                checked={settings.selectionPopupSkipTargetLanguageText}
+                onChange={(e) => void setField('selectionPopupSkipTargetLanguageText', e.currentTarget.checked)}
+              />
+              <span>Don't show the button when the selected text is already in your target language</span>
+            </label>
 
             <p class="hint">
-              Per-site source-language overrides (set from the bubble's "From" select). Pinning a site tells the
-              translator every request on it is in that language, overriding its own per-request detection — content
-              already in your target language can come back garbled. Only pin a site if automatic detection is genuinely
-              wrong for it.
+              Per-site source-language overrides (set from the bubble's "From" select) force-retranslate the current
+              page from that language right now — a one-off correction for when auto-detection got the whole page wrong,
+              not a standing rule. A fresh page load goes back to automatic detection.
             </p>
             <Show when={sourceLanguageHostEntries().length > 0} fallback={<p class="listEditorEmpty">None</p>}>
               <ul class="siteTable">

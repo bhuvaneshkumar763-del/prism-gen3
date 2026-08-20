@@ -1,12 +1,19 @@
 import { render } from 'solid-js/web';
-import { getSelectionInfo } from '../../src/engine/selection/selectionInfo';
+import { getSelectionInfo, isValidSelectionText } from '../../src/engine/selection/selectionInfo';
 import type { Translator } from '../../src/engine/translator';
 import { translateOne } from '../../src/engine/translator';
+import { baseLanguageTag } from '../../src/shared/languages';
 import { createShadowHost } from '../../src/shared/ui/shadowHost';
+import { withTimeout } from '../../src/shared/withTimeout';
 import { SelectionPopup } from './SelectionPopup';
 import { SELECTION_POPUP_STYLES } from './selectionPopupStyles';
 
 const HOST_ID = 'prism-selection-popup-host';
+
+// Same bound used everywhere else this project calls `i18n.detectLanguage`
+// — real bug, fixed once already (beta.20): Firefox's implementation can
+// simply never resolve or reject (Mozilla bug 1712214).
+const DETECT_LANGUAGE_TIMEOUT_MS = 3000;
 
 export interface SelectionPopupController {
   destroy(): void;
@@ -16,6 +23,21 @@ export interface MountSelectionPopupOptions {
   translator: Translator;
   getSourceLanguage(): string;
   getTargetLanguage(): string;
+  /**
+   * Hide the trigger for a selection with nothing translatable in it (a
+   * lone character, or only punctuation/digits/whitespace). Matches TWP's
+   * `dontShowIfIsNotValidText` — the only one of their selection-popup
+   * visibility settings that defaults on. Omit (or return true) to keep
+   * this filter active.
+   */
+  getSkipInvalidText?(): boolean;
+  /**
+   * Hide the trigger when the selection is already confidently detected as
+   * the target language — matches TWP's `dontShowIfSelectedTextIsTargetLang`.
+   * Default off in TWP too (confirmed against their real source), so
+   * omitting this keeps today's behavior unchanged.
+   */
+  getSkipTargetLanguageText?(): boolean;
 }
 
 /**
@@ -119,16 +141,48 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
     return window.getSelection();
   }
 
+  function hideTrigger(): void {
+    state = { ...state, buttonVisible: false, panelOpen: false };
+    renderNow();
+  }
+
+  /**
+   * Best-effort — `withTimeout`-guarded against the same real Firefox hang
+   * risk as every other `i18n.detectLanguage` call in this codebase, and
+   * never throws: a detection failure just means the target-language skip
+   * check below can't fire, falling through to "show the trigger anyway,"
+   * the same safe default `originalLanguageTracker.ts` uses.
+   */
+  async function detectSelectionLanguage(text: string): Promise<string> {
+    try {
+      if (typeof browser.i18n?.detectLanguage !== 'function') return 'und';
+      const result = await withTimeout(browser.i18n.detectLanguage(text), DETECT_LANGUAGE_TIMEOUT_MS);
+      return result?.languages?.[0]?.language ?? 'und';
+    } catch {
+      return 'und';
+    }
+  }
+
   /** Shared by the mouse and keyboard paths below — the trigger's own show/hide logic doesn't care how the selection changed. */
-  function updateFromCurrentSelection(e: Event): void {
+  async function updateFromCurrentSelection(e: Event): Promise<void> {
     const info = getSelectionInfo(resolveActiveSelection(e));
+    const thisRequestId = ++requestId;
     if (!info) {
-      requestId++;
-      state = { ...state, buttonVisible: false, panelOpen: false };
-      renderNow();
+      hideTrigger();
       return;
     }
-    requestId++;
+    if ((options.getSkipInvalidText?.() ?? true) && !isValidSelectionText(info.text)) {
+      hideTrigger();
+      return;
+    }
+    if (options.getSkipTargetLanguageText?.()) {
+      const detected = await detectSelectionLanguage(info.text);
+      if (thisRequestId !== requestId) return; // superseded by a newer selection — discard
+      if (detected !== 'und' && baseLanguageTag(detected) === baseLanguageTag(options.getTargetLanguage())) {
+        hideTrigger();
+        return;
+      }
+    }
     selectedText = info.text;
     state = {
       buttonVisible: true,
@@ -146,7 +200,7 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
     // Ignore mouseup inside our own shadow host (e.g. releasing a click
     // on the trigger button) so it doesn't immediately re-hide itself.
     if (e.composedPath().includes(host)) return;
-    updateFromCurrentSelection(e);
+    void updateFromCurrentSelection(e);
   }
 
   /**
@@ -160,7 +214,7 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
    */
   function onKeyUp(e: KeyboardEvent): void {
     if (e.composedPath().includes(host)) return;
-    updateFromCurrentSelection(e);
+    void updateFromCurrentSelection(e);
   }
 
   document.addEventListener('mouseup', onMouseUp);

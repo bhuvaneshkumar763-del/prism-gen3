@@ -90,6 +90,27 @@ export const configSchema = z.object({
    * always use it, nested inside `<pre>` or standalone.
    */
   translatePreTags: z.boolean(),
+  /**
+   * Hide the selection-translate trigger for a selection with nothing
+   * translatable in it (a lone character, or only punctuation/digits/
+   * whitespace). Default `true` — matches TWP's real default exactly
+   * (`dontShowIfIsNotValidText: "yes"`, the only one of their equivalent
+   * settings that defaults on — verified directly, not assumed, the same
+   * way the `translatePreTags` default mistake was caught).
+   */
+  selectionPopupSkipInvalidText: z.boolean(),
+  /**
+   * Hide the selection-translate trigger when the selected text is
+   * already confidently detected as the target language — the selection-
+   * popup equivalent of the source-language-override fix earlier this
+   * session (same underlying risk: offering to "translate" text that's
+   * already correct). Default `false` — matches TWP's real default
+   * exactly (`dontShowIfSelectedTextIsTargetLang: "no"`); this is a real
+   * feature TWP offers, not a hidden default-behavior bug like the last
+   * two fixes — confirmed their own default doesn't filter here either,
+   * so this is opt-in, not a silent behavior change.
+   */
+  selectionPopupSkipTargetLanguageText: z.boolean(),
 });
 
 export type Config = z.infer<typeof configSchema>;
@@ -119,4 +140,6 @@ export const defaultConfig: Config = {
   theme: 'auto',
   translationCacheEnabled: true,
   translatePreTags: true,
+  selectionPopupSkipInvalidText: true,
+  selectionPopupSkipTargetLanguageText: false,
 };
