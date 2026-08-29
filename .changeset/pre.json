@@ -33,6 +33,7 @@
     "tag-anchor-isolation",
     "three-bugfixes",
     "use-detected-source-language",
-    "verify-amo-signing"
+    "verify-amo-signing",
+    "verify-amo-signing-again"
   ]
 }
