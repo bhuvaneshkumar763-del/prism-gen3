@@ -1,4 +1,4 @@
-import { err } from '../../shared/result';
+import { err, ok } from '../../shared/result';
 import type { PieceOutcome, TranslateBatchRequest, Translator } from '../translator';
 import { createBatchedHttpProvider } from './batchedHttpProvider';
 import { escapeHTML, unescapeHTML } from './htmlEscape';
@@ -249,10 +249,37 @@ export function createGoogleProvider(): Translator {
       if (!translateAuth) {
         return request.pieces.map(() => err({ kind: 'network', message: '[google] no auth key available' }));
       }
-      return inner.translateBatch({
+      // Same quirk `titleTranslator.ts` works around for the tab title: a
+      // piece with only one string is sent bare (no <a i=N> wrapper, see
+      // transformPiece above) and Google's endpoint doesn't reliably
+      // translate that shape. Most page-translation pieces end up exactly
+      // this size — grouping draws a boundary at every block-ancestor
+      // change, and a lot of real markup (one <li> per nav/filter item, one
+      // <p> per paragraph) puts each piece of text alone in its own block —
+      // so pad every single-string piece with a throwaway second string to
+      // force the reliably-wrapped path, then trim that throwaway back off
+      // the result. Applied here (not inside transformPiece/
+      // splitPieceResponse) so it covers every caller of this provider, not
+      // just one hand-rolled call site.
+      const paddedIndices = new Set<number>();
+      const pieces = request.pieces.map((piece, index) => {
+        if (piece.length === 1) {
+          paddedIndices.add(index);
+          return [...piece, ' '];
+        }
+        return piece;
+      });
+      const outcomes = await inner.translateBatch({
         ...request,
+        pieces,
         sourceLanguage: fixLanguageCode(request.sourceLanguage),
         targetLanguage: fixLanguageCode(request.targetLanguage),
+      });
+      return outcomes.map((outcome, index) => {
+        if (paddedIndices.has(index) && outcome.ok) {
+          return ok(outcome.value.slice(0, 1));
+        }
+        return outcome;
       });
     },
   };
