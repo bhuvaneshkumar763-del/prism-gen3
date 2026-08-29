@@ -71,18 +71,39 @@ export default defineContentScript({
   main() {
     void configStore.onReady();
 
+    // Hoisted above pageTranslator (not a fire-and-forget IIFE-local
+    // variable) so both getSourceLanguage below and the getOriginalLanguage
+    // message handler further down read the same tracker instead of
+    // re-detecting. Only actually started (top-level frames only) further
+    // down — get() stays 'und' until then, which getSourceLanguage below
+    // treats the same as "detection unavailable," not an error.
+    const originalLanguageTracker = createOriginalLanguageTracker();
+
     const pageTranslator = createPageTranslator({
       translator: createRemoteTranslator(),
-      // Always 'auto' — real bug this replaced: this used to resolve
-      // sourceLanguageByHost/sourceLanguage and forced that language onto
-      // EVERY request forever, fighting Google's own per-request
-      // auto-detection and mistranslating content that was already
-      // correct (confirmed against the live endpoint). A manually-picked
-      // source language is still fully supported — see
-      // FloatingBubble.tsx's From picker, which now passes it as an
-      // explicit one-off override straight to translatePage() instead of
-      // persisting it into this ambient callback.
-      getSourceLanguage: () => 'auto',
+      // Prism's own freshly-detected language for THIS page load, not the
+      // literal string 'auto' — real bug found via a live user report
+      // (novel543.com translated only partially, no error shown): Google's
+      // own auto-detection silently no-ops (200 OK, content echoed back
+      // unchanged) for a large, inconsistent fraction of pieces on some
+      // sites, confirmed by testing the identical text directly against
+      // the endpoint with 'auto' vs an explicit source language. Falls
+      // back to 'auto' when detection hasn't resolved or came back 'und'
+      // — no worse than the prior always-'auto' behavior in that case.
+      //
+      // Not a repeat of the beta.22 bug this replaced (a manually-picked
+      // source language forced onto every future request forever, fighting
+      // per-request auto-detection and mistranslating already-correct
+      // content): that was a STALE, PERSISTED, cross-session value.
+      // originalLanguageTracker re-detects fresh from this page's own real
+      // text on every load and is never persisted — the manually-picked
+      // "From" override (FloatingBubble.tsx) still takes precedence when
+      // set, via translateLoop.ts's sourceLanguageOverride, unaffected by
+      // this change.
+      getSourceLanguage: () => {
+        const detected = originalLanguageTracker.get();
+        return detected === 'und' ? 'auto' : detected;
+      },
       getBatchingHint: () => getBatchingHint(configStore.get('pageTranslatorProvider')),
       getTranslatePreTags: () => configStore.get('translatePreTags'),
     });
@@ -209,11 +230,6 @@ export default defineContentScript({
         syncSelectionPopup();
       })();
     }
-
-    // Hoisted to main() scope (not a fire-and-forget IIFE-local variable) so
-    // the getOriginalLanguage message handler below can read the same
-    // tracker the auto-translate decision uses, instead of re-detecting.
-    const originalLanguageTracker = createOriginalLanguageTracker();
 
     if (window.self === window.top) {
       void (async () => {
