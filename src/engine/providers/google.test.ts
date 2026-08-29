@@ -29,11 +29,17 @@ describe('createGoogleProvider', () => {
     vi.unstubAllGlobals();
   });
 
-  it('scrapes the live auth key, then sends a single-item batch WITHOUT <a i=N> wrapping', async () => {
+  it('pads a single-item piece with a throwaway string so it is sent WITH <a i=N> wrapping, then trims the throwaway back off', async () => {
+    // transformPiece only wraps a piece in <a i=N> when it has >1 string,
+    // and Google's endpoint doesn't reliably translate a piece sent bare —
+    // see transformPiece's doc comment. createGoogleProvider's
+    // translateBatch pads any single-string piece with a throwaway ' '
+    // before handing it to the shared HTTP machinery, so it always lands on
+    // the reliably-wrapped path, then trims the throwaway result back off.
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(authScrapeResponse())
-      .mockResolvedValueOnce(jsonResponse([['hola'], ['en']]));
+      .mockResolvedValueOnce(jsonResponse([['<a i=0>hola</a><a i=1> </a>'], ['en']]));
     vi.stubGlobal('fetch', fetchMock);
 
     const provider = await freshCreateGoogleProvider();
@@ -44,7 +50,7 @@ describe('createGoogleProvider', () => {
     if (!translateCall) throw new Error('translate request was not made');
     const [, init] = translateCall as unknown as [string, RequestInit];
     const [payload] = JSON.parse(init.body as string) as [[string[], string, string], string];
-    expect(payload[0]).toEqual(['<pre>hello</pre>']); // no <a i=N> wrapping for a single-item batch
+    expect(payload[0]).toEqual(['<pre><a i=0>hello</a><a i=1> </a></pre>']); // padded to 2 items, so <a i=N> wrapping kicks in
   });
 
   it('wraps a multi-string piece (grouped context) in <a i=N> and reassembles by index', async () => {
@@ -184,15 +190,17 @@ describe('createGoogleProvider', () => {
     expect(results[0]).toEqual({ ok: true, value: ['¿Como estas ', 'hoy'] });
   });
 
-  it('returns the translation for a single-string piece under dontSortResults (no tags in the response)', async () => {
-    // transformPiece only adds <a i=N> markers when a piece has >1 string,
-    // so a single-string piece comes back tag-free. The dontSortResults
-    // branch pushed only on tagged tokens, so it returned [] — a
-    // successful-looking outcome with the translation silently gone.
+  it('returns the translation for a single-string piece under dontSortResults (now always tagged, since it gets padded to 2 items)', async () => {
+    // A single-string piece is padded to 2 items before being sent (see the
+    // padding test above), so the response comes back tagged even under
+    // dontSortResults. The dontSortResults branch pushed only on tagged
+    // tokens, so an untagged response used to return [] here — a
+    // successful-looking outcome with the translation silently gone; that
+    // shape can no longer happen for a piece this provider originated.
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(authScrapeResponse())
-      .mockResolvedValueOnce(jsonResponse([['hola'], ['en']]));
+      .mockResolvedValueOnce(jsonResponse([['<a i=0>hola</a><a i=1> </a>'], ['en']]));
     vi.stubGlobal('fetch', fetchMock);
 
     const provider = await freshCreateGoogleProvider();
