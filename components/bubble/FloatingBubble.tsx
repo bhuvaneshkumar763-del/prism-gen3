@@ -436,7 +436,12 @@ export function FloatingBubble(props: FloatingBubbleProps) {
     props.onTranslate(targetLanguage());
   }
 
-  const translated = () => !props.state.errorMessage && props.state.pageState === 'translated';
+  // Real bug this replaced: `pageState` used to flip to 'translated'
+  // (turning the bubble green) the instant a translate was requested, well
+  // before any actual translation happened — `busy` (now driven by
+  // translateLoop.ts's real `isWorking`/`onWorkingChange` activity signal,
+  // see content.ts) must also have cleared before this counts as done.
+  const translated = () => !props.state.errorMessage && props.state.pageState === 'translated' && !props.state.busy;
   const errored = () => Boolean(props.state.errorMessage);
   const offline = () => errored() && props.state.errorKind === 'offline';
   const headTitle = () => {

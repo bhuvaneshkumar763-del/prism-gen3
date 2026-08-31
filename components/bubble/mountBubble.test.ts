@@ -53,12 +53,20 @@ describe('mountBubble', () => {
   });
 
   it('shows a busy label and disables the primary button while busy', () => {
+    // pageState:'translated' + busy:true is what an active RE-translate
+    // looks like (translatePage() sets state back to 'translated'
+    // synchronously before any real work happens, then real work is what
+    // `busy` now tracks — see translateLoop.ts's isWorking/onWorkingChange
+    // and FloatingBubble.tsx's translated() comment) — restorePage()
+    // itself is synchronous and never actually produces this combination
+    // in real use, so "Translating…" is the correct label here, not
+    // "Restoring…".
     const controller = mountBubble(options());
     controller.update({ pageState: 'translated', busy: true });
 
     const shadow = bubbleShadowRoot();
     const primary = shadow.querySelector('.primary') as HTMLButtonElement;
-    expect(primary.textContent).toBe('Restoring…');
+    expect(primary.textContent).toBe('Translating…');
     expect(primary.disabled).toBe(true);
     controller.unmount();
   });

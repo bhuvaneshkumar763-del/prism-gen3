@@ -147,19 +147,8 @@ export default defineContentScript({
       }
 
       async function handleTranslateClick(targetLanguage: string, sourceLanguage?: string): Promise<void> {
-        bubble?.update({ busy: true });
         await configStore.onReady();
-        try {
-          await pageTranslator.translatePage(targetLanguage, sourceLanguage);
-        } finally {
-          // Only the awaiting caller clears `busy` — deliberately NOT done
-          // from the onStateChange listener below, which fires synchronously
-          // inside translatePage() itself (see translateLoop.ts's setState
-          // call) and would otherwise clear it before this await even
-          // resolves, the same "spinner shows for ~zero frames" bug the
-          // pre-rewrite fork's bubble had.
-          bubble?.update({ busy: false });
-        }
+        await pageTranslator.translatePage(targetLanguage, sourceLanguage);
       }
 
       pageTranslator.onStateChange((state) => {
@@ -170,6 +159,21 @@ export default defineContentScript({
       // consecutive-failure guard) — this is the surface that reflects it.
       pageTranslator.onError((message, kind) => {
         bubble?.update({ errorMessage: message, errorKind: kind });
+      });
+      // Real bug this replaced: `busy` used to be toggled manually around
+      // handleTranslateClick's own await, which resolved in ~zero frames —
+      // translatePage() queues nodes and schedules the routine but never
+      // awaits any real translate work, so the bubble turned green
+      // instantly with nothing actually translated yet, and there was no
+      // indicator during the real (sometimes several-second) work that
+      // followed. `isWorking`/`onWorkingChange` (translateLoop.ts) track
+      // real activity — queued or in-flight work, cleared once the queue
+      // drains or an error surfaces — so this now reflects the bubble's
+      // busy state accurately, and for free also covers the
+      // auto-translate-on-load path below, which never had an indicator
+      // before at all.
+      pageTranslator.onWorkingChange((working) => {
+        bubble?.update({ busy: working });
       });
       configStore.onChanged((name) => {
         if (name === 'bubbleEnabled' || name === 'bubbleByHost') syncBubbleVisibility();
@@ -311,6 +315,7 @@ export default defineContentScript({
         const message = pageTranslator.getLastError();
         return message ? { message, kind: pageTranslator.getLastErrorKind() } : null;
       });
+      onMessage('getPageWorking', () => pageTranslator.isWorking());
     }
   },
 });

@@ -38,6 +38,8 @@ interface ProtocolMap {
   getOriginalLanguage(): string;
   /** Popup → a tab's content script: non-null once the page translator has confirmed translation is actually failing OR the browser is offline (see translateLoop.ts's `getLastError`/`getLastErrorKind`) — closes the gap where a translate click that fails after the popup already resolved shows nothing wrong. `kind` distinguishes "offline, will resume automatically" from "the provider is actually broken." */
   getPageError(): { message: string; kind: ErrorKind } | null;
+  /** Popup → a tab's content script: is there real translate work still queued or in flight (see translateLoop.ts's `isWorking`)? `pageTranslate`'s own response resolves as soon as work is queued, not once it's done — the popup polls this afterward so its busy indicator reflects real activity instead of clearing itself in ~zero frames, same real bug this fixed for the bubble (`entrypoints/content.ts`). */
+  getPageWorking(): boolean;
   /**
    * A tab's MAIN-FRAME content script → background: reports its own
    * auto-translate-on-load decision once resolved, so a same-origin

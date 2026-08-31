@@ -71,6 +71,12 @@ function App() {
   const [showMore, setShowMore] = createSignal(false);
   let tabId: number | null = null;
 
+  // Real bug this replaced: `pageState` flips to 'translated' well before
+  // any real work is done (translatePage() queues nodes and schedules the
+  // routine without awaiting it) — `status() !== 'busy'` (kept accurate by
+  // pollUntilWorkingDone below) must also hold before this counts as done.
+  // Same fix as FloatingBubble.tsx's `translated()`.
+  const translated = createMemo(() => pageState() === 'translated' && status() !== 'busy');
   const alwaysSiteOn = createMemo(() => alwaysSites().includes(hostname()));
   const neverSiteOn = createMemo(() => neverSites().includes(hostname()));
   const alwaysLangOn = createMemo(() => alwaysLangs().includes(originalLanguage()));
@@ -173,6 +179,42 @@ function App() {
     await configStore.set('pageTranslatorProvider', id as never);
   }
 
+  /**
+   * `pageTranslate`'s own response resolves as soon as real work is
+   * QUEUED, not once it's actually done — same real bug fixed for the
+   * on-page bubble (`entrypoints/content.ts`'s `onWorkingChange` wiring):
+   * `translatePage()` never awaits real translate work, so awaiting the
+   * message alone made the popup's busy state clear in ~zero frames, with
+   * `pageState` already reporting 'translated' well before anything on the
+   * page had changed. Poll `getPageWorking` afterward (same shape as
+   * `refreshError`'s existing polling below) until real work actually
+   * finishes, and only then clear `busy` — bounded so a page that's still
+   * genuinely working after a while doesn't leave the button stuck.
+   */
+  async function pollUntilWorkingDone(id: number): Promise<void> {
+    const POLL_INTERVAL_MS = 400;
+    const MAX_POLLS = 50; // ~20s ceiling — generous even for a very large page
+    for (let i = 0; i < MAX_POLLS; i++) {
+      await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+      let working: boolean;
+      try {
+        working = await withTimeout(sendMessage('getPageWorking', undefined, id), CONTENT_SCRIPT_TIMEOUT_MS);
+      } catch {
+        // Tab navigated away or closed since the click — nothing to poll for anymore.
+        return;
+      }
+      if (!working) {
+        setStatus('idle');
+        return;
+      }
+    }
+    // Gave up waiting rather than leaving the button stuck on "busy" forever
+    // — translation itself keeps going in the background either way (see
+    // translateLoop.ts's own retry/backoff), this only affects this popup's
+    // own busy indicator if it's still open that long.
+    setStatus('idle');
+  }
+
   async function onTranslateClick() {
     setStatus('busy');
     setErrorMessage(null);
@@ -186,7 +228,7 @@ function App() {
         CONTENT_SCRIPT_TIMEOUT_MS,
       );
       setPageState(state);
-      setStatus('idle');
+      void pollUntilWorkingDone(id);
       setTimeout(() => void refreshError(), 2000);
       setTimeout(() => void refreshError(), 6000);
     } catch (e) {
@@ -278,15 +320,15 @@ function App() {
     <div class="app">
       <div class="header">
         <h1>Prism</h1>
-        <span class="statusPill" classList={{ on: pageState() === 'translated' }}>
-          {pageState() === 'translated'
+        <span class="statusPill" classList={{ on: translated() }}>
+          {translated()
             ? 'Translated'
             : `Original · ${originalLanguage() === 'und' ? '…' : languageName(originalLanguage())}`}
         </span>
       </div>
 
       <Show
-        when={pageState() === 'translated'}
+        when={translated()}
         fallback={
           <button type="button" class="primaryBtn" disabled={status() === 'busy'} onClick={onTranslateClick}>
             {status() === 'busy' ? 'Translating…' : 'Translate this page'}
@@ -305,7 +347,7 @@ function App() {
               <button
                 type="button"
                 class="pill"
-                classList={{ on: pageState() === 'translated' && code === targetLanguage() }}
+                classList={{ on: translated() && code === targetLanguage() }}
                 onClick={() => void onTargetLanguageChange(code)}
               >
                 {languageName(code)}

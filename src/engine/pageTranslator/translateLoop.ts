@@ -34,7 +34,15 @@ import { prioritizeByViewport } from './viewportPriority';
  * coverage gap, not a correctness one, and a documented later-session item.
  */
 
-const MAX_PIECES_PER_TICK = 100;
+// Post-launch speed pass: raised from 100 — real bug, found via a live user
+// report: this cap forced a large page into many sequential ticks even
+// though provider-side concurrency is capped independently and separately
+// (batchedHttpProvider.ts's DEFAULT_MAX_CONCURRENT), so the real limiting
+// factor was this number, not actual network/provider capacity. Left well
+// under DEFAULT_MAX_CONCURRENT × a request's typical piece count so one
+// tick still fits comfortably inside a handful of concurrent HTTP batches
+// rather than queueing hundreds of them at once.
+const MAX_PIECES_PER_TICK = 300;
 const HAS_LETTER = /\p{L}/u;
 
 export type PageLanguageState = 'original' | 'translated';
@@ -109,6 +117,47 @@ export function createPageTranslator(options: PageTranslatorOptions) {
 
   const stateListeners = new Set<(state: PageLanguageState) => void>();
   const errorListeners = new Set<(message: string | null, kind: ErrorKind) => void>();
+  const workingListeners = new Set<(working: boolean) => void>();
+
+  /**
+   * Real bug, found via a live user report: `setState('translated')` in
+   * `translatePage()` below fires synchronously before any translate
+   * request has even been sent — the UI's busy/spinner round trip
+   * (`entrypoints/content.ts`'s old `busy: true` → `await` → `busy: false`)
+   * completed in ~zero frames since `translatePage()` never actually awaits
+   * real work, just queues nodes and schedules the routine. The bubble
+   * turned green instantly with nothing translated yet, and no visible
+   * progress indicator during the (sometimes several-second) real work.
+   * `working` is a separate signal from `pageLanguageState` on purpose —
+   * that type crosses the messaging protocol and gates several other real
+   * behaviors (mutationWatcher, restorePage's guard); repurposing it as
+   * "done" would be a much bigger, regression-prone change for what's
+   * fundamentally a UI-feedback gap.
+   */
+  let working = false;
+  let batchInFlight = false;
+
+  function setWorking(next: boolean): void {
+    if (next === working) return;
+    working = next;
+    workingListeners.forEach((cb) => {
+      cb(next);
+    });
+  }
+
+  /**
+   * There's real work outstanding (queued or a batch actively in flight)
+   * AND nothing has given up and surfaced an error yet — once an error
+   * surfaces, requeued nodes keep retrying in the background forever (see
+   * this file's error-surfacing comments), and without the `lastErrorMessage`
+   * check here a spinner would run forever alongside the red error panel
+   * instead of yielding to it (`FloatingBubble.tsx`'s `errored()` already
+   * outranks `translated()` — this just stops `busy` from also staying
+   * true once red has taken over).
+   */
+  function recomputeWorking(): void {
+    setWorking((queue.length > 0 || batchInFlight) && lastErrorMessage === null);
+  }
 
   // Silent-failure guard: a translateBatch() call that throws (network
   // error, or every retry inside batchedHttpProvider.ts exhausted — e.g. a
@@ -141,6 +190,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     errorListeners.forEach((cb) => {
       cb(message, kind);
     });
+    recomputeWorking();
   }
 
   function wakeRoutine(delayMs = 0): void {
@@ -160,6 +210,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     // covers everything found afterwards.
     nodesToRestore.set(node, node.data);
     viewportDirty = true;
+    recomputeWorking();
     return true;
   }
 
@@ -177,6 +228,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     nodesToRestore.set(node, node.data);
     viewportDirty = true;
     queue.push(node);
+    recomputeWorking();
     wakeRoutine();
   }
 
@@ -251,6 +303,8 @@ export function createPageTranslator(options: PageTranslatorOptions) {
       const batch = queue.splice(0, MAX_PIECES_PER_TICK);
       const groups = groupNodesForBatching(batch, options.getBatchingHint());
       const requestedUnderGeneration = cycleGeneration;
+      batchInFlight = true;
+      recomputeWorking();
       try {
         const outcomes = await options.translator.translateBatch({
           sourceLanguage: sourceLanguageOverride ?? options.getSourceLanguage(),
@@ -285,7 +339,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
           if (consecutiveBatchFailures >= CONSECUTIVE_FAILURES_BEFORE_SURFACING) {
             const firstFailure = outcomes.find((o) => !o?.ok);
             const message = firstFailure && !firstFailure.ok ? firstFailure.error.message : 'translation failed';
-            setError(message);
+            setError(toUserFacingErrorMessage(message));
             surfacedErrorStreak++;
           }
           // Requeue the whole batch directly, bypassing noteMissingResult()'s
@@ -344,9 +398,12 @@ export function createPageTranslator(options: PageTranslatorOptions) {
         queue.unshift(...batch.filter((n) => n.isConnected));
         consecutiveBatchFailures++;
         if (consecutiveBatchFailures >= CONSECUTIVE_FAILURES_BEFORE_SURFACING) {
-          setError(e instanceof Error ? e.message : String(e));
+          setError(toUserFacingErrorMessage(e instanceof Error ? e.message : String(e)));
           surfacedErrorStreak++;
         }
+      } finally {
+        batchInFlight = false;
+        recomputeWorking();
       }
     }
 
@@ -360,10 +417,46 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     let nextDelay: number;
     if (lastErrorMessage !== null) {
       nextDelay = Math.min(30000, 8000 * 1.5 ** (surfacedErrorStreak - 1));
+    } else if (consecutiveBatchFailures > 0) {
+      // Real bug, found via a live user report: pre-surfacing failures used
+      // to retry at the same fixed pace as ordinary successful draining
+      // (previously 150ms), so CONSECUTIVE_FAILURES_BEFORE_SURFACING could
+      // be reached in well under a second on a flaky connection — 3 rapid
+      // retries of the *same* stuck batch, not 3 independent signals — and
+      // surface "Translation failed" even though the rest of a long page
+      // had already translated successfully. Space these out so a short
+      // blip has a real chance to clear before it counts against the
+      // threshold; a genuinely broken provider still reaches it and
+      // surfaces, just a couple seconds later than before.
+      nextDelay = Math.min(4000, 1000 * 2 ** (consecutiveBatchFailures - 1));
     } else {
-      nextDelay = queue.length > 0 ? 150 : 2000;
+      // Post-launch speed pass: removed the unconditional 150ms pause
+      // between batches while real work remains queued — real bug, found
+      // via a live user report: on a large page this added seconds of pure
+      // idle time for no benefit (provider-side concurrency is already
+      // capped independently — see batchedHttpProvider.ts's
+      // DEFAULT_MAX_CONCURRENT). setTimeout(..., 0) still yields to the
+      // event loop between batches rather than looping synchronously.
+      nextDelay = queue.length > 0 ? 0 : 2000;
     }
     translationRoutineHandle = setTimeout(translationRoutine, nextDelay);
+  }
+
+  /**
+   * The raw per-piece error (`batchedHttpProvider.ts`'s own internal
+   * `[provider-name] no result for this piece`, or a bare exception
+   * message) is accurate but not something a user should have to parse —
+   * real bug, found via a live user report showing that exact string in
+   * the bubble's red panel. Recognized shapes get a plain-language
+   * message; anything unrecognized passes through unchanged rather than
+   * being silently hidden, since a novel message is still real diagnostic
+   * signal worth showing.
+   */
+  function toUserFacingErrorMessage(raw: string): string {
+    if (/no result for this piece/i.test(raw)) {
+      return "Couldn't reach the translation service — retrying automatically.";
+    }
+    return raw;
   }
 
   /** Read fresh each call, not cached — the options.getTranslatePreTags() source (config) can change live via the settings page. */
@@ -483,7 +576,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     viewportDirty = true;
 
     consecutiveBatchFailures = 0;
-    setError(null);
+    setError(null); // also recomputes `working` — queue is already populated above.
     setState('translated');
     mutationWatcher.enable(500, () => resweep.bump());
     resweep.start();
@@ -534,6 +627,12 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     onError(cb: (message: string | null, kind: ErrorKind) => void): () => void {
       errorListeners.add(cb);
       return () => errorListeners.delete(cb);
+    },
+    /** True while there's real translate work queued or in flight and nothing has given up and surfaced an error — see this file's `working`/`recomputeWorking` header comment. */
+    isWorking: (): boolean => working,
+    onWorkingChange(cb: (working: boolean) => void): () => void {
+      workingListeners.add(cb);
+      return () => workingListeners.delete(cb);
     },
   };
 }

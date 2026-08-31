@@ -73,9 +73,12 @@ describe('FloatingBubble', () => {
   });
 
   it('disables the primary button and shows a busy label while busy', () => {
+    // pageState:'translated' + busy:true is what an active RE-translate
+    // looks like, not a restore in progress — see mountBubble.test.ts's
+    // matching test for the full explanation.
     const { el } = mount({ state: { pageState: 'translated', busy: true, errorMessage: null, errorKind: null } });
     const primary = el.querySelector('.primary') as HTMLButtonElement;
-    expect(primary.textContent).toBe('Restoring…');
+    expect(primary.textContent).toBe('Translating…');
     expect(primary.disabled).toBe(true);
   });
 

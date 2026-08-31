@@ -486,16 +486,26 @@ describe('createPageTranslator', () => {
     });
     pageTranslator.onError(errorSpy);
 
-    await pageTranslator.translatePage('es');
-    await waitFor(() => pageTranslator.getLastError() !== null);
+    vi.useFakeTimers();
+    try {
+      void pageTranslator.translatePage('es');
+      // Real spacing now sits between pre-surfacing retries (see
+      // translateLoop.ts's nextDelay comment) — fake timers keep this fast
+      // without waiting on real wall-clock time.
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(2000);
 
-    expect(pageTranslator.getLastError()).toBe('HTTP 429');
-    expect(errorSpy).toHaveBeenCalledWith('HTTP 429', 'provider');
-    // The page must stay untranslated — no false success.
-    expect(document.body.textContent).toBe('hello');
+      expect(pageTranslator.getLastError()).toBe('HTTP 429');
+      expect(errorSpy).toHaveBeenCalledWith('HTTP 429', 'provider');
+      // The page must stay untranslated — no false success.
+      expect(document.body.textContent).toBe('hello');
 
-    pageTranslator.restorePage();
-    expect(pageTranslator.getLastError()).toBeNull();
+      pageTranslator.restorePage();
+      expect(pageTranslator.getLastError()).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // The actual real-world shape of this bug, found via manual verification
@@ -520,15 +530,22 @@ describe('createPageTranslator', () => {
     });
     pageTranslator.onError(errorSpy);
 
-    await pageTranslator.translatePage('es');
-    await waitFor(() => pageTranslator.getLastError() !== null);
+    vi.useFakeTimers();
+    try {
+      void pageTranslator.translatePage('es');
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(2000);
 
-    expect(pageTranslator.getLastError()).toBe('HTTP 429');
-    expect(errorSpy).toHaveBeenCalledWith('HTTP 429', 'provider');
-    expect(document.body.textContent).toBe('hello');
+      expect(pageTranslator.getLastError()).toBe('HTTP 429');
+      expect(errorSpy).toHaveBeenCalledWith('HTTP 429', 'provider');
+      expect(document.body.textContent).toBe('hello');
 
-    pageTranslator.restorePage();
-    expect(pageTranslator.getLastError()).toBeNull();
+      pageTranslator.restorePage();
+      expect(pageTranslator.getLastError()).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('surfaces a real error even when the thrown value is not an Error instance', async () => {
@@ -545,11 +562,18 @@ describe('createPageTranslator', () => {
       getBatchingHint: () => undefined,
     });
 
-    await pageTranslator.translatePage('es');
-    await waitFor(() => pageTranslator.getLastError() !== null);
+    vi.useFakeTimers();
+    try {
+      void pageTranslator.translatePage('es');
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(2000);
 
-    expect(pageTranslator.getLastError()).toBe('connection reset');
-    pageTranslator.restorePage();
+      expect(pageTranslator.getLastError()).toBe('connection reset');
+      pageTranslator.restorePage();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('falls back to a generic message if a batch resolves with no outcomes at all for its pieces', async () => {
@@ -570,11 +594,18 @@ describe('createPageTranslator', () => {
       getBatchingHint: () => undefined,
     });
 
-    await pageTranslator.translatePage('es');
-    await waitFor(() => pageTranslator.getLastError() !== null);
+    vi.useFakeTimers();
+    try {
+      void pageTranslator.translatePage('es');
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(2000);
 
-    expect(pageTranslator.getLastError()).toBe('translation failed');
-    pageTranslator.restorePage();
+      expect(pageTranslator.getLastError()).toBe('translation failed');
+      pageTranslator.restorePage();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('skips applying a translation result to a node that was removed from the DOM before the response arrived', async () => {
@@ -613,10 +644,12 @@ describe('createPageTranslator', () => {
     vi.useFakeTimers();
     try {
       void pageTranslator.translatePage('es');
-      // 3 failing ticks at the fast 150ms interval to first surface the error.
+      // 3 failing ticks at the pre-surfacing spacing (0ms, then 1000ms, then
+      // 2000ms — see translateLoop.ts's nextDelay comment) to first surface
+      // the error.
       await vi.advanceTimersByTimeAsync(0);
-      await vi.advanceTimersByTimeAsync(150);
-      await vi.advanceTimersByTimeAsync(150);
+      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(2000);
       expect(pageTranslator.getLastError()).not.toBeNull();
 
       // Let the surfaced-error streak climb well past its first value —
@@ -629,8 +662,8 @@ describe('createPageTranslator', () => {
 
       void pageTranslator.translatePage('es'); // a brand-new attempt
       await vi.advanceTimersByTimeAsync(0);
-      await vi.advanceTimersByTimeAsync(150);
-      await vi.advanceTimersByTimeAsync(150); // 3rd failing tick — surfaces again here
+      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(2000); // 3rd failing tick — surfaces again here
       const callsAtSurfacing = translateBatchSpy.mock.calls.length;
 
       // Advance well past the fixed 8000ms first-surfacing delay but well
@@ -737,13 +770,170 @@ describe('createPageTranslator', () => {
         getBatchingHint: () => undefined,
       });
 
-      await pageTranslator.translatePage('es');
-      await waitFor(() => pageTranslator.getLastError() !== null);
+      vi.useFakeTimers();
+      try {
+        void pageTranslator.translatePage('es');
+        await vi.advanceTimersByTimeAsync(0);
+        await vi.advanceTimersByTimeAsync(1000);
+        await vi.advanceTimersByTimeAsync(2000);
 
-      expect(pageTranslator.getLastErrorKind()).toBe('provider');
+        expect(pageTranslator.getLastErrorKind()).toBe('provider');
+
+        pageTranslator.restorePage();
+      } finally {
+        vi.useRealTimers();
+      }
+      isOnlineSpy.mockRestore();
+    });
+  });
+
+  it('shows a plain-language message instead of the raw internal "no result for this piece" string', async () => {
+    // Real bug, found via a live user report: the bubble's red panel showed
+    // the raw internal string batchedHttpProvider.ts uses for this failure
+    // mode verbatim — accurate, but not something a user should have to
+    // parse.
+    document.body.innerHTML = '<p>hello</p>';
+    const alwaysFailingTranslator: Translator = {
+      async translateBatch() {
+        throw new Error('[google] no result for this piece');
+      },
+    };
+    const pageTranslator = createPageTranslator({
+      translator: alwaysFailingTranslator,
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+
+    vi.useFakeTimers();
+    try {
+      void pageTranslator.translatePage('es');
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(2000);
+
+      expect(pageTranslator.getLastError()).toBe("Couldn't reach the translation service — retrying automatically.");
+      pageTranslator.restorePage();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  describe('isWorking/onWorkingChange', () => {
+    // Real bug this replaced: `pageState` flips to 'translated' before any
+    // real translate work has happened, so a caller awaiting only
+    // translatePage() (e.g. the old bubble/popup busy toggle) saw "done"
+    // in ~zero frames with nothing actually translated yet. isWorking()
+    // tracks real activity — queued or in-flight work — separately.
+    it('is true while the queue drains and false once it empties', async () => {
+      let resolveBatch!: () => void;
+      const controlledTranslator: Translator = {
+        async translateBatch(request) {
+          await new Promise<void>((resolve) => {
+            resolveBatch = resolve;
+          });
+          return request.pieces.map((piece): PieceOutcome => ok(piece.map((s) => s.toUpperCase())));
+        },
+      };
+      document.body.innerHTML = '<p>hello</p>';
+      const pageTranslator = createPageTranslator({
+        translator: controlledTranslator,
+        getSourceLanguage: () => 'en',
+        getBatchingHint: () => undefined,
+      });
+      const workingValues: boolean[] = [];
+      pageTranslator.onWorkingChange((w) => workingValues.push(w));
+
+      expect(pageTranslator.isWorking()).toBe(false);
+
+      const translatePromise = pageTranslator.translatePage('es');
+      await translatePromise;
+      // translatePage() itself never awaits real work — real work is
+      // exactly what isWorking() is meant to still report as pending here.
+      await waitFor(() => pageTranslator.isWorking());
+      expect(pageTranslator.isWorking()).toBe(true);
+      expect(pageTranslator.getState()).toBe('translated'); // reported early, same as before — isWorking() is the new, accurate signal
+
+      resolveBatch();
+      await waitFor(() => document.body.textContent === 'HELLO');
+      await waitFor(() => !pageTranslator.isWorking());
+      expect(pageTranslator.isWorking()).toBe(false);
+      expect(workingValues).toContain(true);
+      expect(workingValues[workingValues.length - 1]).toBe(false);
 
       pageTranslator.restorePage();
-      isOnlineSpy.mockRestore();
+    });
+
+    it('goes false once an error is surfaced, even though failed nodes keep retrying in the background (no perpetual spinner)', async () => {
+      document.body.innerHTML = '<p>hello</p>';
+      const alwaysFailingTranslator: Translator = {
+        async translateBatch() {
+          throw new Error('HTTP 429');
+        },
+      };
+      const pageTranslator = createPageTranslator({
+        translator: alwaysFailingTranslator,
+        getSourceLanguage: () => 'en',
+        getBatchingHint: () => undefined,
+      });
+
+      vi.useFakeTimers();
+      try {
+        void pageTranslator.translatePage('es');
+        await vi.advanceTimersByTimeAsync(0);
+        expect(pageTranslator.isWorking()).toBe(true); // first (unsurfaced) failure — still retrying quietly
+
+        await vi.advanceTimersByTimeAsync(1000);
+        await vi.advanceTimersByTimeAsync(2000); // 3rd failing tick — surfaces
+        expect(pageTranslator.getLastError()).not.toBeNull();
+        expect(pageTranslator.isWorking()).toBe(false);
+
+        pageTranslator.restorePage();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('a transient blip that clears within ~1.5s never surfaces an error, because pre-surfacing retries are now genuinely spaced out', async () => {
+      // Fails based on ELAPSED TIME, not attempt count — this is what
+      // actually distinguishes the fix: the old fixed 150ms retry pace
+      // could reach 3 failures (surfacing) in ~300ms, well before a blip
+      // like this had cleared, even though a slightly later retry would
+      // have succeeded. Real spacing (0, 1000, 2000ms — see
+      // translateLoop.ts's nextDelay comment) gives this blip a real
+      // chance to clear before the 3rd, surfacing attempt.
+      document.body.innerHTML = '<p>hello</p>';
+      const flakyTranslator: Translator = {
+        async translateBatch(request) {
+          if (Date.now() < blipClearsAt) throw new Error('network blip');
+          return request.pieces.map((piece): PieceOutcome => ok(piece.map((s) => s.toUpperCase())));
+        },
+      };
+      const errorSpy = vi.fn();
+      const pageTranslator = createPageTranslator({
+        translator: flakyTranslator,
+        getSourceLanguage: () => 'en',
+        getBatchingHint: () => undefined,
+      });
+      pageTranslator.onError(errorSpy);
+
+      vi.useFakeTimers();
+      // Fake timers start at the real current time, not 0 — anchor the
+      // blip's clear time relative to that, not an absolute timestamp.
+      const blipClearsAt = Date.now() + 1500;
+      try {
+        void pageTranslator.translatePage('es');
+        await vi.advanceTimersByTimeAsync(0); // attempt 1 (t=0): fails, still within the blip
+        await vi.advanceTimersByTimeAsync(1000); // attempt 2 (t=1000): fails, still within the blip
+        await vi.advanceTimersByTimeAsync(2000); // attempt 3 (t=3000): blip has cleared — succeeds
+
+        expect(pageTranslator.getLastError()).toBeNull();
+        expect(errorSpy).not.toHaveBeenCalled();
+        expect(document.body.textContent).toBe('HELLO');
+
+        pageTranslator.restorePage();
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 });
@@ -769,10 +959,14 @@ describe('viewport-priority reordering — dirty-flag gating', () => {
   }
 
   it('does not re-measure node positions on a later tick when nothing changed since the last reorder', async () => {
-    // 250 paragraphs: tick 1 (queue=250, >100) reorders and translates the
-    // first 100, leaving 150 (still >100 — eligible again on tick 2, but
-    // nothing changed since tick 1's reorder).
-    for (let i = 0; i < 250; i++) {
+    // 700 paragraphs: tick 1 (queue=700, >MAX_PIECES_PER_TICK) reorders and
+    // translates the first batch, leaving a remainder still eligible on
+    // tick 2 by queue size alone — but nothing changed since tick 1's
+    // reorder, so tick 2 must not re-measure. Fake timers (not a real
+    // wall-clock wait) give deterministic control over exactly how many
+    // ticks run, since draining ticks no longer have a fixed inter-batch
+    // delay (see translateLoop.ts's nextDelay comment).
+    for (let i = 0; i < 700; i++) {
       const p = document.createElement('p');
       p.textContent = `hello ${i}`;
       document.body.appendChild(p);
@@ -786,29 +980,39 @@ describe('viewport-priority reordering — dirty-flag gating', () => {
       getBatchingHint: () => undefined,
     });
 
-    await pageTranslator.translatePage('es');
-    await waitFor(() => rectSpy.mock.calls.length > 0); // tick 1's reorder measured something
-    const callsAfterTick1 = rectSpy.mock.calls.length;
+    vi.useFakeTimers();
+    try {
+      void pageTranslator.translatePage('es');
+      await vi.advanceTimersByTimeAsync(0); // tick 1: reorders (measures the whole queue) and translates the first batch
+      const callsAfterTick1 = rectSpy.mock.calls.length;
+      expect(callsAfterTick1).toBeGreaterThan(0);
 
-    // Let tick 2 run (150ms cadence while queue.length > 0).
-    await waitFor(
-      () => document.querySelectorAll('p').length === 250 && document.body.textContent?.includes('HELLO 150'),
-      3000,
-    );
+      await vi.advanceTimersByTimeAsync(0); // tick 2: still eligible by queue size, but not dirty
 
-    // No NEW measurement calls — tick 2 was eligible by queue size alone,
-    // but the dirty flag (cleared after tick 1) correctly skipped it.
-    expect(rectSpy.mock.calls.length).toBe(callsAfterTick1);
+      // No NEW measurement calls — tick 2 was eligible by queue size alone,
+      // but the dirty flag (cleared after tick 1) correctly skipped it.
+      expect(rectSpy.mock.calls.length).toBe(callsAfterTick1);
 
-    pageTranslator.restorePage();
+      pageTranslator.restorePage();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('re-measures after a scroll invalidates the previous ordering', async () => {
-    // A large node count keeps `queue.length > MAX_PIECES_PER_TICK` true for
-    // many ticks (~150ms cadence) — comfortably longer than resweep's 400ms
-    // scroll debounce, so there's a real reorder-eligible tick for the
-    // dirty flag to actually take effect on after the scroll.
-    for (let i = 0; i < 1000; i++) {
+    // Real wall-clock time (multiple ~150ms batches) comfortably exceeds
+    // vitest's default 5000ms test timeout — bumped below.
+    // 1500 nodes at MAX_PIECES_PER_TICK=300 needs 5 batches to drain. Each
+    // mock batch has a real, deliberately generous delay so the drain
+    // naturally spans real wall-clock time well past resweep's 400ms
+    // scroll debounce, instead of finishing near-instantly now that ticks
+    // no longer have a fixed inter-batch pause (see translateLoop.ts's
+    // nextDelay comment) — real timers throttled by a realistic per-batch
+    // cost, not a race against fake-timer cascading semantics. Scroll is
+    // dispatched immediately after the first reorder (not after an
+    // additional wait) so the debounce's 400ms target lands mid-drain with
+    // comfortable margin, rather than right at the finish line.
+    for (let i = 0; i < 1500; i++) {
       const p = document.createElement('p');
       p.textContent = `hello ${i}`;
       document.body.appendChild(p);
@@ -816,27 +1020,29 @@ describe('viewport-priority reordering — dirty-flag gating', () => {
     stubAllRectsVisible();
     const rectSpy = vi.spyOn(Element.prototype, 'getBoundingClientRect');
 
+    const slowTranslator: Translator = {
+      async translateBatch(request) {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        return request.pieces.map((piece): PieceOutcome => ok(piece.map((s) => s.toUpperCase())));
+      },
+    };
     const pageTranslator = createPageTranslator({
-      translator: uppercaseTranslator(),
+      translator: slowTranslator,
       getSourceLanguage: () => 'en',
       getBatchingHint: () => undefined,
     });
 
     await pageTranslator.translatePage('es');
-    await waitFor(() => rectSpy.mock.calls.length > 0);
+    await waitFor(() => rectSpy.mock.calls.length > 0, 3000); // tick 1's reorder measured something
     const callsAfterTick1 = rectSpy.mock.calls.length;
 
-    // Let at least one "eligible but not dirty" tick pass and confirm it's
-    // correctly skipped, same as the previous test.
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    expect(rectSpy.mock.calls.length).toBe(callsAfterTick1);
-
     // Scroll — resweep.ts's own debounced listener (400ms) marks the
-    // ordering dirty again via onViewportChanged.
+    // ordering dirty again via onViewportChanged, landing mid-drain (see
+    // the timing comment above) so there's a real eligible tick left for
+    // the dirty flag to take effect on.
     window.dispatchEvent(new Event('scroll'));
-
-    await waitFor(() => rectSpy.mock.calls.length > callsAfterTick1, 3000);
+    await waitFor(() => rectSpy.mock.calls.length > callsAfterTick1, 5000);
 
     pageTranslator.restorePage();
-  });
+  }, 10000);
 });
