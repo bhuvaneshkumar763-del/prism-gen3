@@ -75,3 +75,30 @@ export interface FrameLanguageDecision {
 }
 
 export const { sendMessage, onMessage } = defineExtensionMessaging<ProtocolMap>();
+
+/**
+ * Real gap, found via a security audit: `@webext-core/messaging`'s
+ * `onMessage` does no sender validation of its own — checked its actual
+ * implementation directly, not assumed. A message that matches one of this
+ * extension's own message shapes, sent by ANY other installed extension
+ * (via `chrome.runtime.sendMessage(thisExtensionId, ...)` to the
+ * background, or `chrome.tabs.sendMessage(tabId, ...)` straight to a
+ * content script), would be processed exactly like one from this
+ * extension's own content script/popup/background. Concrete risk: another
+ * extension could trigger a translate/restore on the user's active tab, or
+ * relay arbitrary text through `translatePieces` to spend the user's own
+ * configured provider quota (including a paid Google Cloud Translate key),
+ * with nothing telling the user it wasn't this extension's own UI that
+ * asked.
+ *
+ * `sender.id` is always this extension's own `browser.runtime.id` for a
+ * message this extension's own code sends — `chrome.runtime.sendMessage`
+ * with no explicit target extension ID implicitly targets the calling
+ * extension itself, and `chrome.tabs.sendMessage` still stamps the
+ * sender's own extension ID regardless of which tab it targets — so this
+ * never rejects a real, legitimate caller. Used by every `onMessage`
+ * handler in both `entrypoints/background.ts` and `entrypoints/content.ts`.
+ */
+export function isTrustedSender(sender: Browser.runtime.MessageSender): boolean {
+  return sender.id === browser.runtime.id;
+}

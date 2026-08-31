@@ -5,7 +5,7 @@ import { shouldAutoTranslateOnLoad } from '../src/engine/pageTranslator/autoTran
 import { createPageTranslator } from '../src/engine/pageTranslator/translateLoop';
 import { getBatchingHint } from '../src/engine/providers/descriptors';
 import { configStore } from '../src/platform/configStore';
-import { onMessage, sendMessage } from '../src/platform/messaging/protocol';
+import { isTrustedSender, onMessage, sendMessage } from '../src/platform/messaging/protocol';
 import { createOriginalLanguageTracker } from '../src/platform/originalLanguageTracker';
 import { createRemoteTranslator } from '../src/platform/remoteTranslator';
 import { resolveBubbleVisibility } from '../src/shared/config/siteOverrides';
@@ -301,21 +301,33 @@ export default defineContentScript({
 
     if (window.self === window.top) {
       onMessage('pageTranslate', async (message) => {
+        if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');
         await configStore.onReady();
         await pageTranslator.translatePage(message.data.targetLanguage);
         return pageTranslator.getState();
       });
-      onMessage('pageRestore', () => {
+      onMessage('pageRestore', (message) => {
+        if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');
         pageTranslator.restorePage();
         return pageTranslator.getState();
       });
-      onMessage('getPageState', () => pageTranslator.getState());
-      onMessage('getOriginalLanguage', () => originalLanguageTracker.get());
-      onMessage('getPageError', () => {
-        const message = pageTranslator.getLastError();
-        return message ? { message, kind: pageTranslator.getLastErrorKind() } : null;
+      onMessage('getPageState', (message) => {
+        if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');
+        return pageTranslator.getState();
       });
-      onMessage('getPageWorking', () => pageTranslator.isWorking());
+      onMessage('getOriginalLanguage', (message) => {
+        if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');
+        return originalLanguageTracker.get();
+      });
+      onMessage('getPageError', (message) => {
+        if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');
+        const lastError = pageTranslator.getLastError();
+        return lastError ? { message: lastError, kind: pageTranslator.getLastErrorKind() } : null;
+      });
+      onMessage('getPageWorking', (message) => {
+        if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');
+        return pageTranslator.isWorking();
+      });
     }
   },
 });

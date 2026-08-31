@@ -277,7 +277,27 @@ export function createGoogleProvider(): Translator {
       });
       return outcomes.map((outcome, index) => {
         if (paddedIndices.has(index) && outcome.ok) {
-          return ok(outcome.value.slice(0, 1));
+          // Real bug, found via a security/accuracy audit and confirmed
+          // directly against the live endpoint: this file's own header
+          // comment already documents that Google can reflow translated
+          // content across piece/tag boundaries — that's not limited to
+          // *genuine* multi-string pieces, it happens to the throwaway
+          // padding above too. Confirmed case: "Apple iPhone 15 Pro Max"
+          // (source forced to a different language, as a real mixed-
+          // language page would have) came back with "Max" reflowed into
+          // the padding's own index — `.slice(0, 1)` silently dropped it.
+          // splitPieceResponse's own orphan-text-folds-into-the-preceding-
+          // tag rule already leaves natural spacing intact between the two
+          // slots (confirmed: value[0] came back "Apple iPhone 15 Pro "
+          // with the trailing space already folded in), so joining every
+          // element back together reconstructs the correct full string —
+          // including the untranslated-but-invisible padding filler in
+          // the ordinary case where nothing reflowed, which is harmless.
+          // `trimEnd()` only ever strips trailing WHITESPACE — never real
+          // reflowed word content like "Max" above — so it safely cleans
+          // up the common case (the padding echoed back as a bare
+          // untranslated space) without reopening the bug this fixes.
+          return ok([outcome.value.join('').trimEnd()]);
         }
         return outcome;
       });

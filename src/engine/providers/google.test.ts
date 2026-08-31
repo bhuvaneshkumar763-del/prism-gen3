@@ -53,6 +53,31 @@ describe('createGoogleProvider', () => {
     expect(payload[0]).toEqual(['<pre><a i=0>hello</a><a i=1> </a></pre>']); // padded to 2 items, so <a i=N> wrapping kicks in
   });
 
+  it('reconstructs the full translation when Google reflows content into the padding slot, instead of silently dropping it (real bug, confirmed against the live endpoint)', async () => {
+    // Real, confirmed behavior: Google can reflow translated content across
+    // piece/tag boundaries (this file's own header comment documents it for
+    // genuine multi-string pieces) — it also happens to the throwaway
+    // padding above. Live repro: "Apple iPhone 15 Pro Max" (source forced
+    // to a different language, as a real mixed-language page would have)
+    // came back with "Max" split into the padding's own <a i=1> slot, with
+    // an untagged orphan space folded into index 0 by splitPieceResponse's
+    // own existing rule — exactly reproduced here.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(authScrapeResponse())
+      .mockResolvedValueOnce(jsonResponse([['<a i=0>Apple iPhone 15 Pro </a><a i=1>Max</a>'], ['en']]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const provider = await freshCreateGoogleProvider();
+    const results = await provider.translateBatch({
+      sourceLanguage: 'zh',
+      targetLanguage: 'en',
+      pieces: [['Apple iPhone 15 Pro Max']],
+    });
+
+    expect(results).toEqual([{ ok: true, value: ['Apple iPhone 15 Pro Max'] }]);
+  });
+
   it('wraps a multi-string piece (grouped context) in <a i=N> and reassembles by index', async () => {
     // One piece holding 2 related strings (e.g. grouped sibling DOM
     // nodes) — this is the ">1 item" case that triggers <a i=N> wrapping,

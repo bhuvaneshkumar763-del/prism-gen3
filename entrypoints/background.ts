@@ -4,7 +4,7 @@ import { translateOne } from '../src/engine/translator';
 import { cacheKeyFor, translationCache } from '../src/platform/cache/translationCache';
 import { configStore } from '../src/platform/configStore';
 import type { FrameLanguageDecision } from '../src/platform/messaging/protocol';
-import { onMessage, sendMessage } from '../src/platform/messaging/protocol';
+import { isTrustedSender, onMessage, sendMessage } from '../src/platform/messaging/protocol';
 import { getActiveTabId } from '../src/platform/messaging/tabTarget';
 
 /**
@@ -166,6 +166,7 @@ export default defineBackground(() => {
   setupKeepalive();
 
   onMessage('translateText', async (message) => {
+    if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');
     const { providerId, provider } = await resolveActiveProvider();
     if (!provider) {
       return { ok: false, error: { kind: 'network', message: unavailableMessage(providerId) } };
@@ -174,6 +175,7 @@ export default defineBackground(() => {
   });
 
   onMessage('translatePieces', async (message) => {
+    if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');
     const { providerId, provider } = await resolveActiveProvider();
     const { sourceLanguage, targetLanguage, pieces, dontSortResults } = message.data;
 
@@ -293,7 +295,8 @@ export default defineBackground(() => {
     if (command === 'toggle-translate-page') toggleActiveTab().catch(showFailureBadge);
   });
 
-  onMessage('openOptionsPage', () => {
+  onMessage('openOptionsPage', (message) => {
+    if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');
     void browser.runtime.openOptionsPage();
   });
 
@@ -302,18 +305,21 @@ export default defineBackground(() => {
   });
 
   onMessage('reportFrameLanguageDecision', (message) => {
+    if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');
     const tabId = message.sender.tab?.id;
     if (tabId === undefined) return;
     frameLanguageDecisions.set(tabId, message.data);
   });
 
   onMessage('getFrameLanguageDecision', (message) => {
+    if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');
     const tabId = message.sender.tab?.id;
     if (tabId === undefined) return null;
     return frameLanguageDecisions.get(tabId) ?? null;
   });
 
   onMessage('detectTabLanguage', async (message) => {
+    if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');
     const tabId = message.sender.tab?.id;
     if (tabId === undefined) return 'und';
     try {

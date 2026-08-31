@@ -1,0 +1,9 @@
+---
+"prism-gen3": patch
+---
+
+Two real fixes found via a direct security/accuracy audit of already-shipped functionality:
+
+- **Security**: `@webext-core/messaging`'s `onMessage` does no sender validation of its own — checked its actual implementation directly. Any other installed extension could send this extension's own message shapes (`translateText`, `translatePieces`, `pageTranslate`, `pageRestore`, etc.) straight to its background service worker or content script, and they'd be processed as if they came from this extension's own UI — triggering a translate/restore on the active tab, or relaying arbitrary text through `translatePieces` to spend the user's own configured provider quota (including a paid Google Cloud Translate key). Every `onMessage` handler in `entrypoints/background.ts` and `entrypoints/content.ts` now rejects a message unless `sender.id` matches this extension's own `browser.runtime.id` — which is always true for a real, legitimate call from this extension's own code, so nothing about normal use changes.
+
+- **Accuracy**: the Google provider's single-item-piece padding fix (beta.28) could silently drop real content. Google's endpoint can reflow translated text across piece/tag boundaries (already documented in `google.ts`'s own header comment) — confirmed directly against the live endpoint that this also happens to the throwaway padding string, not just genuine multi-string pieces: "Apple iPhone 15 Pro Max" came back with "Max" reflowed into the padding's own slot, and the old `.slice(0, 1)` trim silently discarded it. Now reconstructs the full result by joining every slot back together (safe: the existing orphan-text-folding rule already preserves natural spacing between them) instead of assuming the real content always stays at index 0, with a trailing-whitespace trim so the ordinary no-reflow case still comes back clean.

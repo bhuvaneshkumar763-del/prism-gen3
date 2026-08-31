@@ -27,6 +27,7 @@
     "remove-libretranslate-provider",
     "revert-hover-fix",
     "selection-popup-language-awareness",
+    "sender-validation-and-reflow-fix",
     "settings-full-parity",
     "shadow-dom-and-google-reflow",
     "speed-dynamic-tags",
