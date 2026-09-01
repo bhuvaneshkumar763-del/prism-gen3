@@ -47,6 +47,16 @@ _Moved to `.claude/skills/testing/SKILL.md` — load via `/testing`._
 
 _Moved to `.claude/skills/known-gaps-expected-at-this-stage-not-oversights/SKILL.md` — load via `/known-gaps-expected-at-this-stage-not-oversights`._
 
+## Improvement history: speed, accuracy, security, reliability
+
+**Read this before starting any "improve" pass.** A running ledger of every
+speed/accuracy/security/reliability fix made to already-shipped
+functionality, organized by category, plus what's been checked and ruled
+out and what's still open. Exists so a new audit doesn't re-discover,
+re-verify, or contradict something already fixed.
+
+_Moved to `.claude/skills/improvement-history-speed-accuracy-security-reliability/SKILL.md` — load via `/improvement-history-speed-accuracy-security-reliability`._
+
 ## Post-launch incident: translation didn't work out of the box, and failure was silent
 
 _Moved to `.claude/skills/post-launch-incident-translation-didn-t-work-out-of-the-box-and-failure-was-silent/SKILL.md` — load via `/post-launch-incident-translation-didn-t-work-out-of-the-box-and-failure-was-silent`._
