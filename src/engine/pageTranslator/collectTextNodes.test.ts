@@ -191,4 +191,23 @@ describe('isNoTranslateNode', () => {
     expect(isNoTranslateNode(document.createElement('p'))).toBe(false);
     expect(isNoTranslateNode(document.createTextNode('hi'))).toBe(false);
   });
+
+  it('is true for svg/template/math/mjx-container/tex-math elements, real gap this closed (TWP source comparison): svg keeps a lowercase tagName in the DOM unlike ordinary HTML elements, so this also exercises the case-insensitive tag comparison', () => {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    expect(svg.tagName).toBe('svg'); // sanity check on the exact quirk this fix handles
+    expect(isNoTranslateNode(svg)).toBe(true);
+
+    for (const tag of ['template', 'math', 'mjx-container', 'tex-math']) {
+      const el = document.createElement(tag);
+      expect(isNoTranslateNode(el)).toBe(true);
+    }
+  });
+
+  it('is true for material-icons/material-symbols-outlined icon-font ligature classes, real gap this closed: their "text" is a ligature glyph, not translatable prose', () => {
+    for (const cls of ['material-icons', 'material-symbols-outlined']) {
+      const el = document.createElement('span');
+      el.className = cls;
+      expect(isNoTranslateNode(el)).toBe(true);
+    }
+  });
 });

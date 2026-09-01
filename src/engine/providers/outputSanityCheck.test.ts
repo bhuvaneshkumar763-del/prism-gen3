@@ -40,4 +40,27 @@ describe('isSuspiciousOutcome', () => {
   it('does not flag a genuinely different (real) translation', () => {
     expect(isSuspiciousOutcome(LONG, { text: 'Ceci est une phrase.', detectedLanguage: null }, 'en', 'fr')).toBe(false);
   });
+
+  describe('script mismatch (real gap this closed — the length-only check above lets through nearly every real silent-echo failure this project has actually hit, since nav labels/buttons/headings are almost always short)', () => {
+    it('flags a SHORT non-Latin-script string echoed back unchanged into a Latin-script target', () => {
+      // "Login" — real example from this session's own investigation.
+      expect(isSuspiciousOutcome('登陸', { text: '登陸', detectedLanguage: null }, 'zh', 'en')).toBe(true);
+    });
+
+    it('flags it even when auto and even when the provider claims it detected the target language (the exact known failure mode — Google misreporting real Chinese text as English)', () => {
+      expect(isSuspiciousOutcome('登陸', { text: '登陸', detectedLanguage: 'en' }, 'auto', 'en')).toBe(true);
+    });
+
+    it('does not flag a short non-Latin string when the target language legitimately uses that same script', () => {
+      expect(isSuspiciousOutcome('登陸', { text: '登陸', detectedLanguage: null }, 'en', 'zh')).toBe(false);
+    });
+
+    it('does not flag a short Latin-script identical string (falls through to the ordinary length-based check)', () => {
+      expect(isSuspiciousOutcome('OK', { text: 'OK', detectedLanguage: null }, 'en', 'fr')).toBe(false);
+    });
+
+    it('does not flag when the result genuinely differs (real translation happened)', () => {
+      expect(isSuspiciousOutcome('登陸', { text: 'Login', detectedLanguage: null }, 'zh', 'en')).toBe(false);
+    });
+  });
 });

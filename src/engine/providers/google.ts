@@ -24,6 +24,55 @@ let translateAuth: string | null = null;
 let authNotFound = false;
 let authPromise: Promise<void> | null = null;
 
+/** Plain data shape for persisting/restoring the scraped auth key — see `hydrateAuthKey`'s doc comment for why this exists. */
+export interface AuthKeySnapshot {
+  key: string;
+  notFound: boolean;
+  time: number;
+}
+
+/**
+ * Real gap, found via a speed audit: `lastRequestAuthTime`/`translateAuth`/
+ * `authNotFound` above are module-scope variables only, never persisted —
+ * MV3 service workers suspend after ~30s idle and are fully re-executed on
+ * wake, so this module's entire 20-minute in-memory cache rarely survives
+ * between one translate action and the next (a user browsing normally goes
+ * well past 30s idle in between), paying a full extra scrape fetch to
+ * `translate.googleapis.com` before almost every real translation.
+ *
+ * This file can't touch `browser.storage` itself (`src/engine/` has a
+ * CI-enforced zero-browser-API-import rule, `guard:engine-purity`) — these
+ * two plain-data functions are the seam: `entrypoints/background.ts` reads/
+ * writes `browser.storage.session` (cleared on browser close, appropriate
+ * for a key meant to refresh every 20 minutes anyway) and calls
+ * `hydrateAuthKey` to seed this module's state before the first real
+ * `translateBatch` call, so a real service-worker restart doesn't have to
+ * pay the scrape again if a still-fresh key was already found last time.
+ */
+export function hydrateAuthKey(snapshot: AuthKeySnapshot): void {
+  translateAuth = snapshot.key;
+  authNotFound = snapshot.notFound;
+  lastRequestAuthTime = snapshot.time;
+}
+
+/** The current in-memory auth state, for `background.ts` to persist after a (re)scrape — `undefined` if nothing has ever been scraped or hydrated yet in this module instance. */
+export function getAuthKeySnapshot(): AuthKeySnapshot | undefined {
+  if (translateAuth === null || lastRequestAuthTime === null) return undefined;
+  return { key: translateAuth, notFound: authNotFound, time: lastRequestAuthTime };
+}
+
+/**
+ * Public wrapper around `findAuth` — lets `background.ts` kick the scrape
+ * off speculatively at service-worker startup (in parallel with the
+ * content script's own startup chain) instead of only lazily on the first
+ * real `translateBatch` call, so the fetch's cost is hidden behind other
+ * startup work rather than sitting serially on the critical path of the
+ * first translation.
+ */
+export async function ensureAuthReady(): Promise<void> {
+  await findAuth();
+}
+
 // Hardcoded fallback API key, used if the live scrape below fails. Encoded
 // as bytes (matching the old repo) purely so it doesn't read as a
 // plaintext secret to a casual grep of this file — it's Google's own
@@ -293,11 +342,23 @@ export function createGoogleProvider(): Translator {
           // element back together reconstructs the correct full string —
           // including the untranslated-but-invisible padding filler in
           // the ordinary case where nothing reflowed, which is harmless.
-          // `trimEnd()` only ever strips trailing WHITESPACE — never real
-          // reflowed word content like "Max" above — so it safely cleans
-          // up the common case (the padding echoed back as a bare
-          // untranslated space) without reopening the bug this fixes.
-          return ok([outcome.value.join('').trimEnd()]);
+          //
+          // Real regression found in a later audit of this exact fix:
+          // unconditionally joining then `trimEnd()`-ing also strips
+          // LEGITIMATE trailing whitespace that belongs to the real
+          // content — e.g. "Hello " before "<b>world</b>" translating to
+          // "Bonjour" instead of "Bonjour ", jamming into "BonjourMonde"
+          // on the page once spliced in. `splitPieceResponse` already
+          // folds the correct trailing space onto value[0] when nothing
+          // reflowed (confirmed: `google.test.ts`'s existing padding
+          // test), so index 0 needs no touching up in that case at all —
+          // only reach for the padding slot's content when it's genuinely
+          // non-whitespace (a real reflowed word/punctuation, not the
+          // padding's own echoed filler).
+          const [first, ...rest] = outcome.value;
+          const overflow = rest.join('');
+          const hasRealOverflow = overflow.trim().length > 0;
+          return ok([hasRealOverflow ? (first ?? '') + overflow : (first ?? '')]);
         }
         return outcome;
       });

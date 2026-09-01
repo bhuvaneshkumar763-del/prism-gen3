@@ -83,10 +83,10 @@ describe('createBatchedHttpProvider — batching budget', () => {
     ]);
   });
 
-  it("defaults the batch budget to 800 chars, matching TWP's real upstream value (verified against their live source, not assumed) — was previously 1100 based on a since-corrected comment", async () => {
+  it("defaults the batch budget to 2000 chars, raised from TWP's original 800 (speed audit, verified end-to-end against a real live page — see the option's doc comment for the measurements)", async () => {
     // Echoes back one text per piece actually sent in each call's body —
     // avoids a false pass via the missing-piece repair retry (a single
-    // under-800 batch that got a too-short mock response would also
+    // under-budget batch that got a too-short mock response would also
     // trigger a second fetch call, for the wrong reason).
     const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
       const sent = JSON.parse(init.body as string) as string[];
@@ -105,14 +105,12 @@ describe('createBatchedHttpProvider — batching budget', () => {
       },
     });
 
-    // Each 850-char piece alone exceeds an 800-char budget (forcing a
-    // batch flush right after it) but not a 1100-char one (where both
-    // pieces land in a single 1700-char batch instead) — this only splits
-    // into two single-piece requests under the new default.
+    // Each 2050-char piece alone exceeds the 2000-char budget (forcing a
+    // batch flush right after it) — splits into two single-piece requests.
     await provider.translateBatch({
       sourceLanguage: 'en',
       targetLanguage: 'es',
-      pieces: [['a'.repeat(850)], ['b'.repeat(850)]],
+      pieces: [['a'.repeat(2050)], ['b'.repeat(2050)]],
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -120,6 +118,35 @@ describe('createBatchedHttpProvider — batching budget', () => {
       ([, init]) => (JSON.parse((init as RequestInit).body as string) as string[]).length,
     );
     expect(piecesPerCall).toEqual([1, 1]);
+  });
+
+  it('bundles pieces well under the old 800-char budget into a single request now that the default is 2000, real regression this guards: raising the constant without this test would leave the old, now-wrong 800 boundary unverified', async () => {
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      const sent = JSON.parse(init.body as string) as string[];
+      return jsonResponse({ texts: sent.map(() => 'x') });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const provider = createBatchedHttpProvider({
+      name: 'default-budget-bundling',
+      baseUrl: 'https://example.com',
+      method: 'POST',
+      callbacks: {
+        ...plainCallbacks(),
+        getRequestBody: (_s, _t, texts) => JSON.stringify(texts),
+      },
+    });
+
+    // Two 850-char pieces (1700 total) both fit under the new 2000-char
+    // budget — this would have split into 2 requests under the old 800
+    // default (see the test above, pre-raise).
+    await provider.translateBatch({
+      sourceLanguage: 'en',
+      targetLanguage: 'es',
+      pieces: [['a'.repeat(850)], ['b'.repeat(850)]],
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 

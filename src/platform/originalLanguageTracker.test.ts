@@ -96,10 +96,7 @@ describe('createOriginalLanguageTracker', () => {
     const tracker = createOriginalLanguageTracker();
     const startPromise = tracker.start();
 
-    // start() also awaits waitUntilVisible()'s 150ms delay before the detect
-    // call even fires — advance past that first, then past the timeout.
-    await vi.advanceTimersByTimeAsync(200);
-    await vi.advanceTimersByTimeAsync(3000);
+    await vi.advanceTimersByTimeAsync(3000); // past the 3s detect timeout
     await startPromise;
 
     expect(tracker.get()).toBe('und');
@@ -160,7 +157,7 @@ describe('createOriginalLanguageTracker', () => {
     await tracker.start();
 
     expect(tracker.get()).toBe('de');
-    // Only the fixed ~150ms settle delay, no 5s visibility-wait timeout.
+    // No 5s visibility-wait timeout hit — resolves promptly.
     expect(Date.now() - start).toBeLessThan(2000);
   });
 
@@ -175,11 +172,9 @@ describe('createOriginalLanguageTracker', () => {
     const start = Date.now();
     const startPromise = tracker.start();
 
-    // start() itself awaits a fixed ~150ms settle delay before it even
-    // calls waitUntilVisible() — flip visibility well after that, so this
-    // test actually exercises the "wait for visibilitychange" branch
-    // instead of racing the short-circuit "already visible" check before
-    // waitUntilVisible() is even invoked.
+    // Flip visibility on a delay so this test actually exercises the
+    // "wait for visibilitychange" branch inside waitUntilVisible(),
+    // instead of racing its own "already visible" short-circuit check.
     setTimeout(() => {
       Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
       document.dispatchEvent(new Event('visibilitychange'));

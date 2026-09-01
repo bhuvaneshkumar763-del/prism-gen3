@@ -48,7 +48,7 @@ describe('mountSelectionPopup', () => {
     vi.restoreAllMocks();
   });
 
-  it('shows the trigger button after a real text selection', () => {
+  it('shows the trigger button after a real text selection', async () => {
     vi.spyOn(window, 'getSelection').mockReturnValue(fakeSelection('hello'));
     const controller = mountSelectionPopup({
       translator: uppercaseTranslator(),
@@ -57,12 +57,13 @@ describe('mountSelectionPopup', () => {
     });
 
     document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0)); // language detection is now always awaited, see selectedTextLanguage's doc comment
 
     expect(shadowRoot()?.querySelector('.trigger')).not.toBeNull();
     controller.destroy();
   });
 
-  it('shows the trigger button after a keyboard-driven selection (Shift+Arrow), real gap: the trigger was mouse-only', () => {
+  it('shows the trigger button after a keyboard-driven selection (Shift+Arrow), real gap: the trigger was mouse-only', async () => {
     vi.spyOn(window, 'getSelection').mockReturnValue(fakeSelection('hello'));
     const controller = mountSelectionPopup({
       translator: uppercaseTranslator(),
@@ -71,12 +72,13 @@ describe('mountSelectionPopup', () => {
     });
 
     document.dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowRight', shiftKey: true, bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(shadowRoot()?.querySelector('.trigger')).not.toBeNull();
     controller.destroy();
   });
 
-  it('reads a selection from inside a shadow root, real gap: window.getSelection() never sees into shadow DOM, real bug: highlighting text inside a sealed comment widget did nothing', () => {
+  it('reads a selection from inside a shadow root, real gap: window.getSelection() never sees into shadow DOM, real bug: highlighting text inside a sealed comment widget did nothing', async () => {
     // happy-dom doesn't implement the non-standard ShadowRoot.getSelection()
     // (documented in resolveActiveSelection's own comment) — mock it
     // directly on a real shadow root, and stub the event's composedPath()
@@ -100,6 +102,7 @@ describe('mountSelectionPopup', () => {
     const event = new MouseEvent('mouseup', { bubbles: true });
     Object.defineProperty(event, 'composedPath', { value: () => [host] });
     document.dispatchEvent(event);
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(shadowRoot()?.querySelector('.trigger')).not.toBeNull();
     controller.destroy();
@@ -129,6 +132,7 @@ describe('mountSelectionPopup', () => {
     });
 
     document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
     const trigger = shadowRoot()?.querySelector('.trigger') as HTMLButtonElement;
     trigger.click();
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -151,6 +155,7 @@ describe('mountSelectionPopup', () => {
     });
 
     document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
     const trigger = shadowRoot()?.querySelector('.trigger') as HTMLButtonElement | undefined;
     trigger?.click();
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -181,6 +186,7 @@ describe('mountSelectionPopup', () => {
     // resolve until resolveFirst() is called below.
     vi.spyOn(window, 'getSelection').mockReturnValue(fakeSelection('first'));
     document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
     const firstTrigger = shadowRoot()?.querySelector('.trigger') as HTMLButtonElement;
     firstTrigger.click();
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -189,6 +195,7 @@ describe('mountSelectionPopup', () => {
     // one resolves immediately.
     vi.spyOn(window, 'getSelection').mockReturnValue(fakeSelection('second'));
     document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
     const secondTrigger = shadowRoot()?.querySelector('.trigger') as HTMLButtonElement;
     secondTrigger.click();
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -218,7 +225,7 @@ describe('mountSelectionPopup', () => {
     controller.destroy();
   });
 
-  it('still shows the trigger for invalid text when getSkipInvalidText explicitly returns false', () => {
+  it('still shows the trigger for invalid text when getSkipInvalidText explicitly returns false', async () => {
     vi.spyOn(window, 'getSelection').mockReturnValue(fakeSelection('123'));
     const controller = mountSelectionPopup({
       translator: uppercaseTranslator(),
@@ -228,6 +235,7 @@ describe('mountSelectionPopup', () => {
     });
 
     document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(shadowRoot()?.querySelector('.trigger')).not.toBeNull();
     controller.destroy();
@@ -287,6 +295,70 @@ describe('mountSelectionPopup', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(shadowRoot()?.querySelector('.trigger')).not.toBeNull();
+    controller.destroy();
+  });
+
+  it('translates using the detected selection language as the source, not the ambient getSourceLanguage() default', async () => {
+    // Real bug this fixed, found via an audit: this popup always sent
+    // options.getSourceLanguage() (the global config value, 'auto' by
+    // default) as the translate request's source language, even though it
+    // already detects the SELECTED TEXT's own language for the
+    // skip-target-language-text feature — that detection was being
+    // discarded instead of reused. 'auto' can silently fail (echo the
+    // input back unchanged) for short non-Latin selections, the same class
+    // of bug page translation already fixed (beta.29) by using a
+    // freshly-detected language instead of the literal 'auto'.
+    vi.spyOn(window, 'getSelection').mockReturnValue(fakeSelection('登陸'));
+    spyOnDetectLanguage().mockResolvedValue({
+      isReliable: true,
+      languages: [{ language: 'zh', percentage: 95 }],
+    });
+    const sourceLanguagesSeen: string[] = [];
+    const spyTranslator: Translator = {
+      async translateBatch(request) {
+        sourceLanguagesSeen.push(request.sourceLanguage);
+        return request.pieces.map((piece): PieceOutcome => ok(piece.map((s) => s.toUpperCase())));
+      },
+    };
+    const controller = mountSelectionPopup({
+      translator: spyTranslator,
+      getSourceLanguage: () => 'auto',
+      getTargetLanguage: () => 'en',
+    });
+
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const trigger = shadowRoot()?.querySelector('.trigger') as HTMLButtonElement;
+    trigger.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(sourceLanguagesSeen).toEqual(['zh']);
+    controller.destroy();
+  });
+
+  it('falls back to getSourceLanguage() when detection fails/returns "und"', async () => {
+    vi.spyOn(window, 'getSelection').mockReturnValue(fakeSelection('hello world'));
+    spyOnDetectLanguage().mockRejectedValue(new Error('boom'));
+    const sourceLanguagesSeen: string[] = [];
+    const spyTranslator: Translator = {
+      async translateBatch(request) {
+        sourceLanguagesSeen.push(request.sourceLanguage);
+        return request.pieces.map((piece): PieceOutcome => ok(piece.map((s) => s.toUpperCase())));
+      },
+    };
+    const controller = mountSelectionPopup({
+      translator: spyTranslator,
+      getSourceLanguage: () => 'auto',
+      getTargetLanguage: () => 'en',
+    });
+
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const trigger = shadowRoot()?.querySelector('.trigger') as HTMLButtonElement;
+    trigger.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(sourceLanguagesSeen).toEqual(['auto']);
     controller.destroy();
   });
 

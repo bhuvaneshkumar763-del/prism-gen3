@@ -52,6 +52,19 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
 
   let dispose: (() => void) | null = null;
   let selectedText = '';
+  // Real bug, found via an audit: this popup used to always send
+  // `options.getSourceLanguage()` (the global `sourceLanguage` config
+  // value, which defaults to the literal string 'auto') as the translate
+  // request's source language, regardless of what was actually selected.
+  // `translateLoop.ts` fixed the equivalent problem for whole-page
+  // translation (beta.29) by using a freshly-detected language instead of
+  // 'auto', since Google's own auto-detection can silently fail (echo the
+  // input back unchanged, HTTP 200, no error) for short non-Latin
+  // selections. `detectSelectionLanguage` below already exists and runs on
+  // every selection change for the skip-target-language-text feature —
+  // this reuses that same detection for the actual translate request too,
+  // instead of discarding it.
+  let selectedTextLanguage = 'und';
   // Bumped whenever the visible selection changes (new mouseup) or a new
   // translate click starts — a resolving handleTranslateClick() checks its
   // own snapshot against the current value before applying its result, so
@@ -101,7 +114,7 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
     const result = await translateOne(
       options.translator,
       selectedText,
-      options.getSourceLanguage(),
+      selectedTextLanguage !== 'und' ? selectedTextLanguage : options.getSourceLanguage(),
       options.getTargetLanguage(),
     );
     if (thisRequestId !== requestId) return; // superseded by a newer selection/click — discard
@@ -175,15 +188,22 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
       hideTrigger();
       return;
     }
-    if (options.getSkipTargetLanguageText?.()) {
-      const detected = await detectSelectionLanguage(info.text);
-      if (thisRequestId !== requestId) return; // superseded by a newer selection — discard
-      if (detected !== 'und' && baseLanguageTag(detected) === baseLanguageTag(options.getTargetLanguage())) {
-        hideTrigger();
-        return;
-      }
+    // Always detected now (not just when getSkipTargetLanguageText is on)
+    // — the result also becomes the source language for the actual
+    // translate request below, see this file's `selectedTextLanguage`
+    // declaration comment for why.
+    const detected = await detectSelectionLanguage(info.text);
+    if (thisRequestId !== requestId) return; // superseded by a newer selection — discard
+    if (
+      options.getSkipTargetLanguageText?.() &&
+      detected !== 'und' &&
+      baseLanguageTag(detected) === baseLanguageTag(options.getTargetLanguage())
+    ) {
+      hideTrigger();
+      return;
     }
     selectedText = info.text;
+    selectedTextLanguage = detected;
     state = {
       buttonVisible: true,
       buttonTop: info.rect.bottom + 6,

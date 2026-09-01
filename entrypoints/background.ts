@@ -1,3 +1,9 @@
+import {
+  type AuthKeySnapshot,
+  ensureAuthReady,
+  getAuthKeySnapshot,
+  hydrateAuthKey,
+} from '../src/engine/providers/google';
 import { createProvider, type ProviderConfig } from '../src/engine/providers/registry';
 import type { PieceOutcome, Translator } from '../src/engine/translator';
 import { translateOne } from '../src/engine/translator';
@@ -162,8 +168,49 @@ function showFailureBadge(e: unknown): void {
   }, FAILURE_BADGE_MS);
 }
 
+const GOOGLE_AUTH_STORAGE_KEY = 'googleAuthKeySnapshot';
+
+/**
+ * Speed fix, found via an audit: `google.ts`'s auth-key scrape used to
+ * only ever run lazily, in-memory-only, inside the first real
+ * `translateBatch` call of a fresh service-worker lifetime — paying a full
+ * extra fetch to `translate.googleapis.com` serially before almost every
+ * translation, since MV3 workers suspend after ~30s idle and this project
+ * doesn't otherwise keep one alive between separate translate actions.
+ * `browser.storage.session` (cleared on browser close, not synced —
+ * appropriate for a key meant to refresh every 20 minutes anyway) lets a
+ * still-fresh key survive a worker restart, and kicking the scrape off
+ * here — at startup, in parallel with the content script's own startup
+ * chain — instead of waiting for the first `translatePieces` message hides
+ * its latency behind that other work rather than sitting on the critical
+ * path. Fire-and-forget: nothing here needs to block `defineBackground`'s
+ * own setup, and `google.ts`'s own `findAuth()` still runs its usual
+ * lazy check if this hasn't finished (or failed) by the time a real
+ * translate request needs it.
+ */
+async function prefetchGoogleAuthKey(): Promise<void> {
+  try {
+    const stored = await browser.storage.session.get(GOOGLE_AUTH_STORAGE_KEY);
+    const snapshot = stored[GOOGLE_AUTH_STORAGE_KEY] as AuthKeySnapshot | undefined;
+    // Defensive shape check — this is stored data, not a value this
+    // module ever fully controls the origin of (a stale shape from a
+    // future/past version of this extension is plausible).
+    if (snapshot && typeof snapshot.key === 'string' && typeof snapshot.time === 'number') {
+      hydrateAuthKey(snapshot);
+    }
+
+    await ensureAuthReady();
+
+    const fresh = getAuthKeySnapshot();
+    if (fresh) await browser.storage.session.set({ [GOOGLE_AUTH_STORAGE_KEY]: fresh });
+  } catch (e) {
+    console.warn('[prism] speculative Google auth-key prefetch failed, continuing without it', e);
+  }
+}
+
 export default defineBackground(() => {
   setupKeepalive();
+  void prefetchGoogleAuthKey();
 
   onMessage('translateText', async (message) => {
     if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');

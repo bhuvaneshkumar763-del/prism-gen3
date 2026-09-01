@@ -118,10 +118,18 @@ export function createOriginalLanguageTracker() {
    * Never rejects. Callers gate real behavior (auto-translate on load) on
    * this settling, so a rejection here is indistinguishable from "the user
    * doesn't want this page translated."
+   *
+   * Speed fix, found via an audit: this used to start with an unconditional
+   * 150ms sleep before anything else — unlike every other timing constant
+   * in this file (the 3s detect timeout, the 5s visibility cap), it had no
+   * comment justifying it, and nothing downstream actually needs it:
+   * `waitUntilVisible()` already handles a not-yet-visible page correctly
+   * on its own, and `detectViaTab()`/`detectFromPageText()` are
+   * independently timeout-guarded — this was pure added latency on the
+   * auto-translate-on-load critical path with no found purpose.
    */
   async function start(): Promise<void> {
     try {
-      await new Promise((resolve) => setTimeout(resolve, 150));
       await waitUntilVisible();
       language = await detectViaTab();
       if (language === 'und') language = await detectFromPageText();

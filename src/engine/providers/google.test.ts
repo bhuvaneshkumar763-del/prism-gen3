@@ -78,6 +78,35 @@ describe('createGoogleProvider', () => {
     expect(results).toEqual([{ ok: true, value: ['Apple iPhone 15 Pro Max'] }]);
   });
 
+  it('preserves a real trailing space on the translated text, instead of stripping it along with the padding filler (real regression, found via a later audit of the reflow fix above)', async () => {
+    // "Hello " (a real trailing space — e.g. the text node right before
+    // <b>world</b> in "Hello <b>world</b>.") is exactly the shape that
+    // gets padded (piece.length === 1). The earlier fix for the reflow bug
+    // above used `.join('').trimEnd()`, which correctly discarded the
+    // padding's own echoed space in the ordinary (nothing-reflowed) case —
+    // but also silently ate the REAL trailing space that belonged to
+    // "Hello " itself, since trimEnd() can't tell the two apart. Spliced
+    // into the DOM, that jammed adjacent inline content together
+    // ("HelloWorld" instead of "Hello World"). splitPieceResponse's own
+    // orphan-folding rule already gives index 0 its own correct trailing
+    // space here — the fix must leave it untouched when nothing reflowed,
+    // not trim it.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(authScrapeResponse())
+      .mockResolvedValueOnce(jsonResponse([['<a i=0>Bonjour </a><a i=1> </a>'], ['fr']]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const provider = await freshCreateGoogleProvider();
+    const results = await provider.translateBatch({
+      sourceLanguage: 'en',
+      targetLanguage: 'fr',
+      pieces: [['Hello ']],
+    });
+
+    expect(results).toEqual([{ ok: true, value: ['Bonjour '] }]);
+  });
+
   it('wraps a multi-string piece (grouped context) in <a i=N> and reassembles by index', async () => {
     // One piece holding 2 related strings (e.g. grouped sibling DOM
     // nodes) — this is the ">1 item" case that triggers <a i=N> wrapping,
@@ -305,5 +334,57 @@ describe('createGoogleProvider', () => {
     const [, init] = translateCall as unknown as [string, RequestInit];
     const payload = JSON.parse(init.body as string) as [[string[], string, string], string];
     expect(payload[0][1]).toBe('fa-AF');
+  });
+
+  describe('auth-key persistence seam (hydrateAuthKey/getAuthKeySnapshot/ensureAuthReady)', () => {
+    // Real gap this closes, found via a speed audit: the scraped auth key
+    // used to live in module memory only, lost on every MV3 service-worker
+    // restart — these three plain-data functions are the seam
+    // entrypoints/background.ts persists through (src/engine/ can't touch
+    // browser.storage itself, see guard:engine-purity).
+    it('getAuthKeySnapshot() is undefined before anything has been scraped or hydrated', async () => {
+      vi.resetModules();
+      const { getAuthKeySnapshot } = await import('./google');
+      expect(getAuthKeySnapshot()).toBeUndefined();
+    });
+
+    it('hydrateAuthKey() seeds state that ensureAuthReady() then reuses instead of re-scraping', async () => {
+      vi.resetModules();
+      const { hydrateAuthKey, getAuthKeySnapshot, ensureAuthReady } = await import('./google');
+      const fetchMock = vi.fn(); // must NOT be called — a fresh hydration should be used as-is
+      vi.stubGlobal('fetch', fetchMock);
+
+      hydrateAuthKey({ key: 'hydrated-key', notFound: false, time: Date.now() });
+      await ensureAuthReady();
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(getAuthKeySnapshot()).toEqual({ key: 'hydrated-key', notFound: false, time: expect.any(Number) });
+    });
+
+    it('ensureAuthReady() scrapes and getAuthKeySnapshot() reflects the result when nothing was hydrated', async () => {
+      vi.resetModules();
+      const { getAuthKeySnapshot, ensureAuthReady } = await import('./google');
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(authScrapeResponse()));
+
+      await ensureAuthReady();
+
+      expect(getAuthKeySnapshot()).toEqual({
+        key: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        notFound: false,
+        time: expect.any(Number),
+      });
+    });
+
+    it('a stale hydrated snapshot (older than the 20-minute cache window) still triggers a fresh scrape', async () => {
+      vi.resetModules();
+      const { hydrateAuthKey, ensureAuthReady } = await import('./google');
+      const fetchMock = vi.fn().mockResolvedValueOnce(authScrapeResponse());
+      vi.stubGlobal('fetch', fetchMock);
+
+      hydrateAuthKey({ key: 'stale-key', notFound: false, time: Date.now() - 25 * 60 * 1000 });
+      await ensureAuthReady();
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
   });
 });

@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { err, ok } from '../../shared/result';
 import { connectivity } from '../connectivity';
 import type { PieceOutcome, Translator } from '../translator';
-import { createPageTranslator } from './translateLoop';
+import { createPageTranslator, pruneDisconnectedRestoreEntries } from './translateLoop';
 
 async function waitFor(condition: () => boolean, timeoutMs = 2000): Promise<void> {
   const start = Date.now();
@@ -1045,4 +1045,146 @@ describe('viewport-priority reordering — dirty-flag gating', () => {
 
     pageTranslator.restorePage();
   }, 10000);
+});
+
+describe('original whitespace restoration', () => {
+  afterEach(() => {
+    document.body.innerHTML = '';
+    vi.restoreAllMocks();
+  });
+
+  /** Simulates Google's own real behavior, confirmed directly against the live endpoint: strips ALL leading/trailing whitespace from a piece's translated text, unless this fix restores it. */
+  function whitespaceStrippingTranslator(): Translator {
+    return {
+      async translateBatch(request) {
+        return request.pieces.map((piece): PieceOutcome => ok(piece.map((s) => s.trim().toUpperCase())));
+      },
+    };
+  }
+
+  it('restores a source Text node\'s own trailing whitespace, real bug: without this, adjacent inline siblings write back jammed together ("Read " + "more" → "ReadMORE" instead of "Read MORE") on any page with inline markup — confirmed live: Google\'s real endpoint strips trailing whitespace from a piece\'s own translated content, independent of and in addition to the separate padding-slot reflow issue already fixed', async () => {
+    document.body.innerHTML = '<p>Read <b>more</b></p>';
+    const pageTranslator = createPageTranslator({
+      translator: whitespaceStrippingTranslator(),
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+
+    await pageTranslator.translatePage('es');
+    await waitFor(() => document.body.textContent === 'READ MORE');
+
+    expect(document.body.textContent).toBe('READ MORE'); // not 'READMORE'
+
+    pageTranslator.restorePage();
+  });
+
+  it('restores a leading space the same way as a trailing one', async () => {
+    document.body.innerHTML = '<p><b>Read</b> more</p>';
+    const pageTranslator = createPageTranslator({
+      translator: whitespaceStrippingTranslator(),
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+
+    await pageTranslator.translatePage('es');
+    await waitFor(() => document.body.textContent === 'READ MORE');
+
+    expect(document.body.textContent).toBe('READ MORE'); // not 'READMORE'
+
+    pageTranslator.restorePage();
+  });
+
+  it('does not double whitespace when the provider already preserves some of its own (Google keeps most leading space, per the same investigation)', async () => {
+    document.body.innerHTML = '<p>Read <b>more</b></p>';
+    const preservesLeadingTranslator: Translator = {
+      async translateBatch(request) {
+        return request.pieces.map(
+          (piece): PieceOutcome => ok(piece.map((s) => (s.startsWith(' ') ? ' ' : '') + s.trim().toUpperCase())),
+        );
+      },
+    };
+    const pageTranslator = createPageTranslator({
+      translator: preservesLeadingTranslator,
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+
+    await pageTranslator.translatePage('es');
+    await waitFor(() => document.body.textContent === 'READ MORE');
+
+    expect(document.body.textContent).toBe('READ MORE'); // not 'READ  MORE' (doubled space)
+
+    pageTranslator.restorePage();
+  });
+
+  it('leaves text with no leading/trailing whitespace untouched', async () => {
+    document.body.innerHTML = '<p>hello</p>';
+    const pageTranslator = createPageTranslator({
+      translator: whitespaceStrippingTranslator(),
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+
+    await pageTranslator.translatePage('es');
+    await waitFor(() => document.body.textContent === 'HELLO');
+
+    expect(document.body.textContent).toBe('HELLO');
+
+    pageTranslator.restorePage();
+  });
+});
+
+describe('pruneDisconnectedRestoreEntries', () => {
+  it('keeps an entry after a single disconnected tick — only pruned once a SECOND consecutive tick still finds it disconnected', () => {
+    const node = document.createTextNode('HELLO');
+    // Deliberately never attached to document.body — `.isConnected` is
+    // `false` by construction, standing in for "detached this tick"
+    // without needing a real DOM attach/detach or any timer at all: this
+    // is what makes the test deterministic instead of racing the real
+    // resweep-scheduler/MutationObserver timing stack (interval-driven,
+    // not something a test can pin to an exact tick count).
+    const nodesToRestore = new Map<Text, string>([[node, 'hello']]);
+    const disconnectedLastTick = new WeakSet<Text>();
+
+    pruneDisconnectedRestoreEntries(nodesToRestore, disconnectedLastTick); // tick 1: disconnected — marked as a candidate, not pruned yet
+    expect(nodesToRestore.has(node)).toBe(true);
+  });
+
+  it('prunes an entry after two CONSECUTIVE disconnected ticks — a real removal, not a recycle-pool blip', () => {
+    const node = document.createTextNode('HELLO');
+    const nodesToRestore = new Map<Text, string>([[node, 'hello']]);
+    const disconnectedLastTick = new WeakSet<Text>();
+
+    pruneDisconnectedRestoreEntries(nodesToRestore, disconnectedLastTick); // tick 1: disconnected
+    expect(nodesToRestore.has(node)).toBe(true);
+    pruneDisconnectedRestoreEntries(nodesToRestore, disconnectedLastTick); // tick 2: still disconnected
+    expect(nodesToRestore.has(node)).toBe(false);
+  });
+
+  it('resets the disconnected streak once a node reconnects, so a later real removal needs its own two consecutive ticks again', () => {
+    document.body.innerHTML = '<p id="item">hello</p>';
+    const item = document.getElementById('item');
+    if (!item) throw new Error('unreachable');
+    const node = item.firstChild;
+    if (!(node instanceof Text)) throw new Error('unreachable');
+
+    const nodesToRestore = new Map<Text, string>([[node, 'hello']]);
+    const disconnectedLastTick = new WeakSet<Text>();
+
+    item.remove();
+    pruneDisconnectedRestoreEntries(nodesToRestore, disconnectedLastTick); // tick 1: disconnected — candidate
+    expect(nodesToRestore.has(node)).toBe(true);
+
+    document.body.appendChild(item); // reconnected before a 2nd consecutive disconnected tick
+    pruneDisconnectedRestoreEntries(nodesToRestore, disconnectedLastTick); // tick 2: connected — streak reset, entry untouched
+    expect(nodesToRestore.has(node)).toBe(true);
+
+    item.remove();
+    pruneDisconnectedRestoreEntries(nodesToRestore, disconnectedLastTick); // tick 3: disconnected again — candidate (streak was reset, not carried over)
+    expect(nodesToRestore.has(node)).toBe(true);
+    pruneDisconnectedRestoreEntries(nodesToRestore, disconnectedLastTick); // tick 4: still disconnected — now genuinely pruned
+    expect(nodesToRestore.has(node)).toBe(false);
+
+    document.body.innerHTML = '';
+  });
 });

@@ -1,5 +1,27 @@
 # prism-gen3
 
+## 0.3.0-beta.33
+
+### Minor Changes
+
+- A second, deeper speed/accuracy audit of already-shipped functionality, cast wider than the previous round and verified end-to-end against real live pages (not just synthetic tests):
+
+  - **Accuracy — trailing whitespace jammed words together on virtually every real page.** Confirmed directly against the live Google endpoint: translating `" start with either "` comes back `"comenzar con cualquiera"` (both leading and trailing space stripped), and `" or "` comes back `" o"` (trailing space stripped). This is separate from and in addition to the padding-slot reflow issue fixed in beta.32 — nothing ever restored a source Text node's own original whitespace, so any page with inline markup (`<p>Read <b>more</b></p>`, a link followed by text, etc.) could write translated content back jammed together ("ReadMORE" instead of "Read MORE"). Confirmed live on Wikipedia: "unMacBookmostrando", "yÓpera", "elProtocolo" and dozens more. Now captures each source node's own leading/trailing whitespace before translating and re-applies it at write-back, deterministically and independent of which provider translated it.
+
+  - **Speed — the per-request batching budget was leaving most of the network phase on the table.** Measured directly: 300 short pieces at the old ~800 chars/request budget took 674ms end-to-end vs 107ms bundled at ~6000 chars/request — per-request overhead dominates, and positional array alignment stayed exact up to 300 pieces sharing one request (0 misaligned, measured directly). Raised the default per-request budget from 800 to 2000 chars — a real, measurable win while staying well short of the largest value tested, verified end-to-end against a real large live page.
+
+  - **Accuracy — selection-translate could silently fail on short text.** Page translation was fixed in beta.29 to use the page's own detected language instead of the literal `'auto'`, since Google's auto-detection can silently echo short non-Latin text back unchanged. Selection translate (the popup that appears when you highlight text) never got the same fix — it still always sent `'auto'`. Now uses the same detected-language fallback the page translator already had.
+
+  - **Speed — the Google auth key was re-scraped on nearly every translate.** MV3 service workers suspend after ~30s idle and re-execute their whole module scope on wake, so the 20-minute in-memory auth-key cache rarely survived — an extra full fetch to `translate.googleapis.com` before most translate actions. Now persisted to `browser.storage.session` and speculatively prefetched at startup, so the scrape overlaps with other startup work instead of sitting on the critical path of the first translate.
+
+  - **Accuracy — the silent-failure detector missed the short strings it was built for.** The identical-output check only flagged results 40+ characters long, but Google's silent-echo failure mode overwhelmingly hits short strings — nav labels, buttons, headings. Now also flags any identical result whose script (CJK/Cyrillic/Arabic/etc.) doesn't match what the target language implies, regardless of length — an unambiguous failure signature with very low false-positive risk.
+
+  - **Accuracy — MathJax formulas, SVG icon text, and icon-font ligatures could get mistranslated.** Matched against TWP's real skip list: `<svg>`, `<template>`, `<math>`, `<mjx-container>`, and `<tex-math>` are now skipped, along with `material-icons`/`material-symbols-outlined` icon-font classes — none of these were skipped before, so translating an icon-font glyph's ligature text or a MathJax formula's variable names could visibly break rendering.
+
+  - **Accuracy — a node that transiently detached and reattached (common in virtualized/recycled lists) could permanently lose the ability to be restored.** The resweep backstop pruned a translated node's "restore to original" entry the instant it saw the node disconnected from the DOM — but a node that reappears with unchanged, already-translated content is never re-queued (nothing changed), so it stayed stuck translated forever with no way back. Pruning now requires two consecutive disconnected resweep ticks (a real removal, not a recycle-pool blip) before giving up on a node's restore entry.
+
+  - **Speed — a dead, unexplained 150ms delay on every page load.** `originalLanguageTracker.start()` began with an unconditional 150ms sleep with no comment justifying it and nothing downstream depending on it — removed.
+
 ## 0.3.0-beta.32
 
 ### Patch Changes

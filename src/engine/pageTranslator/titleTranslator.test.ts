@@ -60,9 +60,17 @@ afterEach(() => {
 });
 
 describe('createTitleTranslator', () => {
-  it('sends the title through the [[title, " "]] two-item batching workaround, not a bare single string', async () => {
+  it('sends the title as an ordinary single-string piece, trusting the provider to pad it itself', async () => {
+    // Real bug this replaced, found via an audit: this module used to
+    // hand-pad pieces: [[text, ' ']] itself to work around a real Google
+    // quirk — but that made the piece already 2 items long, which
+    // silently bypassed google.ts's own (now-fixed) padding/reconciliation
+    // logic entirely, since that only engages for pieces IT padded. A
+    // single-string piece here lets google.ts's automatic padding (and its
+    // reflow-content-preservation fix) apply uniformly, same as every
+    // other translate request.
     setDocumentTitle('Hello World');
-    mockTranslateOnce(ok(['Hola Mundo', ' ']));
+    mockTranslateOnce(ok(['Hola Mundo']));
     const titleTranslator = newTranslator({ getSourceLanguage: () => 'en', isPageVisible: () => true });
 
     await titleTranslator.start('es');
@@ -70,7 +78,7 @@ describe('createTitleTranslator', () => {
     expect(translateBatch).toHaveBeenCalledWith({
       sourceLanguage: 'en',
       targetLanguage: 'es',
-      pieces: [['Hello World', ' ']],
+      pieces: [['Hello World']],
       dontSortResults: false,
     });
   });

@@ -45,6 +45,32 @@ import { prioritizeByViewport } from './viewportPriority';
 const MAX_PIECES_PER_TICK = 300;
 const HAS_LETTER = /\p{L}/u;
 
+/**
+ * Drops a `nodesToRestore` entry once its node has been disconnected for
+ * two CONSECUTIVE resweep ticks, not one — see the call site (onResweep,
+ * below) for the real bug this closed. Exported as a standalone, timing-free
+ * function so this two-tick debounce is unit-testable directly (map/set
+ * manipulation) instead of only through the full resweep-scheduler/
+ * MutationObserver timing stack, which is real-clock/interval-driven and
+ * not something a test can pin to an exact tick count deterministically.
+ */
+export function pruneDisconnectedRestoreEntries(
+  nodesToRestore: Map<Text, string>,
+  disconnectedLastTick: WeakSet<Text>,
+): void {
+  for (const node of nodesToRestore.keys()) {
+    if (!node.isConnected) {
+      if (disconnectedLastTick.has(node)) {
+        nodesToRestore.delete(node);
+      } else {
+        disconnectedLastTick.add(node);
+      }
+    } else {
+      disconnectedLastTick.delete(node);
+    }
+  }
+}
+
 export type PageLanguageState = 'original' | 'translated';
 
 /** `'offline'` when the browser itself has no connectivity (distinct from `'provider'`, a confirmed-broken/misconfigured provider while online) — see `setError`. */
@@ -112,6 +138,12 @@ export function createPageTranslator(options: PageTranslatorOptions) {
 
   /** The last content this engine actually processed for a tracked node — see `queueOrRequeueIfChanged`'s doc comment for why this exists alongside `dedupe`. */
   const lastSeenText = new WeakMap<Text, string>();
+  /**
+   * Nodes onResweep saw disconnected on the PREVIOUS tick — see onResweep's
+   * comment for why a node needs two consecutive disconnected ticks before
+   * its `nodesToRestore` entry is pruned, not one.
+   */
+  const disconnectedLastTick = new WeakSet<Text>();
   const requeueAt = new WeakMap<Text, number>();
   const missingResultAttempts = new WeakMap<Text, number>();
 
@@ -305,6 +337,30 @@ export function createPageTranslator(options: PageTranslatorOptions) {
       const requestedUnderGeneration = cycleGeneration;
       batchInFlight = true;
       recomputeWorking();
+      // Real gap this closed, found via a real-page audit (Google strips
+      // TRAILING whitespace from a piece's own translated content but
+      // generally preserves LEADING whitespace — confirmed directly
+      // against the live endpoint: `" start with either "` came back
+      // `"comenzar con cualquiera"`, both ends gone; `" or "` came back
+      // `" o"`, only the trailing space gone). This is a SEPARATE issue
+      // from google.ts's padding-slot reflow fix (which only reconciles
+      // the throwaway `<a i=1>` slot) — nothing restored the ORIGINAL
+      // node's own whitespace, so adjacent sibling Text nodes (`"Read "`
+      // + `"more"`, `<p>Read <b>more</b></p>`) wrote back jammed together
+      // ("Leermás") on any real page with inline markup, at high
+      // frequency. Deterministic and provider-independent by construction
+      // — captured from the same `node.data` used to build `pieces` below,
+      // reapplied at write-back regardless of which provider translated it.
+      const originalWhitespace = new Map<Text, { leading: string; trailing: string }>();
+      groups.forEach((group) => {
+        group.forEach((node) => {
+          const text = node.data;
+          const leading = text.slice(0, text.length - text.trimStart().length);
+          const trailing = text.slice(text.trimEnd().length);
+          if (leading || trailing) originalWhitespace.set(node, { leading, trailing });
+        });
+      });
+
       try {
         const outcomes = await options.translator.translateBatch({
           sourceLanguage: sourceLanguageOverride ?? options.getSourceLanguage(),
@@ -374,8 +430,19 @@ export function createPageTranslator(options: PageTranslatorOptions) {
                 lastSeenText.delete(node);
                 return;
               }
-              const translated = outcome?.ok ? outcome.value[nodeIdx] : undefined;
-              if (translated) {
+              const rawTranslated = outcome?.ok ? outcome.value[nodeIdx] : undefined;
+              if (rawTranslated) {
+                // Re-wrap with the ORIGINAL node's own leading/trailing
+                // whitespace (see `originalWhitespace`'s declaration
+                // comment above) — trimming first before re-wrapping
+                // rather than blindly prepending/appending, since a
+                // provider that DOES preserve some of its own whitespace
+                // (Google keeps most leading space, per the same
+                // investigation) must not end up with it doubled.
+                const original = originalWhitespace.get(node);
+                const translated = original
+                  ? original.leading + rawTranslated.trim() + original.trailing
+                  : rawTranslated;
                 mutationWatcher.noteOwnWrite(node, translated);
                 node.data = translated;
                 lastSeenText.set(node, translated);
@@ -490,9 +557,21 @@ export function createPageTranslator(options: PageTranslatorOptions) {
       // since removed from the DOM, so a long-lived SPA session doesn't
       // hold onto every detached Text node it ever translated — see the
       // field's declaration comment above.
-      for (const node of nodesToRestore.keys()) {
-        if (!node.isConnected) nodesToRestore.delete(node);
-      }
+      //
+      // Real bug this closed: pruning on a SINGLE disconnected tick raced
+      // virtualized/recycled list widgets, which routinely detach a node
+      // and reattach the SAME node (same identity, same already-translated
+      // .data) within one resweep interval as the user scrolls. A node
+      // caught disconnected mid-tick lost its nodesToRestore entry right
+      // then — and never got it back, because queueOrRequeueIfChanged only
+      // re-adds a reappearing node when its content actually changed
+      // (lastSeenText still matches unchanged, already-translated text).
+      // That node was then permanently unrestorable: restorePage() had no
+      // original text to roll it back to. `pruneDisconnectedRestoreEntries`
+      // (above) requires two CONSECUTIVE disconnected ticks — a real
+      // removal, not a recycle-pool blip — before pruning, giving a full
+      // resweep interval for a transient detach/reattach to resolve first.
+      pruneDisconnectedRestoreEntries(nodesToRestore, disconnectedLastTick);
       const added = collectTextNodes(document.body, noTranslateOptions()).filter((n) =>
         queueOrRequeueIfChanged(n),
       ).length;

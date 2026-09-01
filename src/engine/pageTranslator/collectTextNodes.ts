@@ -32,7 +32,43 @@
 // — the sample renders as broken, uncopyable code. `<code>` is the
 // standard semantic tag for exactly this, whether standalone or nested
 // inside a `<pre>` block.
-const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEXTAREA', 'CODE']);
+/**
+ * Real gap this closed, found by comparing against TWP's live source
+ * (`htmlTagsNoTranslate`): `SVG`, `TEMPLATE`, `MATH`, `MJX-CONTAINER`, and
+ * `TEX-MATH` were never skipped here. `<template>` content is inert (never
+ * rendered, and can be programmatically cloned/reused by page JS — mutating
+ * its text is corrupting markup, not translating a page). `<svg>` mixes
+ * icon/graphic markup with structural `<text>` labels that translation
+ * would just as often break as help. `<math>`/`<mjx-container>`/
+ * `<tex-math>` hold MathJax/MathML formulas — translating a formula's
+ * variable names breaks rendering (the exact failure TWP's own issue #704
+ * reports).
+ *
+ * Compared case-insensitively below (`el.tagName.toUpperCase()`), because
+ * SVG elements keep their authored lowercase `tagName` in the DOM (`'svg'`)
+ * unlike ordinary HTML elements, which are always uppercased — confirmed
+ * directly against happy-dom before relying on it.
+ */
+const SKIP_TAGS = new Set([
+  'SCRIPT',
+  'STYLE',
+  'NOSCRIPT',
+  'TEXTAREA',
+  'CODE',
+  'SVG',
+  'TEMPLATE',
+  'MATH',
+  'MJX-CONTAINER',
+  'TEX-MATH',
+]);
+
+/**
+ * Icon-font ligature classes: the element's rendered "text" is actually a
+ * font ligature that maps a literal word like `home` or `menu` to a glyph
+ * (Material Icons/Symbols). Translating that word breaks the icon —
+ * matches TWP's own class-based skip list, found via source comparison.
+ */
+const ICON_FONT_CLASSES = ['material-icons', 'material-symbols-outlined'];
 
 /**
  * `<pre>` is skipped separately from `SKIP_TAGS` (not always, not never) —
@@ -101,7 +137,7 @@ export interface NoTranslateOptions {
 export function isNoTranslateNode(node: Node, options: NoTranslateOptions = {}): boolean {
   if (node.nodeType === Node.ELEMENT_NODE) {
     const el = node as Element;
-    if (SKIP_TAGS.has(el.tagName)) return true;
+    if (SKIP_TAGS.has(el.tagName.toUpperCase())) return true;
     // Explicit `false` opts out; omitted/`true` both mean "translate",
     // matching the config default (`true`) so this function's own
     // no-options behavior agrees with the shipped product default instead
@@ -116,6 +152,7 @@ export function isNoTranslateNode(node: Node, options: NoTranslateOptions = {}):
     // translation tool, and both were previously ignored here entirely.
     if (el.getAttribute('translate') === 'no') return true;
     if (el.classList.contains('notranslate')) return true;
+    if (ICON_FONT_CLASSES.some((cls) => el.classList.contains(cls))) return true;
   }
   return false;
 }

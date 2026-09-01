@@ -2,25 +2,22 @@ import type { Translator } from '../translator';
 
 /**
  * Tab-bar title translation. Kept as its own module (not folded into
- * `translateLoop.ts`) so the cache, the batching workaround, and the
- * dual-write are unit-testable without a DOM-walking full page.
+ * `translateLoop.ts`) so the cache and the dual-write are unit-testable
+ * without a DOM-walking full page. `collectTextNodes` in `translateLoop.ts`
+ * never reaches `<title>` (it walks from `document.body`, and `<title>`
+ * lives in `<head>`), so page translation alone never touches the tab
+ * title — this module exists to cover that gap.
  *
- * Why this needs a workaround at all: `google.ts`'s `transformPiece` only
- * wraps a piece in `<a i=N>` markers when it has more than one string
- * (`arr.length > 1`) — Google's endpoint does not reliably translate a
- * single bare string sent without that wrapper. `collectTextNodes` in
- * `translateLoop.ts` never reaches `<title>` (it walks from
- * `document.body`, and `<title>` lives in `<head>`), so page translation
- * alone never touches the tab title, and a naive one-off single-string
- * translation call for the title would hit exactly that `arr.length > 1`
- * gap and silently come back untranslated on Google.
- *
- * The fix, scoped to just this module rather than a global change to every
- * single-text translation path (which would be a much bigger blast
- * radius for one narrow provider quirk): send the title alongside a
- * throwaway second string (`pieces: [[text, ' ']]`), which reliably lands
- * on the `arr.length > 1` branch, then keep only the first result and
- * discard the second.
+ * Session 7 originally worked around a real Google quirk here directly
+ * (`transformPiece` only wraps a piece in `<a i=N>` markers when it has
+ * more than one string, and a bare single-string request doesn't
+ * translate reliably) by hand-padding `pieces: [[text, ' ']]`. `google.ts`
+ * has since grown that same padding automatically for every caller
+ * (Session 4+/beta.28), including the reconciliation fix for content
+ * Google reflows into the padding slot — this module now just sends an
+ * ordinary single-string piece and lets the provider handle it, rather
+ * than duplicating (and, as an audit later found, silently bypassing) that
+ * logic here.
  */
 
 const MAX_CACHE_ENTRIES = 50;
@@ -75,10 +72,20 @@ export function createTitleTranslator(options: TitleTranslatorOptions) {
   }
 
   /**
-   * Sends the title through the same multi-item batching path every other
-   * piece of page text uses (via a throwaway second string), so it reliably
-   * gets the `<a i=N>` wrapping Google's endpoint needs. See the module
-   * header for why a plain single-string request would silently fail.
+   * Sends the title as an ordinary single-string piece — `google.ts`'s own
+   * `translateBatch` already pads any single-string piece with a throwaway
+   * second string itself now (Session 7+, see its header comment for why a
+   * plain single-string request would silently fail), and reconciles the
+   * result correctly on the way back (including a later fix for content
+   * Google reflows into the padding slot). This function used to hand-roll
+   * its own `[text, ' ']` padding to work around the same problem — real
+   * bug, found via an audit: because that made the piece already 2 items
+   * long, it silently bypassed `google.ts`'s (now-fixed) reconciliation
+   * logic entirely, which only engages for pieces it padded itself. Any
+   * reflowed content Google put in the throwaway slot was then just
+   * dropped at the `outcome.value[0]` read below, unlike regular page
+   * text. Letting the provider pad instead of doing it here fixes that for
+   * free and removes the duplicate logic.
    */
   async function translateTitleString(text: string): Promise<TranslateTitleResult> {
     const key = cacheKey(text);
@@ -93,7 +100,7 @@ export function createTitleTranslator(options: TitleTranslatorOptions) {
         outcomes = await options.translator.translateBatch({
           sourceLanguage: options.getSourceLanguage(),
           targetLanguage: currentTargetLanguage,
-          pieces: [[text, ' ']],
+          pieces: [[text]],
           dontSortResults: false,
         });
       } catch (e) {
