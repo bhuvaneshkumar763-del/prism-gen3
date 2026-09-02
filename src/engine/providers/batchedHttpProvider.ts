@@ -111,7 +111,14 @@ interface PendingRequest {
    * inert there specifically — see google.ts's `transformPiece`).
    */
   originalText: string;
-  resolve(result: { text: string; detectedLanguage: string | null } | null): void;
+  /**
+   * `wasSuspicious` (added via a reliability audit): true when a null
+   * `result` means "confirmed suspicious after a repair retry, not a real
+   * network/HTTP failure" — see `translator.ts`'s `'suspicious'` error
+   * kind doc comment for why this distinction matters. Only meaningful
+   * when `result` is null; ignored otherwise.
+   */
+  resolve(result: { text: string; detectedLanguage: string | null } | null, wasSuspicious?: boolean): void;
 }
 
 const DEFAULT_MAX_BATCH_CHARS = 2000;
@@ -175,6 +182,17 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
 
   /** In-flight dedupe: two identical concurrent piece requests share one HTTP call's result. */
   const inFlightByKey = new Map<string, Promise<{ text: string; detectedLanguage: string | null } | null>>();
+  // Provider-level (not per-`translateBatch()` call), for the same reason
+  // `inFlightByKey` is: a piece deduped into an ALREADY-in-flight promise
+  // from a separate `translateBatch()` call needs to find the SAME
+  // WeakSet the original call's `resolveFn` added that promise to — a
+  // WeakSet scoped inside `translateBatch()` would be empty for every
+  // caller except the one that happened to own the original request,
+  // silently defaulting every deduped-in caller back to the network-error
+  // kind. Keyed by the shared result PROMISE, not by index or
+  // PendingRequest, so this works regardless of which call's index the
+  // promise ends up at.
+  const suspiciousPromises = new WeakSet<Promise<{ text: string; detectedLanguage: string | null } | null>>();
 
   async function sendOnce(
     sourceLanguage: string,
@@ -301,6 +319,14 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
       );
       const results = options.callbacks.parseResponse(response, pending.length);
       const missing: PendingRequest[] = [];
+      // Tracks WHICH of `missing`'s entries got there via the sanity check
+      // (a real 200 OK that just looked like a silent echo) rather than
+      // `!result` (no data at all for this piece — closer to a real
+      // network/parse failure). Only meaningful once a repair retry is
+      // ALSO exhausted (see the `isIndividualRetry` branch below) — see
+      // `translator.ts`'s `'suspicious'` error kind for why this
+      // distinction is threaded all the way out to the caller.
+      const missingBecauseSuspicious = new Set<PendingRequest>();
 
       pending.forEach((p, idx) => {
         const result = results[idx];
@@ -314,6 +340,7 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
         const decoded = options.callbacks.splitPieceResponse(result.text, false).join('');
         if (isSuspiciousOutcome(p.originalText, { ...result, text: decoded }, sourceLanguage, targetLanguage)) {
           missing.push(p);
+          missingBecauseSuspicious.add(p);
           return;
         }
         p.resolve(result);
@@ -322,7 +349,7 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
       if (missing.length === 0) return;
       if (isIndividualRetry) {
         missing.forEach((p) => {
-          p.resolve(null);
+          p.resolve(null, missingBecauseSuspicious.has(p));
         });
         return;
       }
@@ -378,9 +405,15 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
           continue;
         }
 
-        let resolveFn!: (result: { text: string; detectedLanguage: string | null } | null) => void;
+        let resolveFn!: (
+          result: { text: string; detectedLanguage: string | null } | null,
+          wasSuspicious?: boolean,
+        ) => void;
         const promise = new Promise<{ text: string; detectedLanguage: string | null } | null>((resolve) => {
-          resolveFn = resolve;
+          resolveFn = (result, wasSuspicious) => {
+            if (wasSuspicious) suspiciousPromises.add(promise);
+            resolve(result);
+          };
         });
         inFlightByKey.set(dedupeKey, promise);
         promise.finally(() => {
@@ -413,7 +446,14 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
           const outcome: PieceOutcome = !piece
             ? err({ kind: 'parse', message: 'internal: piece/result index mismatch' })
             : !result
-              ? err({ kind: 'network', message: `[${options.name}] no result for this piece` })
+              ? err(
+                  suspiciousPromises.has(resultPromise)
+                    ? {
+                        kind: 'suspicious',
+                        message: `[${options.name}] result kept looking like a silent-echo failure after a repair retry`,
+                      }
+                    : { kind: 'network', message: `[${options.name}] no result for this piece` },
+                )
               : ok(options.callbacks.splitPieceResponse(result.text, dontSortResults));
           outcomes[idx] = outcome;
           onPieceComplete?.(idx, outcome);

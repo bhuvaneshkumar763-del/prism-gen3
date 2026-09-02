@@ -147,15 +147,25 @@ try {
     await page.close();
   }
 
-  // Session 8's keepalive alarm — confirm the manifest permission actually
-  // resulted in a registered alarm, not just that the manifest key exists.
-  const alarms = await worker.evaluate(() => chrome.alarms.getAll());
-  const hasKeepalive = alarms.some((a) => a.name === 'prism-keepalive');
-  if (!hasKeepalive) {
-    console.error(`FAIL keepalive alarm: expected "prism-keepalive" registered, found ${JSON.stringify(alarms)}`);
+  // Session 8's keepalive alarm, real gap this closed (found via a speed
+  // audit): the alarm used to be created unconditionally at startup and
+  // left running for the entire browser session — waking the worker every
+  // 24s, ~2,880 times a day, even for a user who never translates
+  // anything. It's now scoped to actual translate activity (created when
+  // a translate handler starts, self-clears once none are in flight), so
+  // the useful assertion changed from "does it exist at startup" (it
+  // shouldn't, anymore) to "does the manifest permission still actually
+  // produce a real registered alarm when a translate is genuinely in
+  // flight" — checked further down, right after triggering one.
+  const alarmsAtStartup = await worker.evaluate(() => chrome.alarms.getAll());
+  const hasKeepaliveAtStartup = alarmsAtStartup.some((a) => a.name === 'prism-keepalive');
+  if (hasKeepaliveAtStartup) {
+    console.error(
+      `FAIL keepalive alarm: expected NO "prism-keepalive" alarm at startup (scoped to active translate work now), found ${JSON.stringify(alarmsAtStartup)}`,
+    );
     failures++;
   } else {
-    console.log('pass keepalive alarm registered');
+    console.log('pass keepalive alarm absent at startup (scoped to active translate work)');
   }
 
   // Content-script injection: navigate a real page and confirm the
@@ -207,6 +217,33 @@ try {
       failures++;
     } else {
       console.log('pass floating bubble present on an untranslated page');
+    }
+
+    // Second half of the keepalive check above: a real translate must
+    // still produce a real registered alarm (proving the manifest
+    // permission and the activity-scoped create/clear wiring both still
+    // work), even though none exists at idle startup anymore.
+    await worker.evaluate(async () => {
+      const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+      const message = { id: 2, type: 'pageTranslate', data: { targetLanguage: 'es' }, timestamp: Date.now() };
+      await chrome.tabs.sendMessage(tab.id, message);
+    });
+    let hasKeepaliveDuringTranslate = false;
+    for (let i = 0; i < 20; i++) {
+      const alarms = await worker.evaluate(() => chrome.alarms.getAll());
+      if (alarms.some((a) => a.name === 'prism-keepalive')) {
+        hasKeepaliveDuringTranslate = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    if (!hasKeepaliveDuringTranslate) {
+      console.error(
+        'FAIL keepalive alarm: expected "prism-keepalive" registered while a real translate was in flight, never saw it',
+      );
+      failures++;
+    } else {
+      console.log('pass keepalive alarm registered during a real translate');
     }
 
     await page.close();

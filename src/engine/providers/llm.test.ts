@@ -88,8 +88,20 @@ describe('createLlmProvider', () => {
 
     // The retry hits the same mock and gets the same malformed response
     // again, so it ultimately resolves as a failure rather than a false
-    // "successfully translated to an empty string."
-    expect(results[0]).toEqual({ ok: false, error: { kind: 'network', message: '[llm] no result for this piece' } });
+    // "successfully translated to an empty string." `kind: 'suspicious'`
+    // (not 'network') — a reliability fix found via audit: this was a
+    // real, successful HTTP response the whole time, just one the sanity
+    // check kept rejecting even after a repair retry — see
+    // translator.ts's 'suspicious' kind doc comment for why that
+    // distinction matters (a caller must not retry this forever the way
+    // it correctly does for a genuine network failure).
+    expect(results[0]).toEqual({
+      ok: false,
+      error: {
+        kind: 'suspicious',
+        message: '[llm] result kept looking like a silent-echo failure after a repair retry',
+      },
+    });
     expect(fetchMock).toHaveBeenCalledTimes(2); // original attempt + one individual retry
   });
 

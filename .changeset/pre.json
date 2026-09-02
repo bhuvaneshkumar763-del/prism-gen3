@@ -17,6 +17,7 @@
     "fix-source-language-override",
     "google-single-item-piece-wrapping",
     "graceful-degradation",
+    "keepalive-scoping-and-retry-loop-fix",
     "link-cluster-isolation",
     "new-icon",
     "popup-full-parity",

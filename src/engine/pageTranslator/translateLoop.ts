@@ -509,8 +509,28 @@ export function createPageTranslator(options: PageTranslatorOptions) {
         // catch(e) block below only ever fires for a genuine thrown
         // exception (e.g. the messaging round trip itself breaking), which
         // is real but rarer.
-        const allFailed = outcomes.length > 0 && outcomes.every((o) => !o?.ok);
-        if (allFailed) {
+        const failedOutcomes = outcomes.filter((o) => !o?.ok);
+        const allFailed = outcomes.length > 0 && failedOutcomes.length === outcomes.length;
+        // Reliability fix, found via audit and reproduced live (Wikipedia's
+        // language-switcher endonyms — a language's own name written in its
+        // own script, which Google correctly declines to translate): a
+        // batch whose failures are ALL `kind: 'suspicious'` is not evidence
+        // the provider is down — every request in it got a real 200 OK,
+        // the response just kept looking like a silent-echo failure (see
+        // translator.ts's `'suspicious'` kind doc comment). Retrying that
+        // forever via the branch below produced an unbounded request loop
+        // against a provider that was never actually broken and was never
+        // going to return anything different. A batch like this instead
+        // falls through to the per-node loop, which routes it through
+        // noteMissingResult()'s existing bounded (give-up-after-3) retry —
+        // exactly the mechanism already used for an isolated missing
+        // piece within an otherwise-successful batch. A batch with ANY
+        // genuine network/http/parse failure still takes the unconditional
+        // retry-forever branch below, since that failure kind IS real
+        // evidence of a broken provider.
+        const allFailedAreSuspicious =
+          allFailed && failedOutcomes.every((o) => o && !o.ok && o.error.kind === 'suspicious');
+        if (allFailed && !allFailedAreSuspicious) {
           consecutiveBatchFailures++;
           if (consecutiveBatchFailures >= CONSECUTIVE_FAILURES_BEFORE_SURFACING) {
             const firstFailure = outcomes.find((o) => !o?.ok);

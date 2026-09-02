@@ -11,7 +11,20 @@ import { err, ok, type Result } from '../shared/result';
  * not guessed at with only LibreTranslate as a data point.
  */
 
-export type TranslateError = { kind: 'network' | 'http' | 'parse'; message: string };
+/**
+ * `'suspicious'` (added via a reliability audit): distinct from `'network'`
+ * — the request itself SUCCEEDED (a real 200 OK), the response just kept
+ * looking like a silent-echo failure per `outputSanityCheck.ts` even after
+ * a repair retry. This is NOT evidence the provider is down, unlike a real
+ * `'network'`/`'http'` failure — a caller retrying a genuine network/HTTP
+ * failure forever until the provider recovers is correct; retrying a
+ * confirmed-suspicious-but-successful response forever is not, since a
+ * working provider will keep returning the exact same (possibly entirely
+ * legitimate — a proper noun, an untranslated language endonym) result
+ * every time. See `translateLoop.ts`'s `allFailed` handling for where this
+ * distinction is actually used.
+ */
+export type TranslateError = { kind: 'network' | 'http' | 'parse' | 'suspicious'; message: string };
 
 /**
  * One unit of translation work. Usually a single string; more than one

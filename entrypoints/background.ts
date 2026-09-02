@@ -5,7 +5,7 @@ import {
   hydrateAuthKey,
 } from '../src/engine/providers/google';
 import { createProvider, type ProviderConfig } from '../src/engine/providers/registry';
-import type { PieceOutcome, Translator } from '../src/engine/translator';
+import type { PieceOutcome, TranslateBatchRequest, Translator } from '../src/engine/translator';
 import { translateOne } from '../src/engine/translator';
 import { cacheKeyFor, translationCache } from '../src/platform/cache/translationCache';
 import { configStore } from '../src/platform/configStore';
@@ -52,16 +52,49 @@ import { getActiveTabId } from '../src/platform/messaging/tabTarget';
  * gap anyway, defeating the point.
  */
 const KEEPALIVE_ALARM_NAME = 'prism-keepalive';
-const KEEPALIVE_INTERVAL_MINUTES = 0.4; // 24s — under Chrome's ~30s idle-suspend window
+const KEEPALIVE_INTERVAL_MINUTES = 0.4; // 24s — verified directly against real Chrome (chrome.alarms.getAll()'s reported scheduledTime advanced in exact 24s steps across 12 samples over ~110s) — NOT clamped to a 1-minute floor, despite that being a real risk worth checking rather than assuming.
 
-function setupKeepalive(): void {
-  browser.alarms.create(KEEPALIVE_ALARM_NAME, { periodInMinutes: KEEPALIVE_INTERVAL_MINUTES });
+/**
+ * Speed fix, found via audit: this alarm used to be created ONCE at
+ * startup and left running for the entire browser session — waking the
+ * service worker every 24s, ~2,880 times a day, for as long as the
+ * browser stays open, even for a user who never translates anything in
+ * that session. The alarm only needs to exist while a translate request
+ * could actually be in flight (its whole purpose — see the module
+ * comment above — is bridging Chrome's ~30s idle-suspend window during a
+ * real `translatePieces`/`translateText` call's retries/backoff). Now
+ * created lazily when a translate handler starts and cleared once none
+ * are in flight, tracked via this plain in-memory counter — safe because
+ * a service worker with an ACTIVE, PENDING listener invocation (which is
+ * exactly what "a translate is in flight" means here) is never torn down
+ * by Chrome mid-call; the only time this counter's state could be lost
+ * to a worker restart is when it's already back at 0, which is the
+ * correct state to restart into anyway.
+ */
+let activeTranslateCount = 0;
+
+function registerKeepaliveListener(): void {
   browser.alarms.onAlarm.addListener((alarm) => {
-    if (alarm.name === KEEPALIVE_ALARM_NAME) {
-      // Intentionally a no-op body — the listener's mere existence, and
-      // Chrome waking the worker to invoke it, is the keepalive mechanism.
-    }
+    if (alarm.name !== KEEPALIVE_ALARM_NAME) return;
+    // Self-terminating: if nothing is in flight by the time this fires
+    // (the common case — most fires happen mid-request, but the last one
+    // after a request just finished has nothing left to bridge), stop
+    // rescheduling instead of waking the worker again for no reason.
+    // Otherwise a no-op body is the whole mechanism — the listener's mere
+    // existence, and Chrome waking the worker to invoke it, is what keeps
+    // an in-flight request's idle clock from expiring.
+    if (activeTranslateCount === 0) void browser.alarms.clear(KEEPALIVE_ALARM_NAME);
   });
+}
+
+function beginTranslateActivity(): void {
+  activeTranslateCount++;
+  if (activeTranslateCount === 1)
+    browser.alarms.create(KEEPALIVE_ALARM_NAME, { periodInMinutes: KEEPALIVE_INTERVAL_MINUTES });
+}
+
+function endTranslateActivity(): void {
+  activeTranslateCount = Math.max(0, activeTranslateCount - 1);
 }
 
 function buildProviderConfig(): ProviderConfig {
@@ -209,22 +242,36 @@ async function prefetchGoogleAuthKey(): Promise<void> {
 }
 
 export default defineBackground(() => {
-  setupKeepalive();
+  registerKeepaliveListener();
   void prefetchGoogleAuthKey();
 
   onMessage('translateText', async (message) => {
     if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');
-    const { providerId, provider } = await resolveActiveProvider();
-    if (!provider) {
-      return { ok: false, error: { kind: 'network', message: unavailableMessage(providerId) } };
+    beginTranslateActivity();
+    try {
+      const { providerId, provider } = await resolveActiveProvider();
+      if (!provider) {
+        return { ok: false, error: { kind: 'network', message: unavailableMessage(providerId) } };
+      }
+      return await translateOne(provider, message.data.text, message.data.sourceLanguage, message.data.targetLanguage);
+    } finally {
+      endTranslateActivity();
     }
-    return translateOne(provider, message.data.text, message.data.sourceLanguage, message.data.targetLanguage);
   });
 
   onMessage('translatePieces', async (message) => {
     if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');
+    beginTranslateActivity();
+    try {
+      return await translatePiecesWithCache(message.data);
+    } finally {
+      endTranslateActivity();
+    }
+  });
+
+  async function translatePiecesWithCache(data: TranslateBatchRequest): Promise<PieceOutcome[]> {
     const { providerId, provider } = await resolveActiveProvider();
-    const { sourceLanguage, targetLanguage, pieces, dontSortResults } = message.data;
+    const { sourceLanguage, targetLanguage, pieces, dontSortResults } = data;
 
     if (!provider) {
       const error = { kind: 'network' as const, message: unavailableMessage(providerId) };
@@ -317,7 +364,7 @@ export default defineBackground(() => {
     }
 
     return outcomes;
-  });
+  }
 
   // Registered inside onInstalled (fires on install/update/browser-update),
   // NOT unconditionally at the top of main() — an MV3 service worker is

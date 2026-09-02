@@ -583,6 +583,99 @@ describe('createPageTranslator', () => {
     }
   });
 
+  // Reliability fix, found via audit and reproduced live against Wikipedia
+  // (a language-switcher endonym — a language's own name in its own
+  // script — which Google correctly declines to translate, so the same
+  // request keeps coming back looking like a silent-echo failure forever).
+  // A batch whose every outcome is `kind: 'suspicious'` is NOT evidence the
+  // provider is broken, unlike `kind: 'http'`/`'network'`/`'parse'` above —
+  // it must NOT take the unconditional-retry-forever `allFailed` branch.
+  // Instead it falls through to the per-node loop, which routes it through
+  // noteMissingResult()'s existing bounded (give-up-after-3, cooldown-gated)
+  // retry, and no error is surfaced.
+  it("does not retry unconditionally forever, and never surfaces an error, when every outcome in a batch is kind:'suspicious'", async () => {
+    document.body.innerHTML = '<p id="a">alpha</p>';
+    const errorSpy = vi.fn();
+    const translateBatch = vi.fn(
+      async (request: { pieces: string[][] }): Promise<PieceOutcome[]> =>
+        request.pieces.map(() => err({ kind: 'suspicious', message: 'confirmed suspicious after repair retry' })),
+    );
+
+    const pageTranslator = createPageTranslator({
+      translator: { translateBatch },
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+    pageTranslator.onError(errorSpy);
+
+    vi.useFakeTimers();
+    try {
+      void pageTranslator.translatePage('es');
+      // noteMissingResult gives up after 3 requeues (a 4th attempt sees
+      // attempts > 3), each gated behind its 1500ms cooldown — advance
+      // comfortably past all of them.
+      for (let i = 0; i < 8; i++) {
+        await vi.advanceTimersByTimeAsync(1600);
+      }
+
+      const callCountAfterGivingUp = translateBatch.mock.calls.length;
+      expect(callCountAfterGivingUp).toBe(4); // 1 original attempt + 3 bounded retries, then give-up
+
+      // Confirm it's actually stopped, not just between cooldowns — the
+      // real bug this closed had NO bound at all (an unconditional retry
+      // every tick, forever).
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(translateBatch.mock.calls.length).toBe(callCountAfterGivingUp);
+
+      expect(pageTranslator.getLastError()).toBeNull();
+      expect(errorSpy).not.toHaveBeenCalled();
+
+      pageTranslator.restorePage();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Contrast case, same fix: a batch failing for a REAL reason (not just
+  // "confirmed suspicious") must keep taking the unconditional-retry-forever
+  // `allFailed` branch exactly as before — this is the behavior a genuinely
+  // down/misconfigured provider needs, and the fix above must not weaken it.
+  it("still retries unconditionally forever (no cooldown, no give-up) when a batch's failures are genuine network/http failures, not kind:'suspicious'", async () => {
+    document.body.innerHTML = '<p id="a">alpha</p>';
+    const translateBatch = vi.fn(
+      async (request: { pieces: string[][] }): Promise<PieceOutcome[]> =>
+        request.pieces.map(() => err({ kind: 'network', message: 'provider unreachable' })),
+    );
+
+    const pageTranslator = createPageTranslator({
+      translator: { translateBatch },
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+
+    vi.useFakeTimers();
+    try {
+      void pageTranslator.translatePage('es');
+      // Once an error surfaces (after 3 failures), retries back off
+      // (8s, 12s, 18s, ... capped at 30s — see translateLoop.ts's
+      // `nextDelay` comment) rather than the faster pre-surfacing pace, so
+      // this needs a much longer window than the suspicious-batch test
+      // above to observe a 5th call.
+      for (let i = 0; i < 10; i++) {
+        await vi.advanceTimersByTimeAsync(6000);
+      }
+
+      // noteMissingResult's 4-call plateau does NOT apply here — a genuine
+      // failure keeps retrying well past it, and an error does surface.
+      expect(translateBatch.mock.calls.length).toBeGreaterThan(4);
+      expect(pageTranslator.getLastError()).toBe('provider unreachable');
+
+      pageTranslator.restorePage();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('surfaces a real error even when the thrown value is not an Error instance', async () => {
     document.body.innerHTML = '<p>hello</p>';
     const throwsAStringTranslator: Translator = {

@@ -462,6 +462,93 @@ describe('createBatchedHttpProvider — lifecycle hooks and concurrency', () => 
   });
 });
 
+describe('createBatchedHttpProvider — suspicious vs. network failure kind', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("classifies a piece confirmed-suspicious after repair as kind:'suspicious', NOT kind:'network', real bug this closed: a caller (translateLoop.ts) that sees kind:'network' retries a batch unconditionally forever, correct for a genuinely broken provider — but a repeatedly-suspicious-yet-successful response (a real 200 OK that just looks like a silent echo, e.g. a language's own name in its own script staying unchanged) is NOT evidence the provider is down, and retrying it forever burns real requests against a live endpoint indefinitely with no error ever surfacing", async () => {
+    // Empty text for real non-empty input is isSuspiciousOutcome's own
+    // unconditional signature (see outputSanityCheck.ts) — reliably
+    // triggers the sanity check on every attempt (original + repair),
+    // matching a persistent real-world case, not a one-off blip.
+    const fetchMock = vi.fn(async () => jsonResponse({ texts: [''] }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const provider = createBatchedHttpProvider({
+      name: 'suspicious-test',
+      baseUrl: 'https://example.com',
+      method: 'POST',
+      callbacks: { ...plainCallbacks(), getRequestBody: () => '{}' },
+    });
+
+    const results = await provider.translateBatch({ sourceLanguage: 'en', targetLanguage: 'es', pieces: [['hello']] });
+
+    expect(results).toEqual([
+      {
+        ok: false,
+        error: {
+          kind: 'suspicious',
+          message: '[suspicious-test] result kept looking like a silent-echo failure after a repair retry',
+        },
+      },
+    ]);
+  });
+
+  it("still classifies a genuinely missing result (no data at all for this piece) as kind:'network', unaffected by the suspicious-kind fix", async () => {
+    // Echoes back one FEWER text than pieces actually sent in each call's
+    // body — results[idx] is undefined for the last piece, the real "no
+    // result" case (not the "got a result but it looked suspicious" one).
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      const sent = JSON.parse(init.body as string) as string[];
+      return jsonResponse({ texts: sent.slice(0, -1).map(() => 'hola') });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const provider = createBatchedHttpProvider({
+      name: 'missing-test',
+      baseUrl: 'https://example.com',
+      method: 'POST',
+      callbacks: { ...plainCallbacks(), getRequestBody: (_s, _t, texts) => JSON.stringify(texts) },
+    });
+
+    const results = await provider.translateBatch({
+      sourceLanguage: 'en',
+      targetLanguage: 'es',
+      pieces: [['hello'], ['world']],
+    });
+
+    expect(results[0]).toEqual({ ok: true, value: ['hola'] });
+    expect(results[1]).toEqual({
+      ok: false,
+      error: { kind: 'network', message: '[missing-test] no result for this piece' },
+    });
+  });
+
+  it('two concurrent requests for the IDENTICAL piece both correctly inherit the suspicious classification from the shared in-flight request, not the network-failure default', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ texts: [''] }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const provider = createBatchedHttpProvider({
+      name: 'dedupe-suspicious-test',
+      baseUrl: 'https://example.com',
+      method: 'POST',
+      callbacks: { ...plainCallbacks(), getRequestBody: () => '{}' },
+    });
+
+    // Two SEPARATE translateBatch() calls for the exact same piece,
+    // concurrently — the second shares the first's in-flight request via
+    // inFlightByKey's dedupe rather than getting its own PendingRequest.
+    const [resultsA, resultsB] = await Promise.all([
+      provider.translateBatch({ sourceLanguage: 'en', targetLanguage: 'es', pieces: [['hello']] }),
+      provider.translateBatch({ sourceLanguage: 'en', targetLanguage: 'es', pieces: [['hello']] }),
+    ]);
+
+    expect(resultsA[0]).toEqual({ ok: false, error: { kind: 'suspicious', message: expect.any(String) } });
+    expect(resultsB[0]).toEqual({ ok: false, error: { kind: 'suspicious', message: expect.any(String) } });
+  });
+});
+
 describe('createBatchedHttpProvider — connectivity awareness', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
