@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, expect, it } from 'vitest';
-import { collectTextNodes, isNoTranslateNode } from './collectTextNodes';
+import { collectAttributeTargets, collectTextNodes, isNoTranslateNode } from './collectTextNodes';
 
 describe('collectTextNodes', () => {
   it('collects non-blank text nodes in document order', () => {
@@ -249,5 +249,105 @@ describe('isNoTranslateNode', () => {
     el.setAttribute('value', 'yes');
     el.textContent = 'Yes';
     expect(isNoTranslateNode(el)).toBe(false);
+  });
+});
+
+describe('collectAttributeTargets', () => {
+  it('finds placeholder on input and textarea', () => {
+    document.body.innerHTML = '<input placeholder="Search..."><textarea placeholder="Type here"></textarea>';
+    const targets = collectAttributeTargets(document.body);
+    expect(targets.map((t) => [t.element.tagName, t.attribute])).toEqual([
+      ['INPUT', 'placeholder'],
+      ['TEXTAREA', 'placeholder'],
+    ]);
+  });
+
+  it("finds a textarea's own placeholder even though TEXTAREA is a skip tag for text-node collection, real gap this closed: the skip-tag rule exists to protect a textarea's typed CONTENT, not its placeholder attribute", () => {
+    document.body.innerHTML =
+      '<textarea placeholder="Type your message">already typed content, not translatable</textarea>';
+    const targets = collectAttributeTargets(document.body);
+    expect(targets).toHaveLength(1);
+    expect(targets[0]?.attribute).toBe('placeholder');
+  });
+
+  it('finds alt on img and area, and on an image-type input, but not a plain input', () => {
+    document.body.innerHTML =
+      '<img alt="A photo"><area alt="A region"><input type="image" alt="Submit button"><input type="text" alt="not applicable">';
+    const targets = collectAttributeTargets(document.body);
+    expect(targets.filter((t) => t.attribute === 'alt')).toHaveLength(3);
+  });
+
+  it("finds value on button/submit/reset inputs, but not other input types (a real form field's value is user data, never touched)", () => {
+    document.body.innerHTML =
+      '<input type="button" value="Click me"><input type="submit" value="Send"><input type="reset" value="Clear">' +
+      '<input type="text" value="user typed this"><input type="email" value="user@example.com">';
+    const targets = collectAttributeTargets(document.body);
+    expect(targets.filter((t) => t.attribute === 'value')).toHaveLength(3);
+  });
+
+  it('finds title on any element, matching TWP\'s real "body [title]" scope', () => {
+    document.body.innerHTML = '<p title="A paragraph tooltip">Text</p><abbr title="abbreviation">abbr</abbr>';
+    const targets = collectAttributeTargets(document.body);
+    expect(targets.filter((t) => t.attribute === 'title')).toHaveLength(2);
+  });
+
+  it('skips a letterless or blank attribute value', () => {
+    document.body.innerHTML = '<img alt="   "><img alt="42"><input placeholder="">';
+    const targets = collectAttributeTargets(document.body);
+    expect(targets).toHaveLength(0);
+  });
+
+  it('honors translate="no" and .notranslate on the element itself', () => {
+    document.body.innerHTML =
+      '<input placeholder="Skip me" translate="no"><input placeholder="Skip me too" class="notranslate">';
+    const targets = collectAttributeTargets(document.body);
+    expect(targets).toHaveLength(0);
+  });
+
+  it('honors translate="no"/.notranslate on an ANCESTOR, not just the element itself', () => {
+    document.body.innerHTML = '<div translate="no"><input placeholder="Skip me, my ancestor opted out"></div>';
+    const targets = collectAttributeTargets(document.body);
+    expect(targets).toHaveLength(0);
+  });
+
+  it("skips a contenteditable element's own attributes", () => {
+    document.body.innerHTML = '<div contenteditable="true" title="Skip this tooltip">content</div>';
+    const targets = collectAttributeTargets(document.body);
+    expect(targets).toHaveLength(0);
+  });
+
+  it('does not descend into a <script>/<style>/<svg> subtree looking for attribute targets', () => {
+    document.body.innerHTML =
+      '<script><input placeholder="not real DOM, irrelevant"></script>' +
+      '<svg><title>icon tooltip inside svg</title></svg>' +
+      '<p title="Real tooltip">Visible</p>';
+    const targets = collectAttributeTargets(document.body);
+    expect(targets).toHaveLength(1);
+    expect(targets[0]?.element.tagName).toBe('P');
+  });
+
+  it("still finds an icon-font-classed element's own title, even though its text content is skipped", () => {
+    document.body.innerHTML = '<span class="material-icons" title="Home">home</span>';
+    const targets = collectAttributeTargets(document.body);
+    expect(targets).toHaveLength(1);
+    expect(targets[0]?.attribute).toBe('title');
+  });
+
+  it('finds a title inside a <code> block — a real tooltip is independent of the (skipped) code content', () => {
+    document.body.innerHTML = '<code title="npm install command">npm install</code>';
+    const targets = collectAttributeTargets(document.body);
+    expect(targets).toHaveLength(1);
+    expect(targets[0]?.attribute).toBe('title');
+  });
+
+  it('finds multiple different attributes on the same element', () => {
+    document.body.innerHTML = '<input placeholder="Search" title="Search box">';
+    const targets = collectAttributeTargets(document.body);
+    expect(targets.map((t) => t.attribute).sort()).toEqual(['placeholder', 'title']);
+  });
+
+  it('returns an empty array for a page with no translatable attributes', () => {
+    document.body.innerHTML = '<p>Just some text</p><div>More text</div>';
+    expect(collectAttributeTargets(document.body)).toEqual([]);
   });
 });

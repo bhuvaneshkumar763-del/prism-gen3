@@ -1,6 +1,7 @@
 import { connectivity } from '../connectivity';
 import type { BatchingHint } from '../providers/descriptors';
 import type { Translator } from '../translator';
+import { createAttributeTranslator } from './attributeTranslator';
 import { collectTextNodes, isNoTranslateNode } from './collectTextNodes';
 import { createDedupeTracker } from './dedupe';
 import { groupNodesForBatching } from './grouping';
@@ -760,6 +761,17 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     isPageVisible: () => document.visibilityState === 'visible',
   });
 
+  // Attribute translation (round-3 audit follow-up): `placeholder`/`alt`/
+  // `value`/`title` — search boxes, image alt text, button labels, and
+  // tooltips used to stay in the original language on an otherwise fully
+  // translated page, since none of them are `Text` nodes this module's own
+  // walk ever reaches. Same `sourceLanguageOverride` fix as titleTranslator
+  // just above, for the same reason.
+  const attributeTranslator = createAttributeTranslator({
+    translator: options.translator,
+    getSourceLanguage: () => sourceLanguageOverride ?? options.getSourceLanguage(),
+  });
+
   const resweep = createResweepScheduler({
     isTranslated: () => pageLanguageState === 'translated',
     isPageVisible: () => document.visibilityState === 'visible',
@@ -872,6 +884,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     resweep.start();
     wakeRoutine();
     void titleTranslator.start(targetLanguage);
+    void attributeTranslator.start(targetLanguage);
   }
 
   function restorePage(): void {
@@ -889,6 +902,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     mutationWatcher.disable();
     resweep.stop();
     titleTranslator.restore();
+    attributeTranslator.restore();
     consecutiveBatchFailures = 0;
     // Reset alongside consecutiveBatchFailures: this drives the surfaced-error
     // backoff (8s → 30s), and a fresh translate after a restore is a brand-new

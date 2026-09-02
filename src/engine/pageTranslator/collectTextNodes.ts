@@ -253,3 +253,84 @@ export function collectTextNodes(root: Node, options: NoTranslateOptions = {}): 
   }
   return nodes;
 }
+
+/**
+ * Attribute translation (round-3 audit follow-up): the target set matches
+ * TWP's real, current source (`getAttributesToTranslate`, confirmed live,
+ * not assumed) — `placeholder` on `<input>`/`<textarea>`, `alt` on
+ * `<area>`/`<img>`/an image-type `<input>`, `value` on a
+ * button/submit/reset `<input>` (its VISIBLE label, not a form's actual
+ * submitted data — a text/email/etc. input's `value` is real user data and
+ * is deliberately never touched), and `title` on any element (a tooltip).
+ * Honors `.notranslate`/`translate="no"`/`isContentEditable` on the
+ * element itself and every ancestor, same as text-node collection. Does
+ * NOT reuse `isNoTranslateNode` wholesale for the element's OWN attribute
+ * check, though — that function's `SKIP_TAGS` set (script/style/textarea/
+ * code/svg/...) exists to stop text-node collection from DESCENDING into
+ * those subtrees, but `<textarea>` is itself one of exactly the elements
+ * whose OWN `placeholder` this feature must translate (per TWP's real
+ * source), and a `<code title="...">` tooltip or an icon-font-classed
+ * element's own `title` are legitimate real attributes independent of
+ * their (skipped) text content. `SKIP_TAGS`/icon-font/KaTeX/no-value-
+ * `<option>` remain exactly right for deciding whether to DESCEND into an
+ * element's children, just not for excluding the element's own attributes.
+ */
+export interface AttributeTarget {
+  element: Element;
+  attribute: 'placeholder' | 'alt' | 'value' | 'title';
+}
+
+function isHardExcludedFromAttributes(el: Element): boolean {
+  if ((el as HTMLElement).isContentEditable) return true;
+  if (el.getAttribute('translate') === 'no') return true;
+  if (el.classList.contains('notranslate')) return true;
+  return false;
+}
+
+function translatableAttributesFor(el: Element): AttributeTarget['attribute'][] {
+  const attrs: AttributeTarget['attribute'][] = [];
+  const tag = el.tagName;
+  if ((tag === 'INPUT' || tag === 'TEXTAREA') && el.hasAttribute('placeholder')) attrs.push('placeholder');
+  const inputType = tag === 'INPUT' ? (el as HTMLInputElement).type : null;
+  if ((tag === 'AREA' || tag === 'IMG' || inputType === 'image') && el.hasAttribute('alt')) attrs.push('alt');
+  if (
+    tag === 'INPUT' &&
+    (inputType === 'button' || inputType === 'submit' || inputType === 'reset') &&
+    el.hasAttribute('value')
+  ) {
+    attrs.push('value');
+  }
+  if (el.hasAttribute('title')) attrs.push('title');
+  return attrs;
+}
+
+/**
+ * Same iterative (explicit stack) walk as `collectTextNodes` and the same
+ * reason — a pathologically deep DOM shouldn't blow the call stack. Unlike
+ * `collectTextNodes`, every ELEMENT is inspected (not just skipped over on
+ * the way to text), since the attributes live on the elements themselves.
+ */
+export function collectAttributeTargets(root: Node, options: NoTranslateOptions = {}): AttributeTarget[] {
+  const targets: AttributeTarget[] = [];
+  const stack: Node[] = [root];
+  while (stack.length > 0) {
+    // biome-ignore lint/style/noNonNullAssertion: length just checked above
+    const node = stack.pop()!;
+    if (node.nodeType !== Node.ELEMENT_NODE) continue;
+    const el = node as Element;
+    if (isHardExcludedFromAttributes(el)) continue;
+    for (const attribute of translatableAttributesFor(el)) {
+      const value = el.getAttribute(attribute);
+      if (value?.trim() && !NO_LETTERS.test(value)) targets.push({ element: el, attribute });
+    }
+    if (isNoTranslateNode(el, options)) continue; // don't descend, but this element's own attributes above were still checked
+    const children = el.childNodes;
+    for (let i = children.length - 1; i >= 0; i--) {
+      // biome-ignore lint/style/noNonNullAssertion: i is always in bounds
+      stack.push(children[i]!);
+    }
+    const shadowRoot = el.shadowRoot;
+    if (shadowRoot) stack.push(shadowRoot);
+  }
+  return targets;
+}
