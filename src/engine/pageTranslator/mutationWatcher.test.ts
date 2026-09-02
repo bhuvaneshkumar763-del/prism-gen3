@@ -51,6 +51,31 @@ describe('createMutationWatcher', () => {
     watcher.disable();
   });
 
+  it("does not report an added node whose ANCESTOR (not itself, not its immediate parent) matches isNoTranslateNode, real bug this closed: a syntax highlighter rewriting <code>'s innerHTML with plain <span>s, or a charting library appending <text> labels into an existing <svg>, both add nodes that are themselves ordinary tags — only some ancestor further up is the actual skip tag", async () => {
+    // <span> (the node the mutation reports) is two levels below the
+    // actual skip tag (<code>) — its own immediate parent is an
+    // ordinary <div>, not <code> itself.
+    document.body.innerHTML = '<pre><code><div id="wrapper"></div></code></pre>';
+    const wrapper = document.getElementById('wrapper');
+    if (!wrapper) throw new Error('unreachable');
+    const onNewRoot = vi.fn();
+    const watcher = createMutationWatcher({
+      isTranslated: () => true,
+      isNoTranslateNode: (node) => (node as Element).tagName === 'CODE',
+      onNewRoot,
+      onChangedTextNode: vi.fn(),
+    });
+    watcher.enable();
+
+    const span = document.createElement('span');
+    span.textContent = 'function';
+    wrapper.append(span);
+    await flushMutations();
+
+    expect(onNewRoot).not.toHaveBeenCalled();
+    watcher.disable();
+  });
+
   it('reports a direct text-node data change via onChangedTextNode when translated', async () => {
     document.body.innerHTML = '<p>original</p>';
     const textNode = document.body.querySelector('p')?.firstChild as Text;
@@ -84,6 +109,27 @@ describe('createMutationWatcher', () => {
 
     watcher.noteOwnWrite(textNode, 'our translation');
     textNode.data = 'our translation';
+    await flushMutations();
+
+    expect(onChangedTextNode).not.toHaveBeenCalled();
+    watcher.disable();
+  });
+
+  it('does not report a characterData change on a text node whose ANCESTOR (not just its immediate parent) matches isNoTranslateNode', async () => {
+    document.body.innerHTML = '<pre><code><span id="host">function</span></code></pre>';
+    const textNode = document.getElementById('host')?.firstChild as Text;
+    const onChangedTextNode = vi.fn();
+    const watcher = createMutationWatcher({
+      isTranslated: () => true,
+      isNoTranslateNode: (node) => (node as Element).tagName === 'CODE',
+      onNewRoot: vi.fn(),
+      onChangedTextNode,
+    });
+    watcher.enable();
+
+    // The changed text node's own immediate parent is <span>, not <code> —
+    // only its grandparent is the actual skip tag.
+    textNode.data = 'let';
     await flushMutations();
 
     expect(onChangedTextNode).not.toHaveBeenCalled();

@@ -146,6 +146,12 @@ export function createPageTranslator(options: PageTranslatorOptions) {
   const disconnectedLastTick = new WeakSet<Text>();
   const requeueAt = new WeakMap<Text, number>();
   const missingResultAttempts = new WeakMap<Text, number>();
+  /**
+   * Guards against piling up duplicate cooldown-retry timers for the same
+   * node in `noteMissingResult` — see its doc comment for the bug this
+   * closes.
+   */
+  const cooldownRetryScheduled = new WeakSet<Text>();
 
   const stateListeners = new Set<(state: PageLanguageState) => void>();
   const errorListeners = new Set<(message: string | null, kind: ErrorKind) => void>();
@@ -288,12 +294,45 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     return false;
   }
 
+  /**
+   * Real bug this closed, found via audit and reproduced directly: a node
+   * whose piece keeps coming back missing/suspicious while OTHER pieces in
+   * the same batch keep succeeding (so `allFailed` below never fires, no
+   * error ever surfaces) used to get silently abandoned after only 1-2
+   * tries, permanently stuck in its original language with no error and no
+   * way back into the queue. The cause: the cooldown check below used to
+   * just `return` when a node's last requeue was under 1500ms ago — not
+   * only skipping THIS attempt (reasonable, avoids a tight retry loop) but
+   * dropping the node out of `queue` and every future consideration too,
+   * since it neither re-pushed the node nor incremented its attempt count.
+   * Worse, resweep's own backstop can't rescue it either:
+   * `queueOrRequeueIfChanged` only re-adds a node when `lastSeenText`
+   * doesn't match its current `.data`, but `requeueChangedTextNode` (called
+   * on the PRIOR attempt) already set `lastSeenText` to this exact
+   * (still-untranslated) text, so a later resweep sees no change and skips
+   * it too. Now schedules a real retry once the cooldown window actually
+   * elapses instead of dropping it — `cooldownRetryScheduled` prevents
+   * piling up duplicate timers if this is called again for the same node
+   * before that fires.
+   */
   function noteMissingResult(node: Text): void {
     if (!node.isConnected) return;
     const text = (node.textContent ?? '').trim();
     if (!text || !HAS_LETTER.test(text)) return;
     const last = requeueAt.get(node);
-    if (last !== undefined && Date.now() - last < 1500) return;
+    if (last !== undefined && Date.now() - last < 1500) {
+      if (!cooldownRetryScheduled.has(node)) {
+        cooldownRetryScheduled.add(node);
+        setTimeout(
+          () => {
+            cooldownRetryScheduled.delete(node);
+            noteMissingResult(node);
+          },
+          1500 - (Date.now() - last),
+        );
+      }
+      return;
+    }
     const attempts = (missingResultAttempts.get(node) ?? 0) + 1;
     if (attempts > 3) return; // give up after 3 tries — a genuinely untranslatable fragment
     missingResultAttempts.set(node, attempts);
@@ -352,12 +391,27 @@ export function createPageTranslator(options: PageTranslatorOptions) {
       // — captured from the same `node.data` used to build `pieces` below,
       // reapplied at write-back regardless of which provider translated it.
       const originalWhitespace = new Map<Text, { leading: string; trailing: string }>();
+      /**
+       * Real bug this closed, found via audit: write-back only ever
+       * checked `node.isConnected`, never that `node.data` was still the
+       * text that was actually SENT for translation. A node the page
+       * updates in place while its translation is in flight (a live
+       * score, a streaming chat message, a countdown) — connected the
+       * whole time, so that check alone says nothing changed — used to
+       * get silently clobbered with the translation of the STALE text
+       * once the response came back, discarding whatever the page had
+       * legitimately written in the meantime. Captured here (alongside
+       * `originalWhitespace`, from the same `node.data` used to build
+       * `pieces` below) and checked in `writeTranslatedNode`.
+       */
+      const sentText = new Map<Text, string>();
       groups.forEach((group) => {
         group.forEach((node) => {
           const text = node.data;
           const leading = text.slice(0, text.length - text.trimStart().length);
           const trailing = text.slice(text.trimEnd().length);
           if (leading || trailing) originalWhitespace.set(node, { leading, trailing });
+          sentText.set(node, text);
         });
       });
 
@@ -377,11 +431,31 @@ export function createPageTranslator(options: PageTranslatorOptions) {
        * doesn't change what its own-write loop guard does.
        */
       function writeTranslatedNode(node: Text, rawTranslated: string): void {
+        // See `sentText`'s declaration comment above — a node whose live
+        // content no longer matches what was actually sent has been
+        // updated by the page while this translation was in flight.
+        // Writing the (now stale) translation over it would silently
+        // discard that legitimate update; requeue for a fresh translation
+        // of the CURRENT content instead, exactly as an in-place
+        // characterData mutation observed by mutationWatcher would.
+        if (sentText.get(node) !== node.data) {
+          requeueChangedTextNode(node);
+          return;
+        }
         const original = originalWhitespace.get(node);
         const translated = original ? original.leading + rawTranslated.trim() + original.trailing : rawTranslated;
         mutationWatcher.noteOwnWrite(node, translated);
         node.data = translated;
         lastSeenText.set(node, translated);
+        // Keeps this in sync with the just-written value — without this,
+        // the SAME tick's redundant second write-back pass (see this
+        // function's own doc comment: onPieceComplete writes first, the
+        // final loop below always runs too) would see `node.data` (now
+        // the translated text) no longer match the ORIGINAL `sentText`
+        // entry, mistake its own already-applied write for an external
+        // page update, and wastefully requeue the node to re-translate
+        // its own output.
+        sentText.set(node, translated);
         missingResultAttempts.delete(node);
       }
 
@@ -457,6 +531,24 @@ export function createPageTranslator(options: PageTranslatorOptions) {
           // all. Keeping the whole batch in the queue is what lets
           // translateBatch() keep being attempted every tick until this is
           // either confirmed broken (error surfaces) or recovers.
+          //
+          // Real bug this closed, found via audit: a DISCONNECTED node in
+          // this batch was silently dropped here — filtered out of the
+          // requeue (correctly; it's not on the page right now) but,
+          // unlike the success path's per-node loop just below, never had
+          // its `lastSeenText` entry cleared either. A node the page
+          // detaches, re-mutates the content of WHILE OFF-DOM (no mutation
+          // record fires for a disconnected node), and reattaches with
+          // that SAME new content — routine in virtualized/recycled list
+          // widgets — would then reappear with `lastSeenText` still
+          // matching its ORIGINAL (translated-attempt-failed) text, so
+          // `queueOrRequeueIfChanged` sees no change and never requeues
+          // it: permanently stuck untranslated, same bug class the
+          // success path's own `lastSeenText.delete` below already
+          // guards against.
+          batch.forEach((n) => {
+            if (!n.isConnected) lastSeenText.delete(n);
+          });
           queue.unshift(...batch.filter((n) => n.isConnected));
         } else {
           consecutiveBatchFailures = 0;
@@ -496,7 +588,12 @@ export function createPageTranslator(options: PageTranslatorOptions) {
         // old cycle's nodes into a queue that now belongs to a new one.
         if (requestedUnderGeneration !== cycleGeneration) return;
         console.error('[prism] translation batch failed', e);
-        // Transient failure (network blip, background restart) — retry next tick.
+        // Transient failure (network blip, background restart) — retry
+        // next tick. Same `lastSeenText` cleanup for disconnected nodes as
+        // the `allFailed` branch above, and for the same reason.
+        batch.forEach((n) => {
+          if (!n.isConnected) lastSeenText.delete(n);
+        });
         queue.unshift(...batch.filter((n) => n.isConnected));
         consecutiveBatchFailures++;
         if (consecutiveBatchFailures >= CONSECUTIVE_FAILURES_BEFORE_SURFACING) {

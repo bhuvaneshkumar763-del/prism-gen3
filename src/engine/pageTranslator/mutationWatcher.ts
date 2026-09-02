@@ -61,13 +61,40 @@ export function createMutationWatcher(options: MutationWatcherOptions) {
     lastWritten.set(node, text);
   }
 
+  /**
+   * Real gap this closed, found via audit: `options.isNoTranslateNode`
+   * only ever inspects ONE node — by design, it's the same check
+   * `collectTextNodes.ts`'s own walk uses, which never needs to look
+   * further because IT walks top-down from `document.body` and stops
+   * descending the instant a skip node is found, so every descendant is
+   * implicitly covered. A mutation callback has no such guarantee: the
+   * node it's handed can be reinserted or rewritten arbitrarily deep
+   * inside a subtree the initial walk already decided to skip (a syntax
+   * highlighter rewriting `<code>`'s innerHTML with plain `<span>`s, a
+   * charting library appending `<text>` labels into an existing `<svg>`),
+   * and neither the added node nor its immediate parent is itself a skip
+   * tag/class — only some ANCESTOR further up is. Without walking up,
+   * that content gets queued and translated even though the very same
+   * content would have been correctly skipped had it been present at
+   * initial-walk time. Nothing recovers from this afterward: dedupe.ts
+   * marks the node tracked forever once queued.
+   */
+  function hasNoTranslateAncestor(node: Node): boolean {
+    let el = node.parentElement;
+    while (el) {
+      if (options.isNoTranslateNode(el)) return true;
+      el = el.parentElement;
+    }
+    return false;
+  }
+
   const observer = new MutationObserver((mutations) => {
     const newRoots: Node[] = [];
     const changedTextNodes = new Set<Text>();
 
     for (const mutation of mutations) {
       mutation.addedNodes.forEach((node) => {
-        if (!options.isNoTranslateNode(node)) newRoots.push(node);
+        if (!options.isNoTranslateNode(node) && !hasNoTranslateAncestor(node)) newRoots.push(node);
       });
 
       if (mutation.type === 'characterData' && options.isTranslated()) {
@@ -78,7 +105,8 @@ export function createMutationWatcher(options: MutationWatcherOptions) {
           lastWritten.get(t) !== t.data &&
           HAS_LETTER.test(t.data || '') &&
           parent &&
-          !options.isNoTranslateNode(parent)
+          !options.isNoTranslateNode(parent) &&
+          !hasNoTranslateAncestor(t)
         ) {
           changedTextNodes.add(t);
         }

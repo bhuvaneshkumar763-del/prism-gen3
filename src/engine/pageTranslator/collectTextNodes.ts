@@ -67,8 +67,43 @@ const SKIP_TAGS = new Set([
  * font ligature that maps a literal word like `home` or `menu` to a glyph
  * (Material Icons/Symbols). Translating that word breaks the icon —
  * matches TWP's own class-based skip list, found via source comparison.
+ *
+ * Real gap this closed, found via audit: only 2 of Google's 8 official
+ * Material icon-font class names were listed (`material-icons`,
+ * `material-symbols-outlined`) — the other two Material Icons style
+ * variants (`-outlined`, `-round`, `-sharp`, `-two-tone`) and the other
+ * two Material Symbols weights (`-rounded`, `-sharp`) were missed
+ * entirely, so a site using any of them got its icon ligature text
+ * translated exactly like the two originally-listed classes were meant to
+ * prevent.
  */
-const ICON_FONT_CLASSES = ['material-icons', 'material-symbols-outlined'];
+const ICON_FONT_CLASSES = [
+  'material-icons',
+  'material-icons-outlined',
+  'material-icons-round',
+  'material-icons-sharp',
+  'material-icons-two-tone',
+  'material-symbols-outlined',
+  'material-symbols-rounded',
+  'material-symbols-sharp',
+];
+
+/**
+ * KaTeX-rendered formulas. Real gap this closed, found via audit: `MATH`
+ * (above, in `SKIP_TAGS`) only protects the invisible, screen-reader-only
+ * `<math>`/MathML half of KaTeX's output — the half the user actually
+ * SEES is plain `<span>`s (`.katex-html`), completely unprotected. A
+ * formula like `sin(x)` renders as `<span class="mop">sin</span>
+ * <span class="mord mathnormal">x</span>` inside `.katex`; without this,
+ * "sin" gets translated as an ordinary English word ("pecado" in Spanish,
+ * "péché" in French — both mean "sin" the noun, not the trig function),
+ * breaking the formula while the still-correct MathML copy stays hidden.
+ * `.katex` (the single outer wrapper around both the MathML and HTML
+ * renderings) is skipped as one atomic unit rather than targeting
+ * `.katex-html` specifically, so this can't itself become the "only the
+ * visible half is covered" gap it's fixing.
+ */
+const KATEX_CLASS = 'katex';
 
 /**
  * `<pre>` is skipped separately from `SKIP_TAGS` (not always, not never) —
@@ -153,6 +188,14 @@ export function isNoTranslateNode(node: Node, options: NoTranslateOptions = {}):
     if (el.getAttribute('translate') === 'no') return true;
     if (el.classList.contains('notranslate')) return true;
     if (ICON_FONT_CLASSES.some((cls) => el.classList.contains(cls))) return true;
+    if (el.classList.contains(KATEX_CLASS)) return true;
+    // Real gap this closed, found via audit: an <option> with no `value`
+    // attribute submits its own TEXT as the form value (the HTML spec's
+    // default) — translating it silently changes what the form actually
+    // submits, not just what the user sees. An <option> that DOES have an
+    // explicit `value` is unaffected either way, so only the no-value case
+    // needs skipping.
+    if (el.tagName === 'OPTION' && !el.hasAttribute('value')) return true;
   }
   return false;
 }

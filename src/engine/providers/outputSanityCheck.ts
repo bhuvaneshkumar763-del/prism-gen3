@@ -44,6 +44,28 @@ const MIN_SUSPICIOUS_IDENTICAL_LENGTH = 40;
  * unchanged) disproportionately hits exactly these short strings.
  */
 const NON_LATIN_SCRIPT = /[Ͱ-ϿЀ-ӿ԰-֏֐-׿؀-ۿऀ-ॿ฀-๿぀-ヿ㐀-䶿一-鿿가-힯]/;
+/** Same ranges as `NON_LATIN_SCRIPT`, global-flagged so `hasScriptMismatch` can count every match rather than just testing presence. */
+const NON_LATIN_SCRIPT_GLOBAL = /[Ͱ-ϿЀ-ӿ԰-֏֐-׿؀-ۿऀ-ॿ฀-๿぀-ヿ㐀-䶿一-鿿가-힯]/gu;
+const LETTER_GLOBAL = /\p{L}/gu;
+
+/**
+ * Real regression this closed, a false positive introduced by the
+ * `hasScriptMismatch` fix itself: the original version fired on any text
+ * that merely CONTAINED at least one non-Latin character anywhere, so a
+ * legitimately-unchanged string with one incidental non-Latin letter or
+ * symbol mixed into otherwise-Latin prose — "Δt" (a physics delta), a
+ * Cyrillic-spelled proper noun in an English sentence — got flagged as a
+ * silent-echo failure even though there was nothing wrong with it,
+ * costing a wasted repair request and up to 3 wasted requeue ticks (see
+ * `batchedHttpProvider.ts`'s repair path) for text that was correct all
+ * along. A genuinely non-Latin nav label/heading/button — the real
+ * failure mode this exists to catch — is always ENTIRELY or almost
+ * entirely non-Latin; requiring the overwhelming majority of the text's
+ * actual letters (not digits/punctuation/whitespace) to be non-Latin,
+ * rather than just "at least one," keeps catching that case while no
+ * longer tripping on an incidental symbol or name embedded in Latin text.
+ */
+const NON_LATIN_MAJORITY_THRESHOLD = 0.8;
 
 /**
  * Base (region-stripped) codes for languages that don't normally use Latin
@@ -96,6 +118,10 @@ const NON_LATIN_TARGET_LANGUAGES = new Set([
  */
 function hasScriptMismatch(text: string, targetLanguage: string): boolean {
   if (!NON_LATIN_SCRIPT.test(text)) return false;
+  const letters = text.match(LETTER_GLOBAL);
+  if (!letters || letters.length === 0) return false;
+  const nonLatinCount = text.match(NON_LATIN_SCRIPT_GLOBAL)?.length ?? 0;
+  if (nonLatinCount / letters.length < NON_LATIN_MAJORITY_THRESHOLD) return false;
   return !NON_LATIN_TARGET_LANGUAGES.has(baseLanguageTag(targetLanguage));
 }
 

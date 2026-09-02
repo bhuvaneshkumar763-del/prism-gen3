@@ -210,4 +210,44 @@ describe('isNoTranslateNode', () => {
       expect(isNoTranslateNode(el)).toBe(true);
     }
   });
+
+  it('is true for every official Material icon-font class variant, real gap this closed: only 2 of the 8 real class names were listed, so a site using e.g. material-icons-round or material-symbols-sharp got its icon ligature text translated', () => {
+    for (const cls of [
+      'material-icons-outlined',
+      'material-icons-round',
+      'material-icons-sharp',
+      'material-icons-two-tone',
+      'material-symbols-rounded',
+      'material-symbols-sharp',
+    ]) {
+      const el = document.createElement('span');
+      el.className = cls;
+      expect(isNoTranslateNode(el)).toBe(true);
+    }
+  });
+
+  it('is true for a KaTeX-rendered formula\'s visible HTML half (.katex), real gap this closed: skipping the <math> tag alone only protects the hidden screen-reader MathML copy — the visible .katex-html rendering (e.g. <span class="mop">sin</span> for the trig function) is plain <span>s with no tag-based signal, and translating "sin" as the ordinary English word breaks the formula', () => {
+    const el = document.createElement('span');
+    el.className = 'katex';
+    expect(isNoTranslateNode(el)).toBe(true);
+  });
+
+  it('is false for an ordinary element that merely contains the substring "katex" in an unrelated class name (exact class match, not a substring check)', () => {
+    const el = document.createElement('span');
+    el.className = 'katex-example-not-real';
+    expect(isNoTranslateNode(el)).toBe(false);
+  });
+
+  it('is true for an <option> with no value attribute, real gap this closed: an <option> with no value attribute submits its own TEXT as the form value (HTML default) — translating it silently changes what the form submits, not just what the user sees', () => {
+    const el = document.createElement('option');
+    el.textContent = 'Yes';
+    expect(isNoTranslateNode(el)).toBe(true);
+  });
+
+  it('is false for an <option> that has an explicit value attribute — only its display text changes, not what the form submits', () => {
+    const el = document.createElement('option');
+    el.setAttribute('value', 'yes');
+    el.textContent = 'Yes';
+    expect(isNoTranslateNode(el)).toBe(false);
+  });
 });

@@ -62,5 +62,14 @@ describe('isSuspiciousOutcome', () => {
     it('does not flag when the result genuinely differs (real translation happened)', () => {
       expect(isSuspiciousOutcome('登陸', { text: 'Login', detectedLanguage: null }, 'zh', 'en')).toBe(false);
     });
+
+    it('does not flag a legitimately-unchanged SHORT string that merely CONTAINS one incidental non-Latin character mixed into otherwise-Latin text, real regression this closed: the original version fired on any non-Latin character anywhere, so a physics variable like "Δt" was wrongly flagged even though it is mostly-Latin at 1-of-2 letters, wasting a repair request and requeue ticks on text that was correct all along', () => {
+      expect(isSuspiciousOutcome('Δt', { text: 'Δt', detectedLanguage: null }, 'en', 'fr')).toBe(false);
+    });
+
+    it('still flags a short mostly-non-Latin string that has one incidental Latin character mixed in (4-of-5 letters non-Latin, at the 80% majority threshold), since it remains overwhelmingly non-Latin', () => {
+      // e.g. a mixed CJK+ASCII product/menu label that echoed back unchanged.
+      expect(isSuspiciousOutcome('登陸選項A', { text: '登陸選項A', detectedLanguage: null }, 'zh', 'en')).toBe(true);
+    });
   });
 });

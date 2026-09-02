@@ -207,6 +207,41 @@ describe('createPageTranslator', () => {
     expect(p.textContent).toBe('updated by the page');
   });
 
+  it('does not overwrite a node the page updated in place while its translation was in flight, real bug this closed: write-back only ever checked node.isConnected, never that node.data was still the text that was actually sent for translation — a live-updating node (a score, a streaming chat message) stays connected the whole time, so that check alone caught nothing, and the node used to get silently clobbered with the translation of stale, already-superseded text', async () => {
+    document.body.innerHTML = '<p id="score">score: 1</p>';
+    const scoreNode = (document.getElementById('score') as HTMLElement).firstChild as Text;
+
+    let releaseFirst!: () => void;
+    const firstHeld = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const translator: Translator = {
+      async translateBatch(request) {
+        await firstHeld;
+        return request.pieces.map((piece): PieceOutcome => ok(piece.map((s) => `TR:${s}`)));
+      },
+    };
+    const pageTranslator = createPageTranslator({
+      translator,
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+
+    void pageTranslator.translatePage('es'); // starts, hangs on firstHeld with 'score: 1' as the sent text
+    await new Promise((resolve) => setTimeout(resolve, 20)); // let the request actually go out with the OLD text
+
+    // The page updates the node in place while its translation is still
+    // in flight — same shape as a live scoreboard or a streaming chat
+    // message.
+    scoreNode.data = 'score: 2';
+
+    releaseFirst(); // the now-stale translation ('TR:score: 1') resolves
+    await waitFor(() => scoreNode.data === 'TR:score: 2'); // must re-translate the NEW content, not write the stale one
+
+    expect(scoreNode.data).toBe('TR:score: 2');
+    pageTranslator.restorePage();
+  });
+
   it('discards a slow batch from an abandoned cycle instead of overwriting the newer translation', async () => {
     // Ask for one language, switch to another before the first response
     // lands, then let the stale response arrive. It must not overwrite.
@@ -1183,6 +1218,144 @@ describe('incremental write-back (onPieceComplete)', () => {
 
     await waitFor(() => slowNode.data === 'SLOW');
     expect(fastNode.data).toBe('FAST');
+
+    pageTranslator.restorePage();
+  });
+});
+
+describe('noteMissingResult — cooldown retry (not silent abandonment)', () => {
+  afterEach(() => {
+    document.body.innerHTML = '';
+    vi.restoreAllMocks();
+  });
+
+  it("eventually translates a node whose piece keeps failing while a CONTINUOUSLY-REFRESHED companion piece in the same batch keeps succeeding, real bug this closed: once the companion first succeeds and leaves the queue, a lone failing node's batch is JUST that node — every tick then hits the allFailed path (which unconditionally retries, no cooldown, its own separate mechanism), masking the real bug. With fresh succeeding content in EVERY tick's batch (matching a real page's live-updating content — a score, a chat message), a failing node instead hits noteMissingResult's cooldown-gated retry on every attempt, and used to be silently dropped from the queue forever the first time a retry landed inside its own 1500ms cooldown — no error surfaced (allFailed never fires while the companion keeps succeeding), and nothing ever re-added it since its content never actually changed", async () => {
+    document.body.innerHTML = '<p id="a">alpha</p><p id="b">beta0</p>';
+    const aNode = (document.getElementById('a') as HTMLElement).firstChild as Text;
+    const bNode = (document.getElementById('b') as HTMLElement).firstChild as Text;
+    let aAttempts = 0;
+    let bCounter = 0;
+    const translateBatch = vi.fn(async (request: { pieces: string[][] }) =>
+      request.pieces.map((piece): PieceOutcome => {
+        const text = piece[0] ?? '';
+        if (text.startsWith('alpha')) {
+          aAttempts++;
+          // Fails its first 2 real attempts, succeeds on the 3rd — real
+          // pieces DO eventually recover; the bug was that a node inside
+          // the cooldown window never got a chance to find out.
+          if (aAttempts < 3) return err({ kind: 'network', message: 'simulated transient failure' });
+          return ok([text.toUpperCase()]);
+        }
+        return ok(piece.map((s) => s.toUpperCase())); // 'beta*' companion always succeeds
+      }),
+    );
+
+    const pageTranslator = createPageTranslator({
+      translator: { translateBatch },
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+
+    vi.useFakeTimers();
+    try {
+      void pageTranslator.translatePage('es');
+      await vi.advanceTimersByTimeAsync(0); // tick 1: 'a' fails (attempt 1) via noteMissingResult, 'b0' succeeds
+
+      // Keep refreshing the companion (a characterData mutation, picked
+      // up by mutationWatcher -> requeueChangedTextNode) every 100ms —
+      // simulating a real page's live-updating content — so 'a' is never
+      // left alone in a batch, which would route it through the
+      // DIFFERENT allFailed bypass instead of the cooldown path under
+      // test. 40 refreshes comfortably covers 'a's two retry cooldowns
+      // (1500ms each).
+      for (let i = 0; i < 40; i++) {
+        bNode.data = `beta${++bCounter}`;
+        await vi.advanceTimersByTimeAsync(100);
+      }
+
+      expect(aAttempts).toBe(3); // real bug: stayed at 1 forever without the fix
+      await waitFor(() => aNode.data === 'ALPHA');
+      expect(aNode.data).toBe('ALPHA');
+    } finally {
+      vi.useRealTimers();
+    }
+
+    pageTranslator.restorePage();
+  });
+});
+
+describe('failure paths clear lastSeenText for disconnected nodes', () => {
+  afterEach(() => {
+    document.body.innerHTML = '';
+    vi.restoreAllMocks();
+  });
+
+  it("re-translates a node that disconnected while its batch failed ENTIRELY (allFailed) and later reappears with unchanged content, real bug this closed: the allFailed requeue path filtered out disconnected nodes (correctly — they're not on the page) but, unlike the success path, never cleared their lastSeenText — so a recycled-list node reattached with the SAME (still-untranslated) text looked unchanged to queueOrRequeueIfChanged and was never requeued, permanently stuck", async () => {
+    document.body.innerHTML = '<p id="a">alpha</p>';
+    const p = document.getElementById('a') as HTMLParagraphElement;
+    const textNode = p.firstChild as Text;
+
+    let callCount = 0;
+    const translateBatch = vi.fn(async (): Promise<PieceOutcome[]> => {
+      callCount++;
+      if (callCount === 1) {
+        // The node is recycled out of the DOM while this (single-piece,
+        // whole-batch-failing) request is in flight.
+        p.remove();
+        return [err({ kind: 'network', message: 'simulated whole-batch failure' })];
+      }
+      return [ok(['ALPHA'])];
+    });
+
+    const pageTranslator = createPageTranslator({
+      translator: { translateBatch },
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+
+    await pageTranslator.translatePage('es');
+    await waitFor(() => callCount >= 1);
+
+    // Reattached with the SAME, still-untranslated content — the exact
+    // shape of a virtualized-list node pool reusing a recycled element.
+    document.body.appendChild(p);
+
+    await waitFor(() => textNode.data === 'ALPHA');
+    expect(textNode.data).toBe('ALPHA');
+    expect(callCount).toBeGreaterThanOrEqual(2); // proves it was actually re-sent, not left stuck
+
+    pageTranslator.restorePage();
+  });
+
+  it('re-translates a node that disconnected while its batch threw an exception, same fix applied to the catch(e) path for the same reason', async () => {
+    document.body.innerHTML = '<p id="a">alpha</p>';
+    const p = document.getElementById('a') as HTMLParagraphElement;
+    const textNode = p.firstChild as Text;
+
+    let callCount = 0;
+    const translateBatch = vi.fn(async (): Promise<PieceOutcome[]> => {
+      callCount++;
+      if (callCount === 1) {
+        p.remove();
+        throw new Error('simulated thrown failure');
+      }
+      return [ok(['ALPHA'])];
+    });
+
+    const pageTranslator = createPageTranslator({
+      translator: { translateBatch },
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+
+    await pageTranslator.translatePage('es');
+    await waitFor(() => callCount >= 1);
+
+    document.body.appendChild(p);
+
+    await waitFor(() => textNode.data === 'ALPHA');
+    expect(textNode.data).toBe('ALPHA');
+    expect(callCount).toBeGreaterThanOrEqual(2);
 
     pageTranslator.restorePage();
   });
