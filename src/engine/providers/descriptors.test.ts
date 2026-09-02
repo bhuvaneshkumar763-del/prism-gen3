@@ -11,12 +11,13 @@ describe('descriptors', () => {
     expect(getProviderDescriptor('nope')).toBeUndefined();
   });
 
-  it('getBatchingHint returns a grouping hint for llm, and undefined for providers without one', () => {
+  it('getBatchingHint returns a grouping hint for llm and google, and undefined for providers without one', () => {
     expect(getBatchingHint('llm')).toEqual({ groupByBlock: true, maxGroupChars: 2000 });
-    // google's batchingHint was removed post-launch — real reflow
-    // corruption confirmed against the live endpoint for some language
-    // pairs, see descriptors.ts's comment on the google entry.
-    expect(getBatchingHint('google')).toBeUndefined();
+    // google's batchingHint was re-enabled (round-3 audit follow-up) now
+    // that google.ts has its own repair mechanism for the reflow
+    // corruption that got it removed post-launch — see descriptors.ts's
+    // comment on the google entry.
+    expect(getBatchingHint('google')).toEqual({ groupByBlock: true, maxGroupChars: 2000 });
     expect(getBatchingHint('googleCloudTranslate')).toBeUndefined();
     expect(getBatchingHint('nope')).toBeUndefined();
   });

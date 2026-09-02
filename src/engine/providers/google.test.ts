@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { PieceOutcome } from '../translator';
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
@@ -169,11 +170,25 @@ describe('createGoogleProvider', () => {
     expect(results).toEqual([{ ok: true, value: ['Bonjour', ' Monde'] }]);
   });
 
-  it('appends (rather than overwrites) when an index appears more than once — a real reflow case', async () => {
+  it('reconstructs the raw reflowed text when an index appears more than once (a real reflow case), for the case nothing else repairs it', async () => {
+    // splitPieceResponse's own reconstruction (append rather than
+    // overwrite when an index recurs) is still exercised directly here —
+    // this is the raw decode, before the grouping-repair mechanism (see
+    // the describe block below) decides whether to accept or repair it.
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(authScrapeResponse())
-      .mockResolvedValueOnce(jsonResponse([['<a i=0>Foo</a><a i=0>Bar</a>'], ['en']]));
+      .mockResolvedValueOnce(jsonResponse([['<a i=0>Foo</a><a i=0>Bar</a>'], ['en']]))
+      // The piece is genuinely grouped (2 strings) and this reflowed
+      // response only decodes to 1 entry — the grouping-repair mechanism
+      // (see below) detects the shape mismatch and repairs it via 2
+      // individual re-requests, bundled into one HTTP call.
+      .mockResolvedValueOnce(
+        jsonResponse([
+          ['<a i=0>Foo2</a><a i=1> </a>', '<a i=0>Bar2</a><a i=1> </a>'],
+          ['en', 'en'],
+        ]),
+      );
     vi.stubGlobal('fetch', fetchMock);
 
     const provider = await freshCreateGoogleProvider();
@@ -183,7 +198,177 @@ describe('createGoogleProvider', () => {
       pieces: [['hello', 'world']],
     });
 
-    expect(results).toEqual([{ ok: true, value: ['Foo Bar'] }]);
+    // Repaired, not the raw (wrong-shape, 1-entry) reflowed reconstruction.
+    expect(results).toEqual([{ ok: true, value: ['Foo2', 'Bar2'] }]);
+  });
+
+  describe('grouped-piece reflow repair (sentence-context grouping reopened this risk)', () => {
+    // Real risk this closes: re-enabling batchingHint for Google (below)
+    // means request.pieces can genuinely hold a multi-node group — several
+    // sibling DOM text nodes sent together for sentence context. This
+    // file's header comment already documents that Google can reflow
+    // translated content across a piece's own <a i=N> boundaries for some
+    // language pairs — content from one node merging into a neighboring
+    // node's index. A reflowed response decodes to FEWER entries than
+    // nodes were sent (byIndex collapses two node-indices into one Map
+    // key) — that shape mismatch is the trigger for an immediate, contained
+    // per-node repair, never the generic missing/suspicious retry (which
+    // would just resend the same multi-item wire text and could reflow
+    // again indefinitely).
+    it('repairs a grouped piece via individual per-node re-requests when Google reflows content across node boundaries, instead of silently losing a node', async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(authScrapeResponse())
+        .mockResolvedValueOnce(jsonResponse([['<a i=0>Foo</a><a i=0>Bar</a>'], ['en']]))
+        .mockResolvedValueOnce(
+          jsonResponse([
+            ['<a i=0>Konnichiwa</a><a i=1> </a>', '<a i=0>Sekai</a><a i=1> </a>'],
+            ['en', 'en'],
+          ]),
+        );
+      vi.stubGlobal('fetch', fetchMock);
+
+      const provider = await freshCreateGoogleProvider();
+      const results = await provider.translateBatch({
+        sourceLanguage: 'en',
+        targetLanguage: 'ja',
+        pieces: [['hello', 'world']],
+      });
+
+      expect(results).toEqual([{ ok: true, value: ['Konnichiwa', 'Sekai'] }]);
+      expect(fetchMock).toHaveBeenCalledTimes(3); // auth scrape + grouped attempt + one bundled repair request
+    });
+
+    it('does NOT repair a safe grouped response (indices appear once each, in order) — no extra request', async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(authScrapeResponse())
+        .mockResolvedValueOnce(jsonResponse([['<a i=0>Bonjour</a> <a i=1>Monde</a>'], ['en']]));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const provider = await freshCreateGoogleProvider();
+      const results = await provider.translateBatch({
+        sourceLanguage: 'en',
+        targetLanguage: 'fr',
+        pieces: [['hello', 'world']],
+      });
+
+      expect(results).toEqual([{ ok: true, value: ['Bonjour ', 'Monde'] }]);
+      expect(fetchMock).toHaveBeenCalledTimes(2); // no repair request
+    });
+
+    it('propagates a genuine failure from the repair itself, rather than silently returning the reflowed original', async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(authScrapeResponse())
+        .mockResolvedValueOnce(jsonResponse([['<a i=0>Foo</a><a i=0>Bar</a>'], ['en']]))
+        .mockResolvedValue(new Response('server error', { status: 500 })); // repair keeps failing
+      vi.stubGlobal('fetch', fetchMock);
+
+      const provider = await freshCreateGoogleProvider();
+      const results = await provider.translateBatch({
+        sourceLanguage: 'en',
+        targetLanguage: 'ja',
+        pieces: [['hello', 'world']],
+      });
+
+      expect(results[0]?.ok).toBe(false);
+    });
+
+    it('delivers the repaired value via onPieceComplete, never the raw reflowed intermediate one (no garbled-text flash)', async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(authScrapeResponse())
+        .mockResolvedValueOnce(jsonResponse([['<a i=0>Foo</a><a i=0>Bar</a>'], ['en']]))
+        .mockResolvedValueOnce(
+          jsonResponse([
+            ['<a i=0>Konnichiwa</a><a i=1> </a>', '<a i=0>Sekai</a><a i=1> </a>'],
+            ['en', 'en'],
+          ]),
+        );
+      vi.stubGlobal('fetch', fetchMock);
+
+      const provider = await freshCreateGoogleProvider();
+      const seen: PieceOutcome[] = [];
+      await provider.translateBatch({
+        sourceLanguage: 'en',
+        targetLanguage: 'ja',
+        pieces: [['hello', 'world']],
+        onPieceComplete: (_index, outcome) => {
+          seen.push(outcome);
+        },
+      });
+
+      // Exactly one call — the raw reflowed shape must never reach the
+      // incremental-write-back callback, only the final repaired result.
+      expect(seen).toHaveLength(1);
+      expect(seen[0]).toEqual({ ok: true, value: ['Konnichiwa', 'Sekai'] });
+    });
+
+    // Real corruption found via live verification against Wikipedia, not
+    // theorized: a large, citation-heavy group's response had its tag
+    // structure break partway through (the tokenizer's regex requires a
+    // tag's own content to contain no further `<`, so a malformed/nested
+    // occurrence stops it matching) — everything from that point folded in
+    // as untagged "orphan" text, literal `<a i=N>` markup and all, onto
+    // the nearest preceding index. The reconstructed array's LENGTH still
+    // matched what was sent in this exact case (a later index still got
+    // assigned, padding `.length` back up even though an earlier slot
+    // absorbed the leak as a hole) — so the length-mismatch check alone
+    // missed it; only a direct scan for leaked marker syntax in the
+    // decoded text catches this shape.
+    it('repairs a grouped piece whose response leaked literal <a i=N> marker text into a slot, even when the array LENGTH still happens to match what was sent', async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(authScrapeResponse())
+        // Constructed to reproduce the exact live failure shape: tag 0
+        // matches cleanly, then "<a i=1>Bar" never closes properly (a
+        // nested "<a i=2>" appears before its own "</a>"), so the
+        // tokenizer's regex skips ahead and matches "<a i=2>Baz</a>"
+        // instead — leaving "<a i=1>Bar" as raw orphan text folded onto
+        // index 0, while index 2 is real. Decodes to a 3-length array
+        // (index 2 pads .length up) with index 1 an empty hole and index
+        // 0 carrying the literal leaked markup — length 3 matches the
+        // 3-node piece sent below despite the corruption.
+        .mockResolvedValueOnce(jsonResponse([['<a i=0>Foo</a><a i=1>Bar<a i=2>Baz</a>'], ['en']]))
+        .mockResolvedValueOnce(
+          jsonResponse([
+            ['<a i=0>Un</a><a i=1> </a>', '<a i=0>Deux</a><a i=1> </a>', '<a i=0>Trois</a><a i=1> </a>'],
+            ['en', 'en', 'en'],
+          ]),
+        );
+      vi.stubGlobal('fetch', fetchMock);
+
+      const provider = await freshCreateGoogleProvider();
+      const results = await provider.translateBatch({
+        sourceLanguage: 'en',
+        targetLanguage: 'fr',
+        pieces: [['one', 'two', 'three']],
+      });
+
+      expect(results).toEqual([{ ok: true, value: ['Un', 'Deux', 'Trois'] }]);
+      // No literal marker syntax anywhere in the final result.
+      const flat = results[0]?.ok ? results[0].value.join('') : '';
+      expect(flat).not.toMatch(/<a i=\d+>|<\/a>/);
+    });
+
+    it('leaves a padded single-string piece alone — the repair mechanism must not double-handle the existing padding-reflow case', async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(authScrapeResponse())
+        .mockResolvedValueOnce(jsonResponse([['<a i=0>Apple iPhone 15 Pro </a><a i=1>Max</a>'], ['en']]));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const provider = await freshCreateGoogleProvider();
+      const results = await provider.translateBatch({
+        sourceLanguage: 'zh',
+        targetLanguage: 'en',
+        pieces: [['Apple iPhone 15 Pro Max']],
+      });
+
+      expect(results).toEqual([{ ok: true, value: ['Apple iPhone 15 Pro Max'] }]);
+      expect(fetchMock).toHaveBeenCalledTimes(2); // no repair request — handled by the existing padding-unwrap path
+    });
   });
 
   it('falls back to returning the raw (unescaped) text when the response has no <a i=N> tags at all', async () => {

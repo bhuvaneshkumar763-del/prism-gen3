@@ -37,22 +37,24 @@ export const providerDescriptors: ProviderDescriptor[] = [
     id: 'google',
     displayName: 'Google (free)',
     requiresKey: false,
-    // No batchingHint (removed post-launch, real bug): Google's endpoint
-    // has its own multi-item marker scheme (`<a i=N>`, see google.ts) that
-    // in principle reconstructs grouped sibling nodes back into their
-    // original per-node strings — but its own header comment already
-    // documented, and a real user report plus a live repro against the
-    // actual endpoint confirmed, that Google's translation genuinely
-    // reflows text across the piece-internal node boundaries for some
-    // language pairs (a real en->zh request produced duplicated/merged
-    // word fragments and truncated output; en->fr reconstructed cleanly —
-    // language-pair dependent, not a parsing bug in this codebase). The
-    // reported symptom ("random punctuation showing up at the start of
-    // sentences/paragraphs") is this same reflow, just manifesting as a
-    // stray character instead of duplication for other inputs. Reverted
-    // to one-node-per-piece — the same safe default every provider without
-    // a batchingHint already uses — trading the extra sentence/paragraph
-    // context for correctness.
+    // Re-enabled (round-3 audit follow-up), after being removed post-launch
+    // for a real bug: Google's endpoint genuinely reflows translated text
+    // across a piece's internal `<a i=N>` node boundaries for some
+    // language pairs (confirmed live; a real en->zh request produced
+    // duplicated/merged word fragments). Simply re-enabling grouping
+    // WITHOUT addressing that would just reintroduce the same bug — what
+    // makes it safe now is `google.ts`'s own repair mechanism: a grouped
+    // response is checked for the exact shape reflow produces (fewer
+    // decoded entries than nodes sent), and if found, immediately repaired
+    // via a contained per-node re-request — never routed through the
+    // generic retry path, which would just resend the same multi-item wire
+    // text and could reflow again indefinitely. See google.ts's
+    // `needsRepair`/`repair` doc comments for the full mechanism, and the
+    // improvement-history ledger's Google-grouping entry for the
+    // measured accuracy win this restores (isolated one-node-per-piece
+    // translation loses sentence context — e.g. "left" translated as the
+    // direction instead of the verb in "She left the party").
+    batchingHint: { groupByBlock: true, maxGroupChars: 2000 },
   },
   // The real, official Google Cloud API (user's own key/billing) — the
   // closest match to what Arc's browser translate feature actually uses,

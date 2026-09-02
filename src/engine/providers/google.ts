@@ -292,7 +292,7 @@ export function createGoogleProvider(): Translator {
     },
   });
 
-  return {
+  const translator: Translator = {
     async translateBatch(request: TranslateBatchRequest): Promise<PieceOutcome[]> {
       await findAuth();
       if (!translateAuth) {
@@ -318,13 +318,127 @@ export function createGoogleProvider(): Translator {
         }
         return piece;
       });
+
+      /**
+       * Sentence-context grouping (`descriptors.ts`'s `batchingHint`, now
+       * re-enabled for Google below) means `request.pieces` can genuinely
+       * hold a real, multi-node group — several sibling DOM text nodes
+       * sent together so Google sees full sentence context instead of an
+       * isolated fragment. This file's header comment already documents
+       * the real risk that reopens: Google can reflow translated content
+       * across a piece's own `<a i=N>` boundaries for some language pairs
+       * (an index's content merging into a neighboring index), which
+       * would silently misattribute one node's translation to another's
+       * DOM position. `splitPieceResponse`'s reconstruction already tags
+       * this shape unambiguously: a reflowed response decodes to FEWER
+       * distinct entries than nodes were actually sent (merged content
+       * collapses two node-indices into one Map key) — no live-endpoint
+       * probing or raw-response access is needed here, just comparing the
+       * decoded array's length against how many strings were sent. This
+       * check is intentionally NOT extended to `dontSortResults` mode
+       * (which reconstructs by tag-OCCURRENCE count, not by node
+       * identity, so a reflow could coincidentally preserve array length
+       * there) — real page-translation traffic never sets it (checked:
+       * `content.ts`/`translateLoop.ts` never call `getDontSortResults`),
+       * so this is a documented, deliberately-scoped gap, not an
+       * oversight.
+       *
+       * `repairs` caches one in-flight repair promise per index — `repair`
+       * can be invoked twice for the same index (once from the wrapped
+       * `onPieceComplete` below, once from the final reconciliation loop)
+       * and must not fire two separate repair requests for the same node.
+       */
+      const repairs = new Map<number, Promise<PieceOutcome>>();
+
+      // Real corruption found via live verification against Wikipedia (not
+      // theorized — see the improvement-history ledger's Google-grouping
+      // entry): a large, citation-heavy group produced a response whose
+      // tag structure broke partway through — `tokenize()`'s regex
+      // (`<a i=(\d+)>([^<]*)<\/a>/g`) stopped matching mid-response, so
+      // everything after that point became one giant untagged "orphan"
+      // chunk that still contained literal, never-actually-parsed
+      // `<a i=N>...</a>` text. Orphan text folds into the nearest
+      // preceding tagged index per `splitPieceResponse`'s existing rule,
+      // so the RAW markup — and the duplicated content inside it, since
+      // the broken region also duplicated a clause — ended up spliced
+      // straight into the page. Length still matched `originalPiece`'s
+      // count in this exact case (the break happened late enough that
+      // every expected index still showed up as A key), so the
+      // length-mismatch check alone did not catch it — this second check
+      // does, directly, by looking for the literal marker syntax in the
+      // decoded text itself.
+      const RAW_MARKER_LEAK = /<a i=\d+>|<\/a>/;
+
+      function needsRepair(index: number, outcome: PieceOutcome): boolean {
+        if (paddedIndices.has(index) || !outcome.ok) return false;
+        const originalPiece = request.pieces[index];
+        if (!originalPiece || originalPiece.length <= 1) return false;
+        if (outcome.value.length !== originalPiece.length) return true;
+        return outcome.value.some((s) => RAW_MARKER_LEAK.test(s));
+      }
+
+      function repair(index: number): Promise<PieceOutcome> {
+        const existing = repairs.get(index);
+        if (existing) return existing;
+        const promise = (async (): Promise<PieceOutcome> => {
+          const originalPiece = request.pieces[index];
+          if (!originalPiece) return err({ kind: 'parse', message: '[google] internal: piece missing for repair' });
+          // Contained, immediate re-request — one single-string piece per
+          // original node, going through THIS SAME translateBatch (so the
+          // existing single-item padding path above applies to each) —
+          // deliberately NOT routed through batchedHttpProvider.ts's
+          // generic missing/suspicious repair mechanism, which retries the
+          // exact same wire text (the whole group, still multi-item) and
+          // would risk reflowing again indefinitely. A single-item piece
+          // has no multi-index structure left to reflow across, so this
+          // can't recurse into needing its own repair.
+          const results = await translator.translateBatch({
+            sourceLanguage: request.sourceLanguage,
+            targetLanguage: request.targetLanguage,
+            pieces: originalPiece.map((s) => [s]),
+            dontSortResults: false,
+          });
+          const failure = results.find((r) => !r.ok);
+          if (failure && !failure.ok) return err(failure.error);
+          return ok(results.map((r) => (r.ok ? (r.value[0] ?? '') : '')));
+        })();
+        repairs.set(index, promise);
+        return promise;
+      }
+
       const outcomes = await inner.translateBatch({
         ...request,
         pieces,
         sourceLanguage: fixLanguageCode(request.sourceLanguage),
         targetLanguage: fixLanguageCode(request.targetLanguage),
+        // Always wrapped (even when the caller didn't ask for incremental
+        // delivery at all) so a grouped piece's repair can start the
+        // instant its wrong-shaped response is known, rather than waiting
+        // for the whole batch to finish. Critical part of this fix, not
+        // just a speed nicety: a grouped piece needing repair is held back
+        // here and forwarded to the REAL `onPieceComplete` only once its
+        // final, correct value is ready — an incremental-write-back caller
+        // (translateLoop.ts) must never see (and flash to the screen) the
+        // raw, reflowed intermediate result first.
+        onPieceComplete: (index, rawOutcome) => {
+          if (needsRepair(index, rawOutcome)) {
+            void repair(index).then((repaired) => {
+              request.onPieceComplete?.(index, repaired);
+            });
+            return;
+          }
+          request.onPieceComplete?.(index, rawOutcome);
+        },
       });
-      return outcomes.map((outcome, index) => {
+
+      const final: PieceOutcome[] = new Array(outcomes.length);
+      for (let index = 0; index < outcomes.length; index++) {
+        const outcome = outcomes[index];
+        if (!outcome) continue;
+        if (repairs.has(index) || needsRepair(index, outcome)) {
+          final[index] = await repair(index);
+          continue;
+        }
         if (paddedIndices.has(index) && outcome.ok) {
           // Real bug, found via a security/accuracy audit and confirmed
           // directly against the live endpoint: this file's own header
@@ -358,10 +472,14 @@ export function createGoogleProvider(): Translator {
           const [first, ...rest] = outcome.value;
           const overflow = rest.join('');
           const hasRealOverflow = overflow.trim().length > 0;
-          return ok([hasRealOverflow ? (first ?? '') + overflow : (first ?? '')]);
+          final[index] = ok([hasRealOverflow ? (first ?? '') + overflow : (first ?? '')]);
+          continue;
         }
-        return outcome;
-      });
+        final[index] = outcome;
+      }
+      return final;
     },
   };
+
+  return translator;
 }
