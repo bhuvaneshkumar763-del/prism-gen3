@@ -15,6 +15,7 @@
     "fix-lang-attr-and-add-tabs-detect",
     "fix-pre-tags-default",
     "fix-source-language-override",
+    "google-grouping-attributes-word-jam",
     "google-single-item-piece-wrapping",
     "graceful-degradation",
     "keepalive-scoping-and-retry-loop-fix",
