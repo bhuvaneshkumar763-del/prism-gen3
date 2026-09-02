@@ -1397,6 +1397,91 @@ describe('original whitespace restoration', () => {
 
     pageTranslator.restorePage();
   });
+
+  // Accuracy fix (round-3 audit follow-up), found via live-page
+  // investigation: a source Text node whose content begins with bare
+  // punctuation (no letter before it) — the common real shape right after
+  // a wiki-style link, e.g. `<a>Go player</a>`, then a sibling node
+  // `". The program..."` ending the PREVIOUS sentence and starting the
+  // next. Confirmed directly against the live Google endpoint: this exact
+  // real-world sentence lost its leading period entirely on translation
+  // (inconsistent — a short artificial fragment round-tripped it fine in
+  // the same testing), so it can't be trusted to survive and must be
+  // restored deterministically, same reasoning as leading/trailing
+  // whitespace above.
+  function leadingPunctuationDroppingTranslator(): Translator {
+    return {
+      async translateBatch(request) {
+        return request.pieces.map(
+          (piece): PieceOutcome =>
+            ok(
+              piece.map((s) =>
+                s
+                  .replace(/^[^\p{L}\p{N}]+/u, '')
+                  .trim()
+                  .toUpperCase(),
+              ),
+            ),
+        );
+      },
+    };
+  }
+
+  it('restores a leading period a source Text node started with, real bug this closed: a node immediately following a link (e.g. ". The program only taught the rules.") lost its leading period on translation, jamming it into the PREVIOUS node\'s content on the page ("Go playerTHE PROGRAM" instead of "Go player. THE PROGRAM")', async () => {
+    document.body.innerHTML = '<p><a href="#">Go player</a>. The program only taught the rules.</p>';
+    const pageTranslator = createPageTranslator({
+      translator: leadingPunctuationDroppingTranslator(),
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+
+    await pageTranslator.translatePage('es');
+    await waitFor(() => document.body.textContent?.includes('THE PROGRAM') ?? false);
+
+    expect(document.body.textContent).toBe('GO PLAYER. THE PROGRAM ONLY TAUGHT THE RULES.');
+
+    pageTranslator.restorePage();
+  });
+
+  it('does not double a leading period when the provider happens to preserve its own copy', async () => {
+    document.body.innerHTML = '<p>. Hello world.</p>';
+    const preservesLeadingPunctuationTranslator: Translator = {
+      async translateBatch(request) {
+        return request.pieces.map((piece): PieceOutcome => ok(piece.map((s) => s.trim().toUpperCase())));
+      },
+    };
+    const pageTranslator = createPageTranslator({
+      translator: preservesLeadingPunctuationTranslator,
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+
+    await pageTranslator.translatePage('es');
+    await waitFor(() => document.body.textContent === '. HELLO WORLD.');
+
+    expect(document.body.textContent).toBe('. HELLO WORLD.'); // not '.. HELLO WORLD.' (doubled period)
+
+    pageTranslator.restorePage();
+  });
+
+  it('stops the protected leading-punctuation run at the first DIGIT, not just the first letter — deliberately excludes digits (no confirmed bug there, and a leading digit is often meaningfully part of the sentence, e.g. "3D printing") so only the pure-punctuation prefix is detached, leaving "3D" attached to the translated core', async () => {
+    document.body.innerHTML = '<p><a href="#">Link</a>. 3D printing is transforming manufacturing.</p>';
+    const pageTranslator = createPageTranslator({
+      translator: leadingPunctuationDroppingTranslator(),
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+
+    await pageTranslator.translatePage('es');
+    await waitFor(() => document.body.textContent?.includes('MANUFACTURING') ?? false);
+
+    // ". " is the protected/restored prefix (stops right before "3", a
+    // digit); "3D printing..." is sent as, and stays, part of the
+    // translated core — not split off as if it were also punctuation.
+    expect(document.body.textContent).toBe('LINK. 3D PRINTING IS TRANSFORMING MANUFACTURING.');
+
+    pageTranslator.restorePage();
+  });
 });
 
 describe('incremental write-back (onPieceComplete)', () => {

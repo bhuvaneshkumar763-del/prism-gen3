@@ -45,6 +45,8 @@ import { prioritizeByViewport } from './viewportPriority';
 // rather than queueing hundreds of them at once.
 const MAX_PIECES_PER_TICK = 300;
 const HAS_LETTER = /\p{L}/u;
+/** See `originalWhitespace`'s declaration comment (inside `runTranslationTick`) for why this is punctuation-aware, not whitespace-only. */
+const LEADING_NON_LETTER_OR_DIGIT = /^[^\p{L}\p{N}]+/u;
 
 /**
  * Drops a `nodesToRestore` entry once its node has been disconnected for
@@ -441,6 +443,34 @@ export function createPageTranslator(options: PageTranslatorOptions) {
       // frequency. Deterministic and provider-independent by construction
       // — captured from the same `node.data` used to build `pieces` below,
       // reapplied at write-back regardless of which provider translated it.
+      //
+      // Accuracy fix (round-3 audit follow-up), found via live-page
+      // investigation of the "words jam at block boundaries" open item:
+      // this map's "leading" side used to capture WHITESPACE only
+      // (`trimStart()`). A real repro on live Wikipedia — a link's closing
+      // tag immediately followed by a sibling Text node whose OWN content
+      // begins with a bare sentence-ending period (`". The program..."`,
+      // the period ending the PREVIOUS sentence, no space before it in the
+      // source) — showed Google can ALSO drop LEADING PUNCTUATION with no
+      // letter before it, not just whitespace: `". The program taught
+      // only the game's rules and developed a strategy by itself. "`
+      // translated to `"El programa solo enseñaba..."` with the leading
+      // period gone entirely, confirmed directly against the live
+      // endpoint and reproducible across languages — but NOT universal: a
+      // short artificial fragment (`". Hello world."`) round-tripped the
+      // period correctly in the same testing, so this can't be relied on
+      // to happen consistently and must be handled deterministically on
+      // this side instead, the same reasoning as the whitespace case
+      // above. Also confirmed live: the SYMMETRIC trailing case (a node
+      // ending in bare punctuation, no trailing whitespace) round-trips
+      // fine — every trailing-punctuation probe came back correct — so
+      // only the leading side needed generalizing. Widened from
+      // "leading whitespace" to "leading run of non-letter, non-digit
+      // characters" (still includes whitespace, since a leading run like
+      // `". "` is untouched by `\p{L}`/`\p{N}` either way) — deliberately
+      // excludes digits so a node like `"3D printing is..."` isn't
+      // affected (no confirmed bug there, and `"3"` alone isn't a safe
+      // context-free prefix to detach from what follows it).
       const originalWhitespace = new Map<Text, { leading: string; trailing: string }>();
       /**
        * Real bug this closed, found via audit: write-back only ever
@@ -459,7 +489,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
       groups.forEach((group) => {
         group.forEach((node) => {
           const text = node.data;
-          const leading = text.slice(0, text.length - text.trimStart().length);
+          const leading = text.match(LEADING_NON_LETTER_OR_DIGIT)?.[0] ?? '';
           const trailing = text.slice(text.trimEnd().length);
           if (leading || trailing) originalWhitespace.set(node, { leading, trailing });
           sentText.set(node, text);
@@ -494,7 +524,16 @@ export function createPageTranslator(options: PageTranslatorOptions) {
           return;
         }
         const original = originalWhitespace.get(node);
-        const translated = original ? original.leading + rawTranslated.trim() + original.trailing : rawTranslated;
+        // Strips a leading non-letter/non-digit run (not just whitespace)
+        // from Google's own output before wrapping — Google's behavior at
+        // this boundary is inconsistent (sometimes echoes the original
+        // leading punctuation back, sometimes doesn't — see
+        // `originalWhitespace`'s declaration comment), so the ORIGINAL
+        // captured prefix must always win rather than risk it appearing
+        // twice when Google happened to preserve its own copy.
+        const translated = original
+          ? original.leading + rawTranslated.replace(LEADING_NON_LETTER_OR_DIGIT, '').trimEnd() + original.trailing
+          : rawTranslated;
         mutationWatcher.noteOwnWrite(node, translated);
         node.data = translated;
         lastSeenText.set(node, translated);
