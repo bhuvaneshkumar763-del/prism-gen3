@@ -128,6 +128,47 @@ const MAX_ATTEMPTS = 3;
 // the budget, not a fresh timeout each time.
 const OVERALL_DEADLINE_MS = 30000;
 
+/**
+ * Runs `worker` over `items` with at most `getLimit()` concurrently in
+ * flight. Factored out (found via a speed/reliability audit) so the
+ * top-level batch dispatch loop and the individual-piece repair retry
+ * share ONE concurrency gate instead of the repair path bypassing it
+ * entirely via a bare `Promise.all` — a batch-wide echo/truncation
+ * failure used to fan out into dozens of simultaneous uncounted requests,
+ * exactly the rate-limiter stampede a concurrency cap exists to prevent,
+ * and exactly when the endpoint is already struggling. `getLimit` is
+ * polled fresh on every dispatch, not read once, so a connection-quality
+ * change mid-run is picked up without restarting (matches the adaptive
+ * behavior the top-level loop already had).
+ */
+async function runWithConcurrencyLimit<T>(
+  items: T[],
+  getLimit: () => number,
+  worker: (item: T) => Promise<void>,
+): Promise<void> {
+  if (items.length === 0) return;
+  let cursor = 0;
+  let inFlight = 0;
+  await new Promise<void>((resolveAll) => {
+    let completed = 0;
+    const pump = () => {
+      const limit = getLimit();
+      while (inFlight < limit && cursor < items.length) {
+        const item = items[cursor++];
+        if (item === undefined) continue;
+        inFlight++;
+        worker(item).then(() => {
+          inFlight--;
+          completed++;
+          if (completed === items.length) resolveAll();
+          else pump();
+        });
+      }
+    };
+    pump();
+  });
+}
+
 export function createBatchedHttpProvider(options: BatchedProviderOptions): Translator {
   const maxBatchChars = options.maxBatchChars ?? DEFAULT_MAX_BATCH_CHARS;
   const configuredMaxConcurrent = options.maxConcurrent ?? DEFAULT_MAX_CONCURRENT;
@@ -174,8 +215,19 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
     sourceLanguage: string,
     targetLanguage: string,
     pieceWireTexts: string[],
+    // Speed/reliability fix, found via audit: the individual-piece repair
+    // path below used to call this with no deadline, so it computed its
+    // OWN fresh `OVERALL_DEADLINE_MS` budget — meaning a `handleBatch()`
+    // whose response came back with a couple of missing/suspicious pieces
+    // could genuinely run for ~60s (the original batch's ~30s PLUS a
+    // fresh ~30s for the repair retry), double what this constant's own
+    // doc comment above says it bounds. Threading the PARENT's absolute
+    // deadline down here means a repair retry gets whatever's left of the
+    // SAME budget, not a second one — this parameter is only ever unset at
+    // the true top level, where a fresh deadline is exactly correct.
+    inheritedDeadline?: number,
   ): Promise<unknown> {
-    const deadline = Date.now() + OVERALL_DEADLINE_MS;
+    const deadline = inheritedDeadline ?? Date.now() + OVERALL_DEADLINE_MS;
     let lastError: RetryableError | undefined;
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       if (attempt > 0) {
@@ -235,12 +287,17 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
     targetLanguage: string,
     pending: PendingRequest[],
     isIndividualRetry = false,
+    // Absolute deadline (ms since epoch), threaded down from the top-level
+    // call and reused as-is by the repair retry below — see
+    // `sendWithRetry`'s `inheritedDeadline` doc comment for why.
+    deadline: number = Date.now() + OVERALL_DEADLINE_MS,
   ): Promise<void> {
     try {
       const response = await sendWithRetry(
         sourceLanguage,
         targetLanguage,
         pending.map((p) => p.wireText),
+        deadline,
       );
       const results = options.callbacks.parseResponse(response, pending.length);
       const missing: PendingRequest[] = [];
@@ -269,7 +326,22 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
         });
         return;
       }
-      await Promise.all(missing.map((p) => handleBatch(sourceLanguage, targetLanguage, [p], true)));
+      // Speed fix, found via audit: this used to be a bare
+      // `Promise.all(missing.map(...))`, firing one HTTP request per
+      // missing/suspicious piece all at once — completely invisible to
+      // `pump()`'s `inFlight` accounting below, which only ever counts
+      // TOP-LEVEL batches. A batch-wide echo/truncation failure (Google's
+      // documented silent-echo mode, or an LLM response short a few
+      // entries) could turn one counted "slot" into dozens of uncounted
+      // concurrent requests — precisely the rate-limiter stampede
+      // `maxConcurrent` exists to prevent, and precisely when the
+      // endpoint is already struggling. `runWithConcurrencyLimit` applies
+      // the SAME adaptive limit real top-level batches respect.
+      await runWithConcurrencyLimit(
+        missing,
+        () => getAdaptiveConcurrency(configuredMaxConcurrent),
+        (p) => handleBatch(sourceLanguage, targetLanguage, [p], true, deadline),
+      );
     } catch (e) {
       console.error(`[${options.name}] translation request failed`, e);
       pending.forEach((p) => {
@@ -280,7 +352,7 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
 
   return {
     async translateBatch(request: TranslateBatchRequest): Promise<PieceOutcome[]> {
-      const { sourceLanguage, targetLanguage, pieces, dontSortResults = false } = request;
+      const { sourceLanguage, targetLanguage, pieces, dontSortResults = false, onPieceComplete } = request;
 
       // Bundle pieces into HTTP-request-sized batches, sharing in-flight
       // requests for identical (already-transformed) piece text.
@@ -288,6 +360,13 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
       let currentBatch: PendingRequest[] = [];
       let currentChars = 0;
       const resultPromises: Array<Promise<{ text: string; detectedLanguage: string | null } | null>> = [];
+      // Populated by the same per-piece transform as the return statement
+      // below — computed eagerly, as each `resultPromises[i]` settles
+      // (see the `.forEach` right after this loop), instead of only once
+      // every piece in the whole call has settled. Returning this array
+      // at the end (rather than re-deriving it from `resultPromises` again)
+      // means the eager computation isn't wasted duplicate work.
+      const outcomes: PieceOutcome[] = new Array(pieces.length);
 
       for (const piece of pieces) {
         const wireText = options.callbacks.transformPiece(piece);
@@ -320,43 +399,44 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
       }
       if (currentBatch.length > 0) batches.push(currentBatch);
 
+      // Each `resultPromises[idx]` already resolves independently, as soon
+      // as ITS OWN underlying sub-batch's HTTP response is parsed (see
+      // `handleBatch`'s `p.resolve(result)`) — not when every sub-batch in
+      // this whole call finishes. Attaching the per-piece transform here,
+      // rather than only in the `Promise.all(resultPromises)` block below,
+      // is what actually delivers that per-piece timing to the caller via
+      // `onPieceComplete`, instead of uniformly holding every piece back
+      // until the slowest one settles.
+      resultPromises.forEach((resultPromise, idx) => {
+        resultPromise.then((result) => {
+          const piece = pieces[idx];
+          const outcome: PieceOutcome = !piece
+            ? err({ kind: 'parse', message: 'internal: piece/result index mismatch' })
+            : !result
+              ? err({ kind: 'network', message: `[${options.name}] no result for this piece` })
+              : ok(options.callbacks.splitPieceResponse(result.text, dontSortResults));
+          outcomes[idx] = outcome;
+          onPieceComplete?.(idx, outcome);
+        });
+      });
+
       options.onBatchStart?.();
       try {
-        if (batches.length > 0) {
-          let cursor = 0;
-          let inFlight = 0;
-          await new Promise<void>((resolveAll) => {
-            let completed = 0;
-            const pump = () => {
-              // Resolved fresh on each pump() call, not captured once —
-              // a long page's connection quality can change mid-batch
-              // (e.g. a real network degradation partway through 500
-              // paragraphs), and this picks that up without restarting.
-              const maxConcurrent = getAdaptiveConcurrency(configuredMaxConcurrent);
-              while (inFlight < maxConcurrent && cursor < batches.length) {
-                const batch = batches[cursor++];
-                if (!batch) continue;
-                inFlight++;
-                handleBatch(sourceLanguage, targetLanguage, batch).then(() => {
-                  inFlight--;
-                  completed++;
-                  if (completed === batches.length) resolveAll();
-                  else pump();
-                });
-              }
-            };
-            pump();
-          });
-        }
+        // Resolved fresh on every dispatch inside runWithConcurrencyLimit,
+        // not captured once — a long page's connection quality can change
+        // mid-batch (e.g. a real network degradation partway through 500
+        // paragraphs), and this picks that up without restarting.
+        await runWithConcurrencyLimit(
+          batches,
+          () => getAdaptiveConcurrency(configuredMaxConcurrent),
+          (batch) => handleBatch(sourceLanguage, targetLanguage, batch),
+        );
 
-        const results = await Promise.all(resultPromises);
-        return results.map((result, idx) => {
-          const piece = pieces[idx];
-          if (!piece) return err({ kind: 'parse', message: 'internal: piece/result index mismatch' });
-          if (!result) return err({ kind: 'network', message: `[${options.name}] no result for this piece` });
-          const strings = options.callbacks.splitPieceResponse(result.text, dontSortResults);
-          return ok(strings);
-        });
+        // Every entry was already computed the instant its own
+        // `resultPromises[idx]` settled (see above) — this await is only
+        // to know that ALL of them have, not to (re-)compute anything.
+        await Promise.all(resultPromises);
+        return outcomes;
       } finally {
         options.onBatchEnd?.();
       }

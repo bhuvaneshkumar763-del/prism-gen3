@@ -148,6 +148,44 @@ describe('translationCache', () => {
     expect(await cache.get('b')).toBeNull();
   });
 
+  it("getMany() reads through a 'readonly' transaction, real speed bug this closed: a fully-cached page revisit used to open the read as 'readwrite' purely so it could also touch lastUsed in the same transaction, forcing every cache HIT to pay for an IndexedDB write commit before the read it was piggybacking on could even resolve", async () => {
+    const cache = createTranslationCache();
+
+    // Spied BEFORE the cache's first call, so it observes the real
+    // open() that lazily establishes and caches this instance's one
+    // connection (see the module doc comment on connection reuse).
+    let db: IDBDatabase | undefined;
+    const originalOpen = globalThis.indexedDB.open.bind(globalThis.indexedDB);
+    vi.spyOn(globalThis.indexedDB, 'open').mockImplementation((...args: Parameters<typeof originalOpen>) => {
+      const request = originalOpen(...args);
+      request.addEventListener('success', () => {
+        db = request.result;
+      });
+      return request;
+    });
+
+    await cache.set('hello', 'hola');
+    expect(db).toBeDefined();
+    if (!db) throw new Error('unreachable');
+
+    const modes: IDBTransactionMode[] = [];
+    const originalTransaction = db.transaction.bind(db);
+    vi.spyOn(db, 'transaction').mockImplementation((...args: Parameters<typeof originalTransaction>) => {
+      modes.push(args[1] ?? 'readonly');
+      return originalTransaction(...args);
+    });
+
+    await cache.getMany(['hello']);
+    vi.restoreAllMocks();
+
+    // The FIRST transaction opened for a getMany() call is the one whose
+    // completion the caller is actually waiting on — it must be readonly.
+    // (A second, later 'readwrite' transaction for the fire-and-forget
+    // lastUsed touch is expected and fine — see the touchLastUsed doc
+    // comment — this assertion is specifically about the read path.)
+    expect(modes[0]).toBe('readonly');
+  });
+
   it('evictUntilUnderBudget() can be called directly to enforce a smaller budget', async () => {
     const cache = createTranslationCache(100_000); // generous default, won't auto-evict on set()
     await cache.set('a', 'x'.repeat(1000));

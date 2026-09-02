@@ -302,11 +302,18 @@ export default defineBackground(() => {
           return outcome?.ok && key ? { key, value: JSON.stringify(outcome.value) } : null;
         })
         .filter((e): e is { key: string; value: string } => e !== null);
-      try {
-        await translationCache.setMany(freshEntries);
-      } catch (e) {
+      // Speed fix, found via audit: this used to be awaited, so the reply
+      // carrying the freshly-translated outcomes — the thing the content
+      // script is actually waiting on to write text to the page — sat
+      // behind an IndexedDB commit AND, on a cold service worker, its
+      // first-call full-store cursor scan (`ensureRunningTotal`) plus a
+      // full eviction pass. Caching is purely an optimization (see the
+      // comment above the read path); a future request benefiting from
+      // this write a few milliseconds later than the reply already went
+      // out is the correct trade, not a regression.
+      void translationCache.setMany(freshEntries).catch((e) => {
         console.warn('[prism] translation cache write failed, continuing without caching these pieces', e);
-      }
+      });
     }
 
     return outcomes;

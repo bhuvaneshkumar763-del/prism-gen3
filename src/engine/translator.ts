@@ -36,6 +36,24 @@ export interface TranslateBatchRequest {
    * `dontSortResults`.
    */
   dontSortResults?: boolean;
+  /**
+   * Speed fix, found via audit: a batch of N pieces used to have every
+   * translated piece withheld from the caller until the SLOWEST of the
+   * batch's underlying HTTP sub-requests finished — so on a 300-node
+   * article split into ~30 sub-batches at 6 concurrent, one sub-batch
+   * stalling to its request timeout held back the other 29 (already
+   * fully translated in memory) from ever reaching the DOM. Optional and
+   * purely additive: a provider that supports incremental delivery
+   * (`batchedHttpProvider`-based ones) calls this the instant each
+   * individual piece's result is known, well before the overall
+   * `translateBatch()` promise resolves; a caller that doesn't pass it
+   * gets the exact same behavior as before. `translateBatch()`'s
+   * returned array remains the single source of truth for bookkeeping
+   * (retries, error surfacing, dedupe) — this is only a chance to write
+   * a piece to the page sooner, never a replacement for awaiting the
+   * final result.
+   */
+  onPieceComplete?(index: number, outcome: PieceOutcome): void;
 }
 
 /** Per-piece outcome: the translated strings (same length/order as the input piece), or an error if that piece failed. */

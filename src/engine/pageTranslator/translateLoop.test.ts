@@ -1134,6 +1134,60 @@ describe('original whitespace restoration', () => {
   });
 });
 
+describe('incremental write-back (onPieceComplete)', () => {
+  afterEach(() => {
+    document.body.innerHTML = '';
+    vi.restoreAllMocks();
+  });
+
+  it("writes a fast piece to the DOM as soon as it individually resolves, without waiting for a slower piece in the SAME tick — real bug this closed: translateBatch() used to withhold every piece until the slowest one settled, so a fully-translated node sat untranslated on screen for as long as the slowest sibling's request took", async () => {
+    document.body.innerHTML = '<p id="fast">alpha</p><p id="slow">beta</p>';
+    const fastNode = (document.getElementById('fast') as HTMLElement).firstChild as Text;
+    const slowNode = (document.getElementById('slow') as HTMLElement).firstChild as Text;
+
+    // A translator that mimics batchedHttpProvider's real timing: it
+    // calls onPieceComplete for each piece independently, well before
+    // its own returned promise resolves.
+    const translator: Translator = {
+      translateBatch(request) {
+        return new Promise((resolve) => {
+          const outcomes: PieceOutcome[] = [];
+          setTimeout(() => {
+            const outcome = ok(['FAST']);
+            outcomes[0] = outcome;
+            request.onPieceComplete?.(0, outcome);
+          }, 10);
+          setTimeout(() => {
+            const outcome = ok(['SLOW']);
+            outcomes[1] = outcome;
+            request.onPieceComplete?.(1, outcome);
+            resolve(outcomes);
+          }, 150);
+        });
+      },
+    };
+
+    const pageTranslator = createPageTranslator({
+      translator,
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+
+    void pageTranslator.translatePage('es');
+
+    // Past the fast piece's 10ms but well short of the slow piece's
+    // 150ms — the fast node must already be written.
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(fastNode.data).toBe('FAST');
+    expect(slowNode.data).toBe('beta'); // not yet translated — the whole call hasn't resolved
+
+    await waitFor(() => slowNode.data === 'SLOW');
+    expect(fastNode.data).toBe('FAST');
+
+    pageTranslator.restorePage();
+  });
+});
+
 describe('pruneDisconnectedRestoreEntries', () => {
   it('keeps an entry after a single disconnected tick — only pruned once a SECOND consecutive tick still finds it disconnected', () => {
     const node = document.createTextNode('HELLO');

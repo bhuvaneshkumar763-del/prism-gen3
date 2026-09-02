@@ -194,34 +194,66 @@ export function createTranslationCache(defaultMaxBytes: number = DEFAULT_MAX_BYT
    * lookups paid for ~40 separate transaction setups/commits for what's
    * conceptually one read. Same recency-touch and miss-on-failure behavior
    * as `get()`, just batched.
+   *
+   * Speed fix, found via audit: this used to run the whole thing — reads
+   * AND the per-hit `lastUsed` touch — inside one `readwrite` transaction,
+   * so a fully-cached page revisit (the exact case a cache exists to make
+   * fast) issued one IndexedDB WRITE per text node and paid the commit
+   * latency of that write before the results this function is meant to
+   * return could resolve. Reads now run in their own `readonly`
+   * transaction, resolving as soon as they're done; the recency touch
+   * moves to a separate `readwrite` transaction that is deliberately NOT
+   * awaited here — same "best-effort, logged not fatal" character the
+   * touch always had, just no longer gating the read it was piggybacking
+   * on.
    */
   async function getMany(keys: string[]): Promise<Array<string | null>> {
     if (keys.length === 0) return [];
-    return withDb(
-      (db) =>
-        new Promise<Array<string | null>>((resolve, reject) => {
-          const tx = db.transaction(STORE_NAME, 'readwrite');
-          const store = tx.objectStore(STORE_NAME);
-          const results: Array<string | null> = new Array(keys.length).fill(null);
-          keys.forEach((key, i) => {
-            const request = store.get(key);
-            request.onsuccess = () => {
-              const record = request.result as CacheRecord | undefined;
-              if (!record) return; // stays null — a real cache miss
-              results[i] = record.value;
-              // Touch lastUsed so oldest-first eviction reflects real
-              // recency, not just insertion order. Best-effort, like get()'s
-              // single-key touch — logged, not fatal to the read.
-              const touchRequest = store.put({ ...record, lastUsed: Date.now() });
-              touchRequest.onerror = () => {
-                console.warn('[prism] translation cache recency touch failed', touchRequest.error);
-              };
-            };
-          });
-          tx.oncomplete = () => resolve(results);
-          tx.onerror = () => reject(tx.error);
-        }),
-    );
+    return withDb((db) => {
+      const hits: CacheRecord[] = [];
+      return new Promise<Array<string | null>>((resolve, reject) => {
+        const tx = db.transaction(STORE_NAME, 'readonly');
+        const store = tx.objectStore(STORE_NAME);
+        const results: Array<string | null> = new Array(keys.length).fill(null);
+        keys.forEach((key, i) => {
+          const request = store.get(key);
+          request.onsuccess = () => {
+            const record = request.result as CacheRecord | undefined;
+            if (!record) return; // stays null — a real cache miss
+            results[i] = record.value;
+            hits.push(record);
+          };
+        });
+        tx.oncomplete = () => resolve(results);
+        tx.onerror = () => reject(tx.error);
+      }).then((results) => {
+        if (hits.length > 0) touchLastUsed(db, hits);
+        return results;
+      });
+    });
+  }
+
+  /**
+   * Fire-and-forget: bumps `lastUsed` on a cache hit so oldest-first
+   * eviction reflects real recency, not just insertion order. Never
+   * awaited by a caller — a stale `lastUsed` on a rare failure here only
+   * makes THAT entry a slightly earlier eviction candidate later, not a
+   * correctness problem, so there's nothing worth blocking a read for.
+   */
+  function touchLastUsed(db: IDBDatabase, hits: CacheRecord[]): void {
+    try {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+      const now = Date.now();
+      hits.forEach((record) => {
+        store.put({ ...record, lastUsed: now });
+      });
+      tx.onerror = () => {
+        console.warn('[prism] translation cache recency touch failed', tx.error);
+      };
+    } catch (e) {
+      console.warn('[prism] translation cache recency touch failed', e);
+    }
   }
 
   async function get(key: string): Promise<string | null> {

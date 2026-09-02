@@ -150,6 +150,109 @@ describe('createBatchedHttpProvider — batching budget', () => {
   });
 });
 
+describe('createBatchedHttpProvider — onPieceComplete (incremental delivery)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("real gap this closed: a fast sub-batch's pieces used to be withheld from the caller until the SLOWEST sub-batch in the same translateBatch() call finished — onPieceComplete now fires for a fast piece well before a concurrently-running slow one settles", async () => {
+    // Two single-piece requests (maxBatchChars: 0 forces each into its
+    // own sub-batch — maxBatchChars: 1 would NOT: a 1-char piece alone
+    // only reaches currentChars=1, which is not '>1', so it stays
+    // pending and merges with the next piece instead of flushing)
+    // running concurrently (maxConcurrent: 2) — 'a' comes back fast,
+    // 'b' comes back slow.
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      const sent = JSON.parse(init.body as string) as string[];
+      const isSlow = sent[0] === 'b';
+      await new Promise((resolve) => setTimeout(resolve, isSlow ? 250 : 10));
+      return jsonResponse({ texts: sent.map((s) => `${s}-translated`) });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const completedInOrder: number[] = [];
+    let overallSettled = false;
+
+    const provider = createBatchedHttpProvider({
+      name: 'incremental',
+      baseUrl: 'https://example.com',
+      method: 'POST',
+      maxConcurrent: 2,
+      maxBatchChars: 0,
+      callbacks: { ...plainCallbacks(), getRequestBody: (_s, _t, texts) => JSON.stringify(texts) },
+    });
+
+    const resultPromise = provider.translateBatch({
+      sourceLanguage: 'en',
+      targetLanguage: 'es',
+      pieces: [['a'], ['b']],
+      onPieceComplete: (index) => {
+        completedInOrder.push(index);
+      },
+    });
+    resultPromise.then(() => {
+      overallSettled = true;
+    });
+
+    // The fast piece ('a', index 0) has had time to resolve (10ms) but
+    // the slow one ('b', index 1, 250ms) has not — real regression this
+    // guards: onPieceComplete for 'a' arriving only once BOTH settle
+    // (i.e. after ~250ms) is exactly the withheld-until-slowest bug.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(completedInOrder).toEqual([0]);
+    expect(overallSettled).toBe(false);
+
+    const results = await resultPromise;
+    expect(completedInOrder).toEqual([0, 1]);
+    expect(results).toEqual([
+      { ok: true, value: ['a-translated'] },
+      { ok: true, value: ['b-translated'] },
+    ]);
+  });
+
+  it('passes the same outcome to onPieceComplete that the final resolved array contains, including a failed piece', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ texts: [] })); // empty texts -> every piece comes back missing
+    vi.stubGlobal('fetch', fetchMock);
+
+    const provider = createBatchedHttpProvider({
+      name: 'incremental-failure',
+      baseUrl: 'https://example.com',
+      method: 'POST',
+      callbacks: { ...plainCallbacks(), getRequestBody: () => '{}' },
+    });
+
+    const completed: Array<{ index: number; ok: boolean }> = [];
+    const results = await provider.translateBatch({
+      sourceLanguage: 'en',
+      targetLanguage: 'es',
+      pieces: [['hello']],
+      onPieceComplete: (index, outcome) => {
+        completed.push({ index, ok: outcome.ok });
+      },
+    });
+
+    expect(results).toEqual([
+      { ok: false, error: { kind: 'network', message: '[incremental-failure] no result for this piece' } },
+    ]);
+    expect(completed).toEqual([{ index: 0, ok: false }]);
+  });
+
+  it('does not throw or change behavior when onPieceComplete is omitted (existing callers)', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ texts: ['hola'] }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const provider = createBatchedHttpProvider({
+      name: 'no-callback',
+      baseUrl: 'https://example.com',
+      method: 'POST',
+      callbacks: { ...plainCallbacks(), getRequestBody: () => '{}' },
+    });
+
+    const results = await provider.translateBatch({ sourceLanguage: 'en', targetLanguage: 'es', pieces: [['hello']] });
+    expect(results).toEqual([{ ok: true, value: ['hola'] }]);
+  });
+});
+
 describe('createBatchedHttpProvider — lifecycle hooks and concurrency', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -209,6 +312,95 @@ describe('createBatchedHttpProvider — lifecycle hooks and concurrency', () => 
 
     expect(fetchMock).toHaveBeenCalledTimes(6);
     expect(maxObservedInFlight).toBeLessThanOrEqual(2);
+  });
+
+  it('individual-piece repair retries respect the SAME concurrency limit as top-level batches, real bug this closed: the repair fan-out used to fire one HTTP request per missing/suspicious piece via a bare Promise.all, completely invisible to the concurrency limiter — a batch-wide echo/truncation failure could put dozens of simultaneous requests on the wire despite maxConcurrent', async () => {
+    let inFlight = 0;
+    let maxObservedInFlight = 0;
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      inFlight++;
+      maxObservedInFlight = Math.max(maxObservedInFlight, inFlight);
+      const sent = JSON.parse(init.body as string) as string[];
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      inFlight--;
+      // The one top-level batch (all 8 pieces together) comes back with
+      // only 1 result — the other 7 are "missing" and each becomes its
+      // own individual repair request.
+      if (sent.length > 1) return jsonResponse({ texts: ['only-one-translated'] });
+      return jsonResponse({ texts: [`${sent[0]}-translated`] });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const provider = createBatchedHttpProvider({
+      name: 'repair-concurrency',
+      baseUrl: 'https://example.com',
+      method: 'POST',
+      maxConcurrent: 3,
+      callbacks: { ...plainCallbacks(), getRequestBody: (_s, _t, texts) => JSON.stringify(texts) },
+    });
+
+    await provider.translateBatch({
+      sourceLanguage: 'en',
+      targetLanguage: 'es',
+      pieces: [['a'], ['b'], ['c'], ['d'], ['e'], ['f'], ['g'], ['h']],
+    });
+
+    // 1 top-level request + 7 individual repair requests (one per
+    // missing piece).
+    expect(fetchMock).toHaveBeenCalledTimes(8);
+    expect(maxObservedInFlight).toBeLessThanOrEqual(3);
+  });
+
+  it("an individual-piece repair retry inherits the PARENT's deadline instead of starting a fresh OVERALL_DEADLINE_MS budget, real bug this closed: a handleBatch() that had already spent most of its ~30s budget on the initial request used to hand a missing-piece repair retry a FRESH ~30s budget, so one handleBatch() could run ~60s total — double what the constant's own doc comment says it bounds", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+        const sent = JSON.parse(init.body as string) as string[];
+        if (sent.length > 1) {
+          // The top-level batch: comes back one entry short (missing
+          // piece 'b'), and simulates having already burned 29 of the
+          // 30s OVERALL_DEADLINE_MS budget by directly advancing the
+          // fake clock — deterministic, and avoids an unrelated 20s
+          // per-request timeout complicating this test.
+          vi.setSystemTime(Date.now() + 29000);
+          return jsonResponse({ texts: ['a-translated'] });
+        }
+        // The repair retry for 'b': always rate-limited, with an EXACT
+        // (non-jittered) Retry-After, so the retry delay is fully
+        // deterministic.
+        return new Response('{}', { status: 429, headers: { 'retry-after': '5' } });
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      const provider = createBatchedHttpProvider({
+        name: 'deadline-sharing',
+        baseUrl: 'https://example.com',
+        method: 'POST',
+        callbacks: { ...plainCallbacks(), getRequestBody: (_s, _t, texts) => JSON.stringify(texts) },
+      });
+
+      let settled = false;
+      const resultPromise = provider
+        .translateBatch({ sourceLanguage: 'en', targetLanguage: 'es', pieces: [['a'], ['b']] })
+        .then((r) => {
+          settled = true;
+          return r;
+        });
+
+      // Only ~1s of the shared 30s budget is left once the repair retry
+      // starts (29s already spent). With the fix, the repair's retry
+      // delay is clamped to that ~1s remainder and it gives up shortly
+      // after — settled well within 2s of the repair starting. Without
+      // the fix, a repair with a FRESH 30s budget would honor the full
+      // 5s Retry-After for up to MAX_ATTEMPTS-1 retries (~10s), not
+      // settled yet at this point.
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(settled).toBe(true);
+
+      await resultPromise;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('adapts maxConcurrent down when the Network Information API reports a slow connection', async () => {

@@ -361,12 +361,58 @@ export function createPageTranslator(options: PageTranslatorOptions) {
         });
       });
 
+      /**
+       * Re-wraps with the ORIGINAL node's own leading/trailing whitespace
+       * (see `originalWhitespace`'s declaration comment above) and writes
+       * it to the DOM — the exact same logic the final write-back loop
+       * below always ran, now factored out so `onPieceComplete` (below)
+       * can call it the instant a single piece is known, not just once
+       * the whole tick's `translateBatch()` promise resolves. Calling this
+       * twice for the same already-correct value (once here, once again
+       * from the unchanged loop below) is safe and deliberately left
+       * that way rather than threading a "don't redo this" flag through
+       * both paths: `node.data = translated` assigning an identical
+       * string is a no-op the page can't observe, and
+       * `mutationWatcher.noteOwnWrite` recording the same text twice
+       * doesn't change what its own-write loop guard does.
+       */
+      function writeTranslatedNode(node: Text, rawTranslated: string): void {
+        const original = originalWhitespace.get(node);
+        const translated = original ? original.leading + rawTranslated.trim() + original.trailing : rawTranslated;
+        mutationWatcher.noteOwnWrite(node, translated);
+        node.data = translated;
+        lastSeenText.set(node, translated);
+        missingResultAttempts.delete(node);
+      }
+
       try {
         const outcomes = await options.translator.translateBatch({
           sourceLanguage: sourceLanguageOverride ?? options.getSourceLanguage(),
           targetLanguage: currentTargetLanguage,
           pieces: groups.map((group) => group.map((node) => node.data)),
           dontSortResults: options.getDontSortResults?.() ?? false,
+          // Speed fix, found via audit: without this, a whole tick's
+          // translated pieces were withheld from the DOM until the
+          // SLOWEST of its (up to MAX_PIECES_PER_TICK-worth of) underlying
+          // HTTP sub-requests finished — see translator.ts's
+          // `onPieceComplete` doc comment. This writes each piece the
+          // instant its OWN sub-request completes, well before this
+          // `await` below resolves. Only ever an early, opportunistic
+          // write of an already-successful, still-connected node — every
+          // other concern (missing pieces, disconnected nodes, retries,
+          // error surfacing) stays exclusively in the unchanged loop
+          // below, which still runs against the complete `outcomes` array
+          // once this await settles.
+          onPieceComplete: (groupIdx, outcome) => {
+            if (requestedUnderGeneration !== cycleGeneration) return;
+            const group = groups[groupIdx];
+            if (!group || !outcome.ok) return;
+            group.forEach((node, nodeIdx) => {
+              if (!node.isConnected) return;
+              const raw = outcome.value[nodeIdx];
+              if (raw) writeTranslatedNode(node, raw);
+            });
+          },
         });
 
         // The page was restored or re-translated while this request was in
@@ -431,25 +477,14 @@ export function createPageTranslator(options: PageTranslatorOptions) {
                 return;
               }
               const rawTranslated = outcome?.ok ? outcome.value[nodeIdx] : undefined;
+              // Usually already written by `onPieceComplete` above, well
+              // before this loop runs — see `writeTranslatedNode`'s doc
+              // comment for why redoing it here is safe. Kept unconditional
+              // (not skipped for nodes onPieceComplete already handled) so
+              // this loop's behavior doesn't depend on the translator
+              // actually supporting incremental delivery.
               if (rawTranslated) {
-                // Re-wrap with the ORIGINAL node's own leading/trailing
-                // whitespace (see `originalWhitespace`'s declaration
-                // comment above) — trimming first before re-wrapping
-                // rather than blindly prepending/appending, since a
-                // provider that DOES preserve some of its own whitespace
-                // (Google keeps most leading space, per the same
-                // investigation) must not end up with it doubled.
-                const original = originalWhitespace.get(node);
-                const translated = original
-                  ? original.leading + rawTranslated.trim() + original.trailing
-                  : rawTranslated;
-                mutationWatcher.noteOwnWrite(node, translated);
-                node.data = translated;
-                lastSeenText.set(node, translated);
-                // A prior missing-result episode for this node is over —
-                // don't let it count against the lifetime give-up cap in
-                // noteMissingResult below.
-                missingResultAttempts.delete(node);
+                writeTranslatedNode(node, rawTranslated);
               } else {
                 noteMissingResult(node);
               }
