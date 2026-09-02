@@ -77,9 +77,48 @@ async function waitUntilVisible(timeoutMs = 5000): Promise<void> {
  */
 const DETECT_LANGUAGE_TIMEOUT_MS = 3000;
 
+/**
+ * Speed fix, found via audit: this used to read `document.body.innerText`
+ * for the sample below. `innerText` (unlike `textContent`) reflects actual
+ * rendering — visibility, `display:none`, generated line breaks — which
+ * means the browser must force a full synchronous layout of the whole
+ * document just to compute it, on the auto-translate-on-load critical
+ * path, before any of it is even needed. A plain `textContent` read has no
+ * such cost, but isn't a safe drop-in replacement on its own: it includes
+ * `<script>`/`<style>` element content verbatim, so a page with a large
+ * inline script near the top of `<body>` would feed raw JS/CSS text into
+ * the sample instead of prose, corrupting the language guess. Walking text
+ * nodes directly with a `TreeWalker` gets the cheap-read property of
+ * `textContent` while still excluding script/style content — visibility
+ * isn't accounted for (a `display:none` nav drawer's text can end up in
+ * the sample), but this is already a coarse, best-effort heuristic
+ * (falls back to `'und'` on any failure, gets overridden by the primary
+ * `tabs.detectLanguage` relay whenever that succeeds) where a little
+ * hidden boilerplate mixed into 4000 characters of real content isn't
+ * going to change the detected language.
+ */
+function sampleBodyText(maxChars: number): string {
+  if (!document.body) return '';
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const tag = node.parentElement?.tagName;
+      return tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT'
+        ? NodeFilter.FILTER_REJECT
+        : NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  let sample = '';
+  let node: Node | null;
+  // biome-ignore lint/suspicious/noAssignInExpressions: TreeWalker's own idiomatic iteration form
+  while (sample.length < maxChars && (node = walker.nextNode())) {
+    sample += node.textContent ?? '';
+  }
+  return sample.slice(0, maxChars);
+}
+
 async function detectFromPageText(): Promise<string> {
   try {
-    const sample = (document.body?.innerText ?? '').slice(0, 4000).trim();
+    const sample = sampleBodyText(4000).trim();
     if (!sample || typeof browser.i18n?.detectLanguage !== 'function') return 'und';
     const result = await withTimeout(browser.i18n.detectLanguage(sample), DETECT_LANGUAGE_TIMEOUT_MS);
     const top = result?.languages?.[0]?.language;
@@ -127,12 +166,31 @@ export function createOriginalLanguageTracker() {
    * on its own, and `detectViaTab()`/`detectFromPageText()` are
    * independently timeout-guarded — this was pure added latency on the
    * auto-translate-on-load critical path with no found purpose.
+   *
+   * Speed fix, found via audit: `detectViaTab()` (an MV3 message round trip
+   * that can cost a cold-start service-worker wake) and `detectFromPageText()`
+   * (the fallback) used to run strictly one after the other — awaiting the
+   * first in full, THEN starting the second only if it reported `'und'`.
+   * Each is independently bounded at `DETECT_LANGUAGE_TIMEOUT_MS`, so the
+   * worst case (a slow/unanswered relay, which itself resolves to `'und'`
+   * via its own timeout) paid for BOTH timeouts back to back — up to twice
+   * the latency on the auto-translate-on-load critical path for no reason,
+   * since neither detector's input depends on the other's result. They now
+   * start together and are both awaited via `Promise.all`, capping the
+   * worst case at one timeout window instead of two, while still
+   * preferring the tab relay's result whenever it isn't `'und'` — same
+   * preference order as before, just no longer paid for serially. The
+   * trade: `detectFromPageText()`'s local `i18n.detectLanguage()` call now
+   * always fires (previously skipped whenever the relay alone succeeded);
+   * that's a cheap, non-network local call with no forced layout (see
+   * `sampleBodyText`'s doc comment), a fair price for cutting the shared
+   * worst case in half.
    */
   async function start(): Promise<void> {
     try {
       await waitUntilVisible();
-      language = await detectViaTab();
-      if (language === 'und') language = await detectFromPageText();
+      const [viaTab, viaText] = await Promise.all([detectViaTab(), detectFromPageText()]);
+      language = viaTab !== 'und' ? viaTab : viaText;
     } catch (e) {
       console.warn('[prism] original-language tracking failed, continuing as "und"', e);
       language = 'und';

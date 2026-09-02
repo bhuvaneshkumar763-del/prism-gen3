@@ -88,7 +88,17 @@ export function createResweepScheduler(options: ResweepOptions) {
     }
     started = true;
 
-    window.addEventListener('scroll', onScroll, { passive: true });
+    // Reliability fix, found via audit: a plain (bubbling-phase) 'scroll'
+    // listener on `window` only ever sees the window's own scroll — a
+    // 'scroll' event fired on an ELEMENT (an app-shell's inner scrollable
+    // pane, a modal's scrollable body) never bubbles per the DOM spec, so
+    // scrolling an inner scroller never bumped the cadence and freshly
+    // revealed content there waited on resweep's own backed-off interval
+    // (up to 10s) instead of picking up promptly like a window-level
+    // scroll does. `capture: true` catches it: every 'scroll' event, no
+    // matter its target, passes through `window` during the CAPTURE phase
+    // on its way down — the one phase a non-bubbling event still traverses.
+    window.addEventListener('scroll', onScroll, { passive: true, capture: true });
     window.addEventListener('popstate', onPopstate);
 
     timer = setTimeout(run, delay);
@@ -99,7 +109,7 @@ export function createResweepScheduler(options: ResweepOptions) {
     timer = null;
     if (scrollDebounce) clearTimeout(scrollDebounce);
     scrollDebounce = null;
-    window.removeEventListener('scroll', onScroll);
+    window.removeEventListener('scroll', onScroll, { capture: true });
     window.removeEventListener('popstate', onPopstate);
     started = false;
   }

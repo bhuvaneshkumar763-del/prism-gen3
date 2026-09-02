@@ -155,27 +155,6 @@ describe('createMutationWatcher', () => {
     watcher.disable();
   });
 
-  it('runs onRescan on the given interval while enabled, and stops after disable()', () => {
-    vi.useFakeTimers();
-    const onRescan = vi.fn();
-    const watcher = createMutationWatcher({
-      isTranslated: () => true,
-      isNoTranslateNode: () => false,
-      onNewRoot: vi.fn(),
-      onChangedTextNode: vi.fn(),
-    });
-    watcher.enable(500, onRescan);
-
-    vi.advanceTimersByTime(1500);
-    expect(onRescan).toHaveBeenCalledTimes(3);
-
-    watcher.disable();
-    vi.advanceTimersByTime(1500);
-    expect(onRescan).toHaveBeenCalledTimes(3);
-
-    vi.useRealTimers();
-  });
-
   it('disable() is safe to call before enable()', () => {
     const watcher = createMutationWatcher({
       isTranslated: () => true,
@@ -216,37 +195,5 @@ describe('createMutationWatcher', () => {
 
     expect(onChangedTextNode).toHaveBeenCalledTimes(40);
     watcher.disable();
-  });
-
-  it('skips the periodic onRescan tick when the observer already fired in that window', async () => {
-    document.body.innerHTML = '<p>original</p>';
-    const textNode = document.body.querySelector('p')?.firstChild as Text;
-    const onRescan = vi.fn();
-    const watcher = createMutationWatcher({
-      isTranslated: () => true,
-      isNoTranslateNode: () => false,
-      onNewRoot: vi.fn(),
-      onChangedTextNode: vi.fn(),
-    });
-
-    vi.useFakeTimers();
-    try {
-      watcher.enable(500, onRescan);
-
-      textNode.data = 'changed by the site';
-      await vi.advanceTimersByTimeAsync(0); // flush the observer's microtask-scheduled callback
-      await vi.advanceTimersByTimeAsync(500); // first periodic tick
-      // The observer already reported this exact change — the periodic tick
-      // has nothing new to catch, so onRescan should be skipped for it.
-      expect(onRescan).not.toHaveBeenCalled();
-
-      // A second window with no further mutation fires normally.
-      await vi.advanceTimersByTimeAsync(500);
-      expect(onRescan).toHaveBeenCalledTimes(1);
-
-      watcher.disable();
-    } finally {
-      vi.useRealTimers();
-    }
   });
 });

@@ -72,6 +72,24 @@ interface ProtocolMap {
 export interface FrameLanguageDecision {
   shouldTranslate: boolean;
   targetLanguage: string;
+  /**
+   * Accuracy fix, found via audit: this used to carry only `targetLanguage`
+   * — a same-origin sub-frame that inherited a positive decision then
+   * called `translatePage(targetLanguage)` with no explicit source
+   * language, silently falling back to the literal `'auto'` for every
+   * request in that frame. That's exactly the input the `getSourceLanguage`
+   * fix in `content.ts` (its own doc comment, right above where
+   * `originalLanguageTracker` feeds it) replaced for the MAIN frame,
+   * because Google's own auto-detection silently no-ops for a real
+   * fraction of pieces on some sites — an iframe was never covered by that
+   * fix, since it never ran its own detection (nor should it: this
+   * protocol message's whole purpose, per the doc comment above, is so a
+   * sub-frame inherits the main frame's ALREADY-detected language instead
+   * of running an independent, possibly different one). Reporting it here
+   * lets the sub-frame pass it straight through to its own
+   * `translatePage()` call as an explicit source language.
+   */
+  originalLanguage: string;
 }
 
 export const { sendMessage, onMessage } = defineExtensionMessaging<ProtocolMap>();

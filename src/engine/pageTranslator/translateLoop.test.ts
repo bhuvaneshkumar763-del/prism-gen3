@@ -114,6 +114,41 @@ describe('createPageTranslator', () => {
     pageTranslator.restorePage();
   });
 
+  // Accuracy fix, found via audit: the bubble's From picker (an explicit
+  // source language forced via translatePage()'s second argument) applied
+  // to every body text node's translate request, but the tab title used to
+  // keep using the ambient getSourceLanguage() ('auto' in this extension's
+  // real wiring) regardless — a page mis-detected as the wrong language and
+  // manually corrected via the picker translated correctly everywhere
+  // except the title.
+  it('the tab-title translate request also uses an explicit source language forced via translatePage(), not the ambient getSourceLanguage()', async () => {
+    document.title = 'Titre original';
+    document.body.innerHTML = '<p>hello</p>';
+    const sourceLanguagesSeen: string[] = [];
+    const spyTranslator: Translator = {
+      async translateBatch(request) {
+        sourceLanguagesSeen.push(request.sourceLanguage);
+        return request.pieces.map((piece): PieceOutcome => ok(piece.map((s) => s.toUpperCase())));
+      },
+    };
+    const pageTranslator = createPageTranslator({
+      translator: spyTranslator,
+      getSourceLanguage: () => 'auto',
+      getBatchingHint: () => undefined,
+    });
+
+    // The bubble's From picker: force 'fr' for this translate — should
+    // apply to the title's own translate request too, not just the body.
+    await pageTranslator.translatePage('en', 'fr');
+    await waitFor(() => document.title === 'TITRE ORIGINAL');
+
+    expect(sourceLanguagesSeen).toContain('fr');
+    expect(sourceLanguagesSeen).not.toContain('auto');
+
+    pageTranslator.restorePage();
+    document.title = '';
+  });
+
   it('groups sibling text nodes under the same block into one piece when a batching hint is given', async () => {
     document.body.innerHTML = '<p>Hello <b>world</b></p>';
     const translateBatch = vi.fn(async (request: { pieces: string[][] }) =>
@@ -276,6 +311,108 @@ describe('createPageTranslator', () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
 
     expect(document.body.textContent).toBe('FRESH');
+    pageTranslator.restorePage();
+  });
+
+  // Reliability fix, found via audit: wakeRoutine() only ever cancels a
+  // PENDING (not-yet-fired) scheduled tick via clearTimeout — it can't stop
+  // one already mid-await. A mutation firing while a batch for the SAME
+  // cycle was still in flight (no translatePage() call, unlike the
+  // abandoned-cycle test above) used to schedule and immediately run a
+  // fully concurrent second tick, calling translateBatch() again before the
+  // first call had even resolved — racing shared queue/batchInFlight state.
+  it('does not run a second concurrent tick for the SAME cycle while the previous tick is still awaiting its translateBatch response', async () => {
+    document.body.innerHTML = '<p id="a">first</p>';
+    const pEl = document.getElementById('a') as HTMLElement;
+
+    let releaseFirst!: () => void;
+    const firstHeld = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let concurrentCalls = 0;
+    let maxConcurrentCalls = 0;
+    const translateBatch = vi.fn(async (request: { pieces: string[][] }): Promise<PieceOutcome[]> => {
+      concurrentCalls++;
+      maxConcurrentCalls = Math.max(maxConcurrentCalls, concurrentCalls);
+      if (translateBatch.mock.calls.length === 1) await firstHeld;
+      concurrentCalls--;
+      return request.pieces.map((piece): PieceOutcome => ok(piece.map((s) => s.toUpperCase())));
+    });
+
+    const pageTranslator = createPageTranslator({
+      translator: { translateBatch },
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+
+    await pageTranslator.translatePage('es'); // tick 1 starts, hangs inside the first translateBatch call
+    await new Promise((resolve) => setTimeout(resolve, 20)); // let it actually enter the hung call
+
+    // A new node appears while the first tick's batch is still in flight —
+    // same cycle (no translatePage() call), mirroring a page mutating
+    // while a translate is genuinely still in progress.
+    const newP = document.createElement('p');
+    newP.textContent = 'second';
+    document.body.append(newP);
+    await new Promise((resolve) => setTimeout(resolve, 20)); // let the mutation observer + any (mis)scheduled second tick fire
+
+    // Real bug this closed: without the fix, a second, fully concurrent
+    // translateBatch() call would already have fired by now.
+    expect(translateBatch).toHaveBeenCalledTimes(1);
+    expect(maxConcurrentCalls).toBe(1);
+
+    releaseFirst();
+    await waitFor(() => pEl.textContent === 'FIRST' && newP.textContent === 'SECOND');
+
+    expect(translateBatch).toHaveBeenCalledTimes(2); // the second node's own, SEQUENTIAL tick
+    expect(maxConcurrentCalls).toBe(1); // the two calls never overlapped
+
+    pageTranslator.restorePage();
+  });
+
+  it('does not create a duplicate queue entry when the same node changes more than once before its previous entry has been drained, real bug this closed: requeueChangedTextNode pushed with no membership check, so two rapid mutations on the same node (a live score, a streaming counter) could each queue it separately — wasting a translate request and racing two write-backs for one node', async () => {
+    document.body.innerHTML = '<p id="a">first</p>';
+    const pEl = document.getElementById('a') as HTMLElement;
+    const textNode = pEl.firstChild as Text;
+
+    let releaseFirst!: () => void;
+    const firstHeld = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const pieceCountsSeen: number[] = [];
+    const translateBatch = vi.fn(async (request: { pieces: string[][] }): Promise<PieceOutcome[]> => {
+      pieceCountsSeen.push(request.pieces.length);
+      if (translateBatch.mock.calls.length === 1) await firstHeld;
+      return request.pieces.map((piece): PieceOutcome => ok(piece.map((s) => s.toUpperCase())));
+    });
+
+    const pageTranslator = createPageTranslator({
+      translator: { translateBatch },
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+
+    await pageTranslator.translatePage('es'); // tick 1 splices the node out, hangs on the request
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // Two SEPARATE mutations on the same node, each in its own microtask
+    // flush window, while its own translation is still in flight (so it's
+    // not currently sitting in `queue` when the first mutation fires).
+    textNode.data = 'changed once';
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    textNode.data = 'changed twice';
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    releaseFirst();
+    await waitFor(() => pEl.textContent === 'CHANGED TWICE');
+
+    // Exactly 2 calls, each carrying exactly 1 piece for this one node —
+    // the original text, then its later content once. A duplicate queue
+    // entry would have shown up as a 2nd piece in one of these calls (or a
+    // 3rd call entirely), translating the same node's content twice.
+    expect(pieceCountsSeen).toEqual([1, 1]);
+    expect(translateBatch).toHaveBeenCalledTimes(2);
+
     pageTranslator.restorePage();
   });
 

@@ -265,7 +265,17 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     // getTranslatedNodes(), so the hover-original tooltip lied too.
     nodesToRestore.set(node, node.data);
     viewportDirty = true;
-    queue.push(node);
+    // Speed/correctness fix, found via audit: this used to push
+    // unconditionally, with no check for whether `node` was already
+    // sitting in `queue` — a node that changes more than once (a live
+    // score, a streaming chat message, a counter) before the previous
+    // change's entry was ever spliced out by `runTranslationTick`
+    // (`mutationWatcher.onChangedTextNode` calls this directly, once per
+    // characterData mutation, unthrottled) accumulated a duplicate entry
+    // per change. A duplicate entry means the same node can land in the
+    // SAME batch/group twice, wasting a translate request and racing two
+    // outcomes' write-backs against each other for one node.
+    if (!queue.includes(node)) queue.push(node);
     recomputeWorking();
     wakeRoutine();
   }
@@ -339,7 +349,47 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     requeueChangedTextNode(node);
   }
 
+  /**
+   * Reliability fix, found via audit: `wakeRoutine()` only cancels a
+   * PENDING (not-yet-fired) scheduled call via `clearTimeout` — it can't
+   * stop an ALREADY-RUNNING invocation that's mid-`await` (e.g. awaiting a
+   * `translateBatch()` HTTP round trip). Without this guard, a wake fired
+   * while a tick was still in flight for the SAME cycle (rapid
+   * characterData mutations each calling `requeueChangedTextNode`, which
+   * calls `wakeRoutine()` every time) scheduled a SECOND, concurrent
+   * invocation racing the first: both set `batchInFlight = true`, and
+   * whichever's `finally` ran first cleared it — so `isWorking()` could
+   * report "done" while a batch was still genuinely in flight — and both
+   * independently computed and scheduled their own next tick, doubling the
+   * effective polling rate and the resulting HTTP request volume.
+   *
+   * Deliberately keyed by `cycleGeneration`, not a plain boolean: a plain
+   * "only one tick running, ever" lock would have also blocked the
+   * INTENTIONAL case this engine already relies on and tests directly — a
+   * fresh `translatePage()` call bumps `cycleGeneration` and must be able
+   * to start draining its own new queue immediately, even while an old,
+   * now-abandoned cycle's batch is still resolving in the background (its
+   * response gets safely discarded on arrival via the
+   * `requestedUnderGeneration !== cycleGeneration` check inside
+   * `runTranslationTick`, not by never having started). Keying on
+   * generation blocks only a truly redundant re-entrant tick for the SAME
+   * cycle, while still letting a new cycle's tick run concurrently with an
+   * old cycle's still-draining one.
+   */
+  let runningForGeneration: number | null = null;
+
   async function translationRoutine(): Promise<void> {
+    if (runningForGeneration === cycleGeneration) return;
+    const myGeneration = cycleGeneration;
+    runningForGeneration = myGeneration;
+    try {
+      await runTranslationTick();
+    } finally {
+      if (runningForGeneration === myGeneration) runningForGeneration = null;
+    }
+  }
+
+  async function runTranslationTick(): Promise<void> {
     if (translationRoutineHandle) clearTimeout(translationRoutineHandle);
 
     // Offline: don't even attempt a batch — every provider request is
@@ -697,7 +747,16 @@ export function createPageTranslator(options: PageTranslatorOptions) {
 
   const titleTranslator = createTitleTranslator({
     translator: options.translator,
-    getSourceLanguage: options.getSourceLanguage,
+    // Accuracy fix, found via audit: this used to pass `options.getSourceLanguage`
+    // straight through, bypassing `sourceLanguageOverride` entirely — the
+    // bubble's manual "From" picker (a one-off forced source language, see
+    // that field's declaration comment) correctly applied to every body
+    // text node's translate request (line ~464 below), but the tab title
+    // kept using whatever `options.getSourceLanguage()` reports (always
+    // `'auto'` in this extension's real wiring) regardless. A page
+    // mis-detected as the wrong language, manually corrected via the
+    // picker, would translate correctly everywhere except the title.
+    getSourceLanguage: () => sourceLanguageOverride ?? options.getSourceLanguage(),
     isPageVisible: () => document.visibilityState === 'visible',
   });
 
@@ -747,7 +806,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
 
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && pageLanguageState === 'translated') {
-      mutationWatcher.enable(500, () => resweep.bump());
+      mutationWatcher.enable();
       resweep.bump();
       titleTranslator.catchUp();
     } else if (document.visibilityState !== 'visible') {
@@ -809,7 +868,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     consecutiveBatchFailures = 0;
     setError(null); // also recomputes `working` — queue is already populated above.
     setState('translated');
-    mutationWatcher.enable(500, () => resweep.bump());
+    mutationWatcher.enable();
     resweep.start();
     wakeRoutine();
     void titleTranslator.start(targetLanguage);

@@ -80,6 +80,35 @@ describe('createOriginalLanguageTracker', () => {
     expect(detectLanguage).not.toHaveBeenCalled();
   });
 
+  // Speed fix, found via audit: the text-sample fallback used to read
+  // document.body.innerText, which forces a full synchronous layout just
+  // to compute — a real cost on the auto-translate-on-load critical path.
+  // Switched to a TreeWalker-based textContent read (no layout forced),
+  // which needed to keep excluding <script>/<style> content itself (a
+  // plain textContent read on document.body would NOT) — otherwise a
+  // page's own inline script/style text would corrupt the sample handed
+  // to the language detector.
+  it('excludes <script>/<style> element text from the text-sample fallback (no forced-layout regression: a naive textContent swap would pull raw script/style text into the sample)', async () => {
+    document.body.innerHTML =
+      '<script>const SCRIPT_MARKER_SHOULD_NOT_APPEAR = 1;</script>' +
+      '<style>.STYLE_MARKER_SHOULD_NOT_APPEAR { color: red; }</style>' +
+      '<p>Some real page text</p>';
+    // No detectTabLanguage handler registered — the primary relay goes
+    // unanswered, exactly like the existing "falls back... when nothing
+    // answers" test above, so this exercises the text-sample fallback.
+    const detectLanguage = spyOnDetectLanguage();
+    detectLanguage.mockResolvedValue({ isReliable: true, languages: [{ language: 'en', percentage: 90 }] });
+
+    const tracker = createOriginalLanguageTracker();
+    await tracker.start();
+
+    expect(detectLanguage).toHaveBeenCalled();
+    const sampleSent = (detectLanguage.mock.calls[0] as unknown as [string])[0];
+    expect(sampleSent).not.toContain('SCRIPT_MARKER_SHOULD_NOT_APPEAR');
+    expect(sampleSent).not.toContain('STYLE_MARKER_SHOULD_NOT_APPEAR');
+    expect(sampleSent).toContain('Some real page text');
+  });
+
   it('resolves to "und" when the detector reports no languages at all', async () => {
     spyOnDetectLanguage().mockResolvedValue({ isReliable: false, languages: [] });
 
@@ -104,9 +133,11 @@ describe('createOriginalLanguageTracker', () => {
 
   it("prefers a successful tabs.detectLanguage relay over the text-sample fallback, real gap this closed: previously never called tabs.detectLanguage at all, matching TWP's fallback-only path instead of its actual primary one", async () => {
     const unsub = onMessage('detectTabLanguage', () => 'pt');
-    // If the fallback were used instead, this would report the mocked
-    // i18n.detectLanguage language below, not 'pt' — proves the relay
-    // result wins without ever falling through.
+    // The mocked i18n.detectLanguage below is now started CONCURRENTLY with
+    // the relay (a later speed fix — see start()'s doc comment: the two no
+    // longer run strictly one after the other), so it fires regardless;
+    // what matters is that its result ('fr') loses to the relay's ('pt')
+    // once both settle.
     const detectLanguage = spyOnDetectLanguage();
     detectLanguage.mockResolvedValue({ isReliable: true, languages: [{ language: 'fr', percentage: 90 }] });
 
@@ -115,7 +146,43 @@ describe('createOriginalLanguageTracker', () => {
       await tracker.start();
 
       expect(tracker.get()).toBe('pt');
-      expect(detectLanguage).not.toHaveBeenCalled();
+    } finally {
+      unsub();
+    }
+  });
+
+  // Speed fix, found via audit: the tab-relay attempt and the text-sample
+  // fallback used to run strictly one after the other — the fallback only
+  // even STARTED once the relay's own (up to 3s) await had fully settled,
+  // so an unanswered/slow relay paid for both timeouts back to back on the
+  // auto-translate-on-load critical path, even though neither detector's
+  // input depends on the other's result.
+  it('starts the text-sample fallback CONCURRENTLY with the tab-relay attempt, not only after the relay settles', async () => {
+    // A handler that hangs until resolveRelay() is called, so the relay's
+    // own message round trip is genuinely still in flight for a
+    // controlled window — not settled instantly.
+    let resolveRelay!: (value: string) => void;
+    const relayHeld = new Promise<string>((resolve) => {
+      resolveRelay = resolve;
+    });
+    const unsub = onMessage('detectTabLanguage', () => relayHeld);
+    const detectLanguage = spyOnDetectLanguage();
+    detectLanguage.mockResolvedValue({ isReliable: true, languages: [{ language: 'nl', percentage: 90 }] });
+
+    try {
+      const tracker = createOriginalLanguageTracker();
+      const startPromise = tracker.start();
+
+      // Give the relay's round trip a moment to genuinely still be
+      // pending. Real bug this closed: under the old strictly-serial
+      // code, the fallback wasn't started until the relay's own await
+      // resolved, so detectLanguage would still show zero calls here.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(detectLanguage).toHaveBeenCalled();
+
+      resolveRelay('und'); // relay eventually reports 'und'
+      await startPromise;
+      expect(tracker.get()).toBe('nl'); // fallback's already-available result wins
     } finally {
       unsub();
     }

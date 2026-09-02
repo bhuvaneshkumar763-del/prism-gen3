@@ -257,6 +257,7 @@ export default defineContentScript({
         void sendMessage('reportFrameLanguageDecision', {
           shouldTranslate,
           targetLanguage: configStore.get('targetLanguage'),
+          originalLanguage: originalLanguageTracker.get(),
         });
         if (shouldTranslate) {
           await pageTranslator.translatePage(configStore.get('targetLanguage'));
@@ -290,7 +291,21 @@ export default defineContentScript({
           for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
             const decision = await sendMessage('getFrameLanguageDecision', undefined);
             if (decision) {
-              if (decision.shouldTranslate) await pageTranslator.translatePage(decision.targetLanguage);
+              // Accuracy fix, found via audit: this used to omit the
+              // second argument, so every sub-frame translate silently
+              // used the literal 'auto' regardless of what the main frame
+              // actually detected — see FrameLanguageDecision's
+              // `originalLanguage` doc comment for why that's the same
+              // input beta.29 replaced everywhere else. Same 'und' → 'auto'
+              // normalization as `pageTranslator`'s own `getSourceLanguage`
+              // above — `sourceLanguageOverride` (what this second argument
+              // sets) is sent to the provider AS-IS with no fallback
+              // handling of its own, unlike the ambient path, so 'und'
+              // must be normalized here rather than passed through raw.
+              if (decision.shouldTranslate) {
+                const sourceLanguage = decision.originalLanguage === 'und' ? 'auto' : decision.originalLanguage;
+                await pageTranslator.translatePage(decision.targetLanguage, sourceLanguage);
+              }
               return;
             }
             await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));

@@ -154,6 +154,34 @@ describe('createResweepScheduler', () => {
     scheduler.stop();
   });
 
+  // Reliability fix, found via audit: 'scroll' events fired on an ELEMENT
+  // (not window itself) don't bubble per the DOM spec, so a plain
+  // bubbling-phase window listener never saw them — an app-shell layout
+  // with an inner scrollable pane (the common case on real sites: a fixed
+  // header/sidebar with a scrolling content area) never bumped the
+  // cadence on scroll, unlike a plain-document scroll. The fix (capture:
+  // true) catches the event on its way down through window regardless of
+  // where it's targeted.
+  it('a scroll event dispatched on an INNER scrollable element (not window) still bumps the cadence, real bug this closed: element scroll events do not bubble, so a plain bubbling-phase window listener never saw them — an app-shell layout with an inner scroll pane never got the prompt-refresh treatment a window-level scroll does', () => {
+    document.body.innerHTML = '<div id="inner-scroller" style="overflow:auto"></div>';
+    const inner = document.getElementById('inner-scroller') as HTMLElement;
+    const onResweep = vi.fn(() => false);
+    const scheduler = createResweepScheduler({ isTranslated: () => true, isPageVisible: () => true, onResweep });
+    scheduler.start();
+    vi.advanceTimersByTime(20000); // let the delay back off first
+    onResweep.mockClear();
+
+    // Dispatched on the ELEMENT, not window — a non-bubbling event, exactly
+    // what a real inner-pane scroll produces.
+    inner.dispatchEvent(new Event('scroll'));
+    vi.advanceTimersByTime(400); // scroll debounce
+    vi.advanceTimersByTime(250); // bump()'s fixed re-check delay
+    expect(onResweep).toHaveBeenCalledTimes(1);
+
+    scheduler.stop();
+    document.body.innerHTML = '';
+  });
+
   it('a scroll event while not translated does not schedule a bump', () => {
     const onResweep = vi.fn(() => false);
     const scheduler = createResweepScheduler({ isTranslated: () => false, isPageVisible: () => true, onResweep });
