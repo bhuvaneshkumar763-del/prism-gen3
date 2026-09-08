@@ -40,6 +40,7 @@
     "stop-forcing-source-language",
     "tag-anchor-isolation",
     "three-bugfixes",
+    "twitter-non-latin-source-language-echo",
     "use-detected-source-language",
     "verify-amo-signing",
     "verify-amo-signing-again"

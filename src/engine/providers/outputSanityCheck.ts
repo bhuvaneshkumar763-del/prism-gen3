@@ -42,10 +42,31 @@ const MIN_SUSPICIOUS_IDENTICAL_LENGTH = 40;
  * labels, buttons, headings are nearly always well under 40 chars, and
  * Google's own silent-echo failure mode (200 OK, input returned
  * unchanged) disproportionately hits exactly these short strings.
+ *
+ * Reliability fix, found via a live-page audit and reproduced directly
+ * against a real X.com/Twitter account: this originally covered Greek,
+ * Cyrillic, Armenian, Hebrew, Arabic, Devanagari, Thai, Hiragana/Katakana,
+ * CJK, and Hangul only — every OTHER script `NON_LATIN_TARGET_LANGUAGES`
+ * below already lists a language code for (Tamil, Telugu, Kannada,
+ * Malayalam, Bengali, Gujarati, Gurmukhi/Punjabi, Sinhala, Lao, Myanmar,
+ * Georgian, Mongolian) fell through this regex entirely, so a Tamil (or
+ * Telugu/Kannada/...) tweet echoed back unchanged by a wrongly-guessed
+ * `sourceLanguage` was NEVER flagged suspicious by `hasScriptMismatch` —
+ * it fell through to the length-based check below, which (when the
+ * wrongly-detected source happens to equal the target, e.g. both "en")
+ * can't tell "genuinely already in the target language" from "wrongly
+ * detected as the target language" and treats it as a correct no-op.
+ * Confirmed live: a Tamil tweet on a page whose page-level language
+ * detector (dominated by X.com's own English UI chrome — nav, trending
+ * sidebar, footer — see `originalLanguageTracker.ts`'s `sampleBodyText`)
+ * guessed "en" stayed completely untranslated, with the bubble still
+ * reporting success, because this exact gap. Added the missing blocks
+ * (BMP-only, no surrogate pairs needed) so every script
+ * `NON_LATIN_TARGET_LANGUAGES` already names has matching coverage here.
  */
-const NON_LATIN_SCRIPT = /[Ͱ-ϿЀ-ӿ԰-֏֐-׿؀-ۿऀ-ॿ฀-๿぀-ヿ㐀-䶿一-鿿가-힯]/;
+const NON_LATIN_SCRIPT = /[Ͱ-ϿЀ-ӿ԰-֏֐-׿؀-ۿऀ-ॿ฀-๿぀-ヿ㐀-䶿一-鿿가-힯ঀ-৿਀-੿઀-૿஀-௿ఀ-౿ಀ-೿ഀ-ൿ඀-෿຀-໿က-႟Ⴀ-ჿក-៿᠀-᢯]/;
 /** Same ranges as `NON_LATIN_SCRIPT`, global-flagged so `hasScriptMismatch` can count every match rather than just testing presence. */
-const NON_LATIN_SCRIPT_GLOBAL = /[Ͱ-ϿЀ-ӿ԰-֏֐-׿؀-ۿऀ-ॿ฀-๿぀-ヿ㐀-䶿一-鿿가-힯]/gu;
+const NON_LATIN_SCRIPT_GLOBAL = /[Ͱ-ϿЀ-ӿ԰-֏֐-׿؀-ۿऀ-ॿ฀-๿぀-ヿ㐀-䶿一-鿿가-힯ঀ-৿਀-੿઀-૿஀-௿ఀ-౿ಀ-೿ഀ-ൿ඀-෿຀-໿က-႟Ⴀ-ჿក-៿᠀-᢯]/gu;
 const LETTER_GLOBAL = /\p{L}/gu;
 
 /**

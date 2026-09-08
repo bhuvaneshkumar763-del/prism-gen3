@@ -547,6 +547,67 @@ describe('createBatchedHttpProvider — suspicious vs. network failure kind', ()
     expect(resultsA[0]).toEqual({ ok: false, error: { kind: 'suspicious', message: expect.any(String) } });
     expect(resultsB[0]).toEqual({ ok: false, error: { kind: 'suspicious', message: expect.any(String) } });
   });
+
+  it("retries a suspicious piece's repair with sourceLanguage 'auto' instead of the original declared source, real bug this closed, found via a live-page audit and reproduced directly against a real X.com/Twitter account: the caller's declared source language is a single page-level guess (translateLoop.ts's `getSourceLanguage()`), which is routinely wrong for one piece on a genuinely multi-language page (a social feed, a forum) even when it's right for most of the page. Retrying with that same wrong source just reproduces the identical silent-echo failure forever, leaving the piece permanently untranslated with no error ever surfacing. Retrying with 'auto' for just this one piece lets the provider actually detect its real language", async () => {
+    const sourcesSent: string[] = [];
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(init.body as string) as { source: string };
+      sourcesSent.push(body.source);
+      // First call (declared source 'en', wrong for this piece): echo
+      // back empty — isSuspiciousOutcome's own unconditional "empty result
+      // for real input" trigger, same technique the test above this one
+      // uses, so this doesn't depend on constructing real script-mismatched
+      // text to exercise the repair path.
+      if (sourcesSent.length === 1) return jsonResponse({ texts: [''] });
+      // Repair call (should now be 'auto'): a real, successful translation.
+      return jsonResponse({ texts: ['hola'] });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const provider = createBatchedHttpProvider({
+      name: 'auto-repair-test',
+      baseUrl: 'https://example.com',
+      method: 'POST',
+      callbacks: { ...plainCallbacks(), getRequestBody: (source) => JSON.stringify({ source }) },
+    });
+
+    const results = await provider.translateBatch({ sourceLanguage: 'en', targetLanguage: 'es', pieces: [['hello']] });
+
+    expect(sourcesSent).toEqual(['en', 'auto']);
+    expect(results).toEqual([{ ok: true, value: ['hola'] }]);
+  });
+
+  it("does not force 'auto' for a plain missing piece (no data at all, not the suspicious/echo case) — keeps retrying with the ORIGINAL declared source, since a truncated/parse-short response is no evidence the source language guess was wrong", async () => {
+    const sourcesSent: string[] = [];
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(init.body as string) as { source: string; texts: string[] };
+      sourcesSent.push(body.source);
+      // Always one fewer entry than pieces sent — the genuine "no result
+      // for this piece" case (see the "still classifies a genuinely
+      // missing result" test above), never suspicious.
+      return jsonResponse({ texts: body.texts.slice(0, -1).map(() => 'hola') });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const provider = createBatchedHttpProvider({
+      name: 'missing-not-auto-test',
+      baseUrl: 'https://example.com',
+      method: 'POST',
+      callbacks: { ...plainCallbacks(), getRequestBody: (source, _t, texts) => JSON.stringify({ source, texts }) },
+    });
+
+    const results = await provider.translateBatch({
+      sourceLanguage: 'en',
+      targetLanguage: 'es',
+      pieces: [['hello'], ['world']],
+    });
+
+    expect(sourcesSent).toEqual(['en', 'en']);
+    expect(results[1]).toEqual({
+      ok: false,
+      error: { kind: 'network', message: '[missing-not-auto-test] no result for this piece' },
+    });
+  });
 });
 
 describe('createBatchedHttpProvider — connectivity awareness', () => {

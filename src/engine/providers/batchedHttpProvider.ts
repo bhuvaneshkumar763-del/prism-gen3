@@ -364,10 +364,38 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
       // `maxConcurrent` exists to prevent, and precisely when the
       // endpoint is already struggling. `runWithConcurrencyLimit` applies
       // the SAME adaptive limit real top-level batches respect.
+      //
+      // Reliability fix, found via a live-page audit and reproduced
+      // directly against a real, logged-in X.com/Twitter account: a piece
+      // flagged suspicious (see `isSuspiciousOutcome`'s script-mismatch
+      // check) is real evidence that the CALLER'S declared `sourceLanguage`
+      // is wrong for this specific piece, not just that the provider had a
+      // blip — translateLoop.ts's `getSourceLanguage()` reports one
+      // language for the whole page, but a genuinely multi-language page
+      // (a social feed, a forum, a comment section) can have individual
+      // pieces in a different language than whatever the page-level
+      // detector guessed. Retrying with that SAME wrong source (as this
+      // used to do unconditionally) just reproduces the identical
+      // silent-echo failure every time — Google, told the source IS the
+      // target language, has nothing to translate and hands the input
+      // straight back — so the piece stays suspicious forever and
+      // (correctly, per the fix above this comment's era) is never retried
+      // again, leaving it permanently untranslated with no error surfaced:
+      // exactly "shows translated, does nothing" for that piece. A plain
+      // missing piece (no data at all — truncation/parse failure) has no
+      // such evidence about the source language being wrong, so it keeps
+      // retrying with the ORIGINAL declared source, unchanged.
       await runWithConcurrencyLimit(
         missing,
         () => getAdaptiveConcurrency(configuredMaxConcurrent),
-        (p) => handleBatch(sourceLanguage, targetLanguage, [p], true, deadline),
+        (p) =>
+          handleBatch(
+            missingBecauseSuspicious.has(p) && sourceLanguage !== 'auto' ? 'auto' : sourceLanguage,
+            targetLanguage,
+            [p],
+            true,
+            deadline,
+          ),
       );
     } catch (e) {
       console.error(`[${options.name}] translation request failed`, e);

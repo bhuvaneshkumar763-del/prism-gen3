@@ -71,5 +71,20 @@ describe('isSuspiciousOutcome', () => {
       // e.g. a mixed CJK+ASCII product/menu label that echoed back unchanged.
       expect(isSuspiciousOutcome('登陸選項A', { text: '登陸選項A', detectedLanguage: null }, 'zh', 'en')).toBe(true);
     });
+
+    it('flags a LONG Tamil string echoed back unchanged even when the (wrongly-detected) declared source happens to equal the target — real bug this closed, reproduced live against a real X.com/Twitter account: a page-level language detector dominated by English UI chrome (nav/sidebar/trending — see `originalLanguageTracker.ts`) misdetects a mixed-language feed as "en", and when the target is ALSO "en" the ordinary length-based fallback (`sourceLanguage !== targetLanguage`) cannot distinguish that from a genuine same-language no-op. Before this fix, Tamil (and Telugu/Kannada/Malayalam/Bengali/Gujarati/Punjabi/Sinhala/Lao/Myanmar/Georgian) fell entirely outside `NON_LATIN_SCRIPT`, so this length-only fallback was the only signal available and got it wrong', () => {
+      const tamil = 'மத்திய அரசு விவசாயிகளுக்கு மானிய விலையில் வழங்கும் யூரியா மூட்டைகளை சட்டவிரோதமாக வேறு சாக்கு பையில் மாற்றி லாரியில்';
+      expect(isSuspiciousOutcome(tamil, { text: tamil, detectedLanguage: null }, 'en', 'en')).toBe(true);
+    });
+
+    it('does not flag a short Tamil string when the target language legitimately uses that script (mirrors the existing short-CJK case above — kept short so it does not also trip the separate, unrelated source!==target length-based fallback)', () => {
+      const tamil = 'வணக்கம்';
+      expect(isSuspiciousOutcome(tamil, { text: tamil, detectedLanguage: null }, 'en', 'ta')).toBe(false);
+    });
+
+    it('flags an echoed Bengali string too — spot-checks one of the other newly-covered scripts (Telugu/Kannada/Malayalam/Gujarati/Punjabi/Sinhala/Lao/Myanmar/Georgian share the same fix), not just Tamil', () => {
+      const bengali = 'কেন্দ্রীয় সরকার কৃষকদের ভর্তুকি মূল্যে সরবরাহ করা ইউরিয়া ব্যাগ অবৈধভাবে';
+      expect(isSuspiciousOutcome(bengali, { text: bengali, detectedLanguage: null }, 'en', 'en')).toBe(true);
+    });
   });
 });

@@ -43,6 +43,7 @@ export const COMMON_LANGUAGES: LanguageOption[] = [
   { code: 'sk', name: 'Slovak' },
   { code: 'es', name: 'Spanish' },
   { code: 'sv', name: 'Swedish' },
+  { code: 'ta', name: 'Tamil' },
   { code: 'th', name: 'Thai' },
   { code: 'tr', name: 'Turkish' },
   { code: 'uk', name: 'Ukrainian' },
