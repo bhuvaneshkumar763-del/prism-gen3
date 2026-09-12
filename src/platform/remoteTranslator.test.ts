@@ -82,6 +82,48 @@ describe('createRemoteTranslator', () => {
     expect(received).toMatchObject({ dontSortResults: true });
   });
 
+  describe('timeout — reliability fix, found via a real mobile bug report: a translatePieces call whose response never arrives (e.g. the background service worker was killed mid-request by mobile OS memory pressure, losing its sendResponse closure) used to hang translateBatch() forever, pinning translateLoop.ts\'s "working" state permanently true with no recovery short of reloading the page', () => {
+    it('rejects once the round trip exceeds the timeout instead of hanging forever', async () => {
+      unsubscribe = onMessage('translatePieces', () => new Promise(() => {}));
+      vi.useFakeTimers();
+      try {
+        const translator = createRemoteTranslator();
+        const resultPromise = translator.translateBatch({
+          sourceLanguage: 'en',
+          targetLanguage: 'es',
+          pieces: [['a']],
+        });
+        const assertion = expect(resultPromise).rejects.toThrow(/timed out/);
+        await vi.advanceTimersByTimeAsync(90000);
+        await assertion;
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('does not reject before the timeout elapses', async () => {
+      unsubscribe = onMessage('translatePieces', () => new Promise(() => {}));
+      vi.useFakeTimers();
+      try {
+        const translator = createRemoteTranslator();
+        const resultPromise = translator.translateBatch({
+          sourceLanguage: 'en',
+          targetLanguage: 'es',
+          pieces: [['a']],
+        });
+        let settled = false;
+        resultPromise.then(
+          () => (settled = true),
+          () => (settled = true),
+        );
+        await vi.advanceTimersByTimeAsync(89000);
+        expect(settled).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
   describe("onPieceComplete relay — reliability/speed fix, found via audit: a function property cannot survive chrome.runtime message serialization, so translateLoop.ts's onPieceComplete (the beta.34 incremental write-back callback) was silently dropped before this fix, and the whole point of that feature — visible text appearing progressively instead of only once a whole tick resolves — never actually happened outside a unit test's in-process mock Translator", () => {
     it('tags the outgoing message with a numeric requestId', async () => {
       let received: { requestId?: unknown } = {};

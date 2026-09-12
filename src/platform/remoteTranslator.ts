@@ -1,4 +1,5 @@
 import type { PieceOutcome, TranslateBatchRequest, Translator } from '../engine/translator';
+import { withTimeout } from '../shared/withTimeout';
 import { onMessage, sendMessage } from './messaging/protocol';
 
 /**
@@ -46,6 +47,24 @@ const progressCallbacks = new Map<number, (index: number, outcome: PieceOutcome)
 let progressListenerRegistered = false;
 let nextRequestId = 0;
 
+/**
+ * Reliability fix, found via a real mobile bug report: the background's own
+ * worst-case processing time for one `translatePieces` call is bounded
+ * (`batchedHttpProvider.ts`'s retry loop tops out around ~62s), but the
+ * round trip back across the messaging boundary to THIS call was not. If
+ * the background service worker is torn down mid-request — the keepalive
+ * alarm in `background.ts` defeats Chrome's own idle eviction, but not an
+ * OS-level low-memory kill, which is a real risk on a constrained mobile
+ * device and not something any extension API can prevent — its
+ * `sendResponse` closure is gone, and this call would otherwise hang
+ * forever: `working` stays true permanently, with no recovery short of
+ * reloading the page. Timeout is the background's own worst case plus
+ * generous margin for concurrency-queue wait, not a tight bound; a
+ * rejection here is already handled the same as any other failed batch by
+ * `translateLoop.ts`'s existing retry/error-surfacing logic.
+ */
+const TRANSLATE_PIECES_TIMEOUT_MS = 90000;
+
 function ensureProgressListener(): void {
   if (progressListenerRegistered) return;
   progressListenerRegistered = true;
@@ -63,7 +82,10 @@ export function createRemoteTranslator(): Translator {
       const requestId = nextRequestId++;
       if (onPieceComplete) progressCallbacks.set(requestId, onPieceComplete);
       try {
-        return await sendMessage('translatePieces', { ...serializable, requestId });
+        return await withTimeout(
+          sendMessage('translatePieces', { ...serializable, requestId }),
+          TRANSLATE_PIECES_TIMEOUT_MS,
+        );
       } finally {
         progressCallbacks.delete(requestId);
       }

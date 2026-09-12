@@ -21,6 +21,7 @@
     "incremental-write-back-messaging-boundary",
     "keepalive-scoping-and-retry-loop-fix",
     "link-cluster-isolation",
+    "mobile-translatepieces-timeout",
     "new-icon",
     "partial-batch-failure-reports-success",
     "popup-full-parity",
