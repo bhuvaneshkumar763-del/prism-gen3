@@ -610,6 +610,150 @@ describe('createBatchedHttpProvider — suspicious vs. network failure kind', ()
   });
 });
 
+describe('createBatchedHttpProvider — onNonRetryableStatus hook (auth-key reliability fix)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("fires onNonRetryableStatus with the HTTP status the moment a non-retryable response is seen — real bug this closed: a genuine 401/403 (a bad/rejected auth key) used to be swallowed entirely inside handleBatch's catch block with no way for the provider that supplied the credential to react", async () => {
+    const fetchMock = vi.fn(async () => new Response('unauthorized', { status: 401 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const onNonRetryableStatus = vi.fn();
+
+    const provider = createBatchedHttpProvider({
+      name: 'auth-test',
+      baseUrl: 'https://example.com',
+      method: 'POST',
+      callbacks: { ...plainCallbacks(), getRequestBody: () => '{}' },
+      onNonRetryableStatus,
+    });
+
+    const results = await provider.translateBatch({ sourceLanguage: 'en', targetLanguage: 'es', pieces: [['hello']] });
+
+    expect(onNonRetryableStatus).toHaveBeenCalledExactlyOnceWith(401);
+    expect(results[0]).toEqual({ ok: false, error: { kind: 'network', message: expect.any(String) } });
+  });
+
+  it('does NOT fire onNonRetryableStatus for a retryable status (429/5xx) — that path already gets its own retry/backoff handling and is not evidence of a bad credential', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn(async () => new Response('', { status: 503 }));
+      vi.stubGlobal('fetch', fetchMock);
+      const onNonRetryableStatus = vi.fn();
+
+      const provider = createBatchedHttpProvider({
+        name: 'retryable-test',
+        baseUrl: 'https://example.com',
+        method: 'POST',
+        callbacks: { ...plainCallbacks(), getRequestBody: () => '{}' },
+        onNonRetryableStatus,
+      });
+
+      const resultPromise = provider.translateBatch({
+        sourceLanguage: 'en',
+        targetLanguage: 'es',
+        pieces: [['hello']],
+      });
+      await vi.advanceTimersByTimeAsync(35000);
+      await resultPromise;
+
+      expect(onNonRetryableStatus).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('createBatchedHttpProvider — suspicious-ratio window (auth-key reliability fix, found via a real live incident: a page that showed "translated" while every paragraph stayed untranslated, root-caused to a rejected/exhausted scraped auth key producing a silent-echo response the sanity check correctly, but insufficiently, classified as kind:\'suspicious\' on every single piece)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("reclassifies a sustained run of suspicious results as kind:'network' once the rolling window is full and overwhelmingly suspicious, and fires onSuspiciousStreak exactly once at the crossing — lets translateLoop.ts's existing failure-surfacing logic correctly treat a broken provider as broken instead of silently doing nothing forever", async () => {
+    // Every request comes back with an empty string for a non-empty
+    // input — isSuspiciousOutcome's own unconditional signature (see the
+    // "suspicious vs. network failure kind" tests above), matching the
+    // real live shape: a bad key doesn't reject cleanly, it echoes an
+    // empty/unchanged result for every single piece.
+    const fetchMock = vi.fn(async () => jsonResponse({ texts: [''] }));
+    vi.stubGlobal('fetch', fetchMock);
+    const onSuspiciousStreak = vi.fn();
+
+    const provider = createBatchedHttpProvider({
+      name: 'streak-test',
+      baseUrl: 'https://example.com',
+      method: 'POST',
+      callbacks: { ...plainCallbacks(), getRequestBody: () => '{}' },
+      onSuspiciousStreak,
+    });
+
+    const outcomes = [];
+    for (let i = 0; i < 30; i++) {
+      const results = await provider.translateBatch({
+        sourceLanguage: 'en',
+        targetLanguage: 'es',
+        pieces: [['hello']],
+      });
+      outcomes.push(results[0]);
+    }
+
+    // Window isn't full until the 30th sample, so calls 1-29 are reported
+    // exactly as before this fix: genuinely suspicious, not yet evidence
+    // of a broken provider.
+    for (const outcome of outcomes.slice(0, 29)) {
+      expect(outcome).toMatchObject({ ok: false, error: { kind: 'suspicious' } });
+    }
+    // The 30th sample fills the window at a 100% suspicious ratio, well
+    // over the threshold — reclassified, and the streak hook fires.
+    expect(outcomes[29]).toMatchObject({ ok: false, error: { kind: 'network' } });
+    expect(onSuspiciousStreak).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT reclassify or fire onSuspiciousStreak for a page with a legitimately mixed suspicious ratio well under the threshold — no false positive on real, healthy content (a same-language endonym clustered among otherwise-normal translated pieces)', async () => {
+    // Tied to the outer loop's iteration index, not a raw fetch-call
+    // counter: a suspicious iteration costs TWO fetch calls (the initial
+    // batch, then handleBatch's own individual-piece repair retry) while
+    // a legitimate-success iteration costs only one, so counting raw
+    // fetch invocations would desync which iteration is "supposed" to be
+    // which almost immediately — the same class of mistake as the
+    // per-node-cooldown confound noted elsewhere in this codebase's own
+    // test-writing history.
+    let currentIteration = 0;
+    const fetchMock = vi.fn(async () => {
+      // 5 of every 30 iterations (0, 6, 12, 18, 24) are a real,
+      // successful, non-suspicious translation; the rest are suspicious —
+      // 25/30 ≈ 83%, comfortably under the 90% threshold.
+      const isLegitimateSuccess = currentIteration % 6 === 0;
+      return jsonResponse({ texts: [isLegitimateSuccess ? 'hola' : ''] });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const onSuspiciousStreak = vi.fn();
+
+    const provider = createBatchedHttpProvider({
+      name: 'mixed-page-test',
+      baseUrl: 'https://example.com',
+      method: 'POST',
+      callbacks: { ...plainCallbacks(), getRequestBody: () => '{}' },
+      onSuspiciousStreak,
+    });
+
+    const outcomes = [];
+    for (let i = 0; i < 30; i++) {
+      currentIteration = i;
+      const results = await provider.translateBatch({
+        sourceLanguage: 'en',
+        targetLanguage: 'es',
+        pieces: [['hello']],
+      });
+      outcomes.push(results[0]);
+    }
+
+    const suspiciousOutcomes = outcomes.filter((o) => o && !o.ok && o.error.kind === 'suspicious');
+    expect(suspiciousOutcomes).toHaveLength(25);
+    expect(onSuspiciousStreak).not.toHaveBeenCalled();
+  });
+});
+
 describe('createBatchedHttpProvider — connectivity awareness', () => {
   afterEach(() => {
     vi.unstubAllGlobals();

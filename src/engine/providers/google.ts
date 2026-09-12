@@ -62,6 +62,26 @@ export function getAuthKeySnapshot(): AuthKeySnapshot | undefined {
 }
 
 /**
+ * Reliability fix, found via a live incident: `findAuth`'s cache normally
+ * only re-scrapes on a wall-clock cutoff (20 minutes once a key was found,
+ * 5 once a scrape came back empty) — fine for an ordinary refresh, but a
+ * key that gets outright REJECTED (a real 401/403) or that's producing a
+ * sustained run of suspicious-looking results (the endpoint's more likely
+ * real failure mode: silently echoing everything back rather than a clean
+ * rejection) needs the very next `translateBatch()` call to re-scrape
+ * immediately, not wait out that window. Resetting `lastRequestAuthTime`
+ * to `null` routes through `findAuth`'s own "never scraped before" branch
+ * rather than adding a second cache-invalidation path; clearing
+ * `translateAuth` too means a request that races ahead of the re-scrape
+ * fails fast on an empty key instead of uselessly resending the one
+ * that's already known bad.
+ */
+function invalidateAuth(): void {
+  translateAuth = null;
+  lastRequestAuthTime = null;
+}
+
+/**
  * Public wrapper around `findAuth` — lets `background.ts` kick the scrape
  * off speculatively at service-worker startup (in parallel with the
  * content script's own startup chain) instead of only lazily on the first
@@ -290,6 +310,21 @@ export function createGoogleProvider(): Translator {
         return texts.map((text, index) => ({ text, detectedLanguage: detectedLanguages?.[index] ?? null }));
       },
     },
+    // Reliability fix, found via a live incident (see `invalidateAuth`'s
+    // doc comment above): a genuine 401/403 means the CURRENTLY CACHED key
+    // is already dead, not merely due for its normal refresh — invalidate
+    // immediately rather than resending it for the rest of the cache
+    // window. Every other non-retryable status (a malformed request, etc.)
+    // is unrelated to the auth key and left alone.
+    onNonRetryableStatus: (status) => {
+      if (status === 401 || status === 403) invalidateAuth();
+    },
+    // Reliability fix, found via a live incident: a sustained run of
+    // suspicious-looking results is the endpoint's real-world failure mode
+    // for a bad/exhausted key (far more likely than a clean 401), so this
+    // also forces an immediate re-scrape rather than only reporting the
+    // problem.
+    onSuspiciousStreak: () => invalidateAuth(),
   });
 
   const translator: Translator = {

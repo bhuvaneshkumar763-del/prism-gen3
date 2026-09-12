@@ -521,6 +521,56 @@ describe('createGoogleProvider', () => {
     expect(payload[0][1]).toBe('fa-AF');
   });
 
+  describe("auth-key reliability fixes — a stale/rejected key used to silently degrade translation into a no-op for up to 20 minutes at a time, found live during this exact repo's own testing", () => {
+    it('invalidates the cached auth key immediately on a genuine 401, instead of resending it for the rest of the normal cache window — real bug this closed: a rejected key used to keep being resent until the 20-minute wall-clock cache expired, with no way for the provider to react to the rejection itself', async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(authScrapeResponse())
+        .mockResolvedValueOnce(new Response('unauthorized', { status: 401 }))
+        .mockResolvedValueOnce(authScrapeResponse())
+        .mockResolvedValueOnce(jsonResponse([['<a i=0>hola</a><a i=1> </a>'], ['en']]));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const { createGoogleProvider, getAuthKeySnapshot } = await import('./google');
+      const provider = createGoogleProvider();
+      const req = { sourceLanguage: 'en', targetLanguage: 'es', pieces: [['hello']] };
+
+      await provider.translateBatch(req);
+      // Cleared immediately by the 401 — not left holding the now-rejected
+      // key for the rest of its normal 20-minute cache window.
+      expect(getAuthKeySnapshot()).toBeUndefined();
+
+      await provider.translateBatch(req);
+      const scrapeCalls = fetchMock.mock.calls.filter((c) => String(c[0]).includes('translate_http'));
+      expect(scrapeCalls).toHaveLength(2); // re-scraped instead of resending the rejected key
+    });
+
+    it("forces an immediate auth-key re-scrape once a sustained run of suspicious results crosses the reclassification threshold — the real live shape a broken/exhausted key actually takes (silently echoing everything back) rather than a clean 401, which the fix above alone wouldn't catch", async () => {
+      // Long enough to clear MIN_SUSPICIOUS_IDENTICAL_LENGTH and identical
+      // to the source — the same echoed-back-untranslated shape as the
+      // existing "flags a response that echoes the original back
+      // untranslated" test above, repeated enough times to fill the
+      // shared rolling window.
+      const echoed = 'This sentence is definitely long enough to cross the forty character mark.';
+      const fetchMock = vi.fn(async (url: string) =>
+        String(url).includes('translate_http') ? authScrapeResponse() : jsonResponse([[echoed], ['en']]),
+      );
+      vi.stubGlobal('fetch', fetchMock);
+
+      const { createGoogleProvider, getAuthKeySnapshot } = await import('./google');
+      const provider = createGoogleProvider();
+
+      for (let i = 0; i < 30; i++) {
+        await provider.translateBatch({ sourceLanguage: 'en', targetLanguage: 'es', pieces: [[echoed]] });
+      }
+
+      // The 30th sample fills the shared window at a 100% suspicious
+      // ratio — well over threshold — which invalidates the cached key
+      // immediately instead of only reporting the problem after the fact.
+      expect(getAuthKeySnapshot()).toBeUndefined();
+    });
+  });
+
   describe('auth-key persistence seam (hydrateAuthKey/getAuthKeySnapshot/ensureAuthReady)', () => {
     // Real gap this closes, found via a speed audit: the scraped auth key
     // used to live in module memory only, lost on every MV3 service-worker

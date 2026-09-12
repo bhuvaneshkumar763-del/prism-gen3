@@ -83,6 +83,32 @@ export interface BatchedProviderOptions {
    */
   onBatchStart?(): void;
   onBatchEnd?(): void;
+  /**
+   * Reliability fix, found via a live incident: a genuine non-retryable
+   * HTTP status (a real 401/403, not the 429/5xx `sendOnce` already
+   * retries) used to be swallowed entirely inside `handleBatch`'s catch
+   * block, with no way for the provider that supplied the credential to
+   * react — a rejected/rotated key kept being resent for the rest of
+   * whatever cache window the provider used. Fired from `sendOnce` the
+   * instant `!response.ok` is detected, before the error is thrown, so a
+   * provider like `google.ts` can invalidate its cached auth key
+   * immediately instead of waiting out its own cache timer.
+   */
+  onNonRetryableStatus?(status: number): void;
+  /**
+   * Reliability fix, found via a live incident: a real, live-reproduced
+   * case where the provider's auth was silently broken and every piece
+   * came back looking like a legitimate "already in the target language"
+   * echo (`kind: 'suspicious'`) — by design, correct for a genuinely
+   * untranslatable piece, but indistinguishable from a fully-broken
+   * provider when every single piece is affected. Fired once, edge-
+   * triggered, the moment a rolling window of the last
+   * `SUSPICIOUS_WINDOW_SIZE` piece classifications crosses
+   * `SUSPICIOUS_RATIO_THRESHOLD` — lets a provider force an immediate
+   * credential refresh so the very next tick has a real chance to
+   * self-heal, rather than only reporting the problem after the fact.
+   */
+  onSuspiciousStreak?(): void;
 }
 
 interface RetryableError extends Error {
@@ -125,6 +151,15 @@ const DEFAULT_MAX_BATCH_CHARS = 2000;
 const DEFAULT_MAX_CONCURRENT = 6;
 const REQUEST_TIMEOUT_MS = 20000;
 const MAX_ATTEMPTS = 3;
+// Reliability fix, found via a live incident (see onSuspiciousStreak's doc
+// comment above): deliberately conservative pending real live tuning.
+// Legitimate suspicious content (a same-language endonym, a handful of
+// numbers/proper nouns) clusters in small groups within otherwise-normal
+// translated prose — it does not plausibly make up 27+ of 30 consecutive
+// pieces across a real page, so a large window and a high threshold keep
+// this from ever firing on a genuinely healthy, if unusual, page.
+const SUSPICIOUS_WINDOW_SIZE = 30;
+const SUSPICIOUS_RATIO_THRESHOLD = 0.9;
 // REQUEST_TIMEOUT_MS x MAX_ATTEMPTS (plus inter-attempt delays) is a ~62s
 // worst case with no cap — translationRoutine awaits one sendWithRetry()
 // call synchronously, so a provider that's merely slow (not down; a 5xx/429
@@ -194,6 +229,43 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
   // promise ends up at.
   const suspiciousPromises = new WeakSet<Promise<{ text: string; detectedLanguage: string | null } | null>>();
 
+  // Provider-level (not per-`translateBatch()` call) rolling window of the
+  // last SUSPICIOUS_WINDOW_SIZE piece-level classifications — same scope
+  // as `inFlightByKey`/`suspiciousPromises` above, and for the same
+  // reason: the auth key this ratio is meant to protect is a provider-wide
+  // resource, shared across every tab/page using this one cached provider
+  // instance, not something scoped to a single page's translateBatch()
+  // call. `suspiciousStreakActive` edge-triggers `onSuspiciousStreak` once
+  // per crossing rather than firing it again for every piece while the
+  // ratio stays over threshold.
+  const suspiciousWindow: boolean[] = [];
+  let suspiciousStreakActive = false;
+
+  /**
+   * Records one piece's final suspicious/not classification into the
+   * rolling window and returns whether the ratio is (now) over threshold.
+   * Called from `resolveFn` below — the single choke point every piece's
+   * FINAL settlement funnels through, whether it resolved on the first
+   * attempt or only after `handleBatch`'s individual-piece repair retry.
+   */
+  function recordSuspiciousSample(isSuspicious: boolean): boolean {
+    suspiciousWindow.push(isSuspicious);
+    if (suspiciousWindow.length > SUSPICIOUS_WINDOW_SIZE) suspiciousWindow.shift();
+    if (suspiciousWindow.length < SUSPICIOUS_WINDOW_SIZE) {
+      suspiciousStreakActive = false;
+      return false;
+    }
+    const suspiciousCount = suspiciousWindow.reduce((count, sample) => count + (sample ? 1 : 0), 0);
+    const overThreshold = suspiciousCount / suspiciousWindow.length >= SUSPICIOUS_RATIO_THRESHOLD;
+    if (overThreshold) {
+      if (!suspiciousStreakActive) options.onSuspiciousStreak?.();
+      suspiciousStreakActive = true;
+    } else {
+      suspiciousStreakActive = false;
+    }
+    return overThreshold;
+  }
+
   async function sendOnce(
     sourceLanguage: string,
     targetLanguage: string,
@@ -221,6 +293,7 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
         throw retryableError;
       }
       if (!response.ok) {
+        options.onNonRetryableStatus?.(response.status);
         throw new NonRetryableHttpError(`HTTP ${response.status}`);
       }
       return await response.json();
@@ -439,7 +512,22 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
         ) => void;
         const promise = new Promise<{ text: string; detectedLanguage: string | null } | null>((resolve) => {
           resolveFn = (result, wasSuspicious) => {
-            if (wasSuspicious) suspiciousPromises.add(promise);
+            // Reliability fix, found via a live incident: recording every
+            // piece's final classification here — success and genuine
+            // failure count as `false`, a confirmed-suspicious result as
+            // `true` — is what lets a sustained run of suspicious results
+            // (the real live shape of a broken/rejected auth key: Google
+            // silently echoing everything back rather than a clean HTTP
+            // rejection) get reclassified as a genuine `'network'` failure
+            // once it's overwhelmingly more likely to be provider breakage
+            // than a page's content coincidentally matching its own target
+            // language. Deliberately NOT added to `suspiciousPromises` in
+            // that case, so the outcome-kind check below reports
+            // `'network'` instead of `'suspicious'` — the only change
+            // needed for `translateLoop.ts`'s existing failure-surfacing
+            // logic to correctly start counting these as real failures.
+            const overThreshold = recordSuspiciousSample(!!wasSuspicious);
+            if (wasSuspicious && !overThreshold) suspiciousPromises.add(promise);
             resolve(result);
           };
         });
