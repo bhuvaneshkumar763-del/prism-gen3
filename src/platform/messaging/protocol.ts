@@ -24,8 +24,40 @@ import type { Result } from '../../shared/result';
 interface ProtocolMap {
   /** Popup/content-script → background: translate one string through the configured provider. */
   translateText(data: { text: string; sourceLanguage: string; targetLanguage: string }): Result<string, TranslateError>;
-  /** Content-script (via remoteTranslator.ts) → background: translate a batch of grouped pieces. */
-  translatePieces(data: TranslateBatchRequest): PieceOutcome[];
+  /**
+   * Content-script (via remoteTranslator.ts) → background: translate a
+   * batch of grouped pieces. `requestId` correlates this call's own
+   * `translatePiecesProgress` notifications (below) — more than one
+   * `translatePieces` call (the main tick, `attributeTranslator.ts`,
+   * `titleTranslator.ts`) can be in flight concurrently from the same
+   * frame, so a bare per-frame flag wouldn't disambiguate them. Not part
+   * of the engine's own `TranslateBatchRequest` shape (that type is
+   * shared with every in-process `Translator` implementation, most of
+   * which have no messaging boundary to correlate across) — added here,
+   * at the one seam that actually needs it.
+   */
+  translatePieces(data: TranslateBatchRequest & { requestId: number }): PieceOutcome[];
+  /**
+   * Background → a tab's content script: fired as each piece of an
+   * in-flight `translatePieces` call resolves, well before that call's own
+   * response. This is the seam that makes incremental write-back
+   * (`translateLoop.ts`'s `onPieceComplete`, and the equivalent inside
+   * `google.ts`'s own grouped-piece repair) actually take effect in the
+   * real extension instead of only in unit tests: a function property
+   * (`onPieceComplete` itself) cannot survive `chrome.runtime`'s
+   * structured-clone message serialization, so without this relay the
+   * callback the engine passes into `translateBatch()` is silently never
+   * invoked in production, and the whole point of beta.34's per-piece
+   * write-back — visible text appearing progressively instead of only
+   * once the entire tick resolves — never actually happened outside a
+   * test's in-process mock translator. Fire-and-forget, no response
+   * expected; a progress notification that arrives for an
+   * abandoned/superseded request is simply ignored (the content script
+   * only forwards it to a still-live `onPieceComplete` for that
+   * `requestId`, keyed the same way the underlying batch/generation
+   * checks already are).
+   */
+  translatePiecesProgress(data: { requestId: number; index: number; outcome: PieceOutcome }): void;
   /** Popup/background → a tab's content script: translate the whole page. */
   pageTranslate(data: { targetLanguage: string }): PageLanguageState;
   /** Popup/background → a tab's content script: restore the original (pre-translation) text. */

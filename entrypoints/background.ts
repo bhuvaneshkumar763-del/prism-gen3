@@ -263,15 +263,18 @@ export default defineBackground(() => {
     if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');
     beginTranslateActivity();
     try {
-      return await translatePiecesWithCache(message.data);
+      return await translatePiecesWithCache(message.data, message.sender);
     } finally {
       endTranslateActivity();
     }
   });
 
-  async function translatePiecesWithCache(data: TranslateBatchRequest): Promise<PieceOutcome[]> {
+  async function translatePiecesWithCache(
+    data: TranslateBatchRequest & { requestId: number },
+    sender: Browser.runtime.MessageSender,
+  ): Promise<PieceOutcome[]> {
     const { providerId, provider } = await resolveActiveProvider();
-    const { sourceLanguage, targetLanguage, pieces, dontSortResults } = data;
+    const { sourceLanguage, targetLanguage, pieces, dontSortResults, requestId } = data;
 
     if (!provider) {
       const error = { kind: 'network' as const, message: unavailableMessage(providerId) };
@@ -317,11 +320,41 @@ export default defineBackground(() => {
       const missingPieces = missingIndices
         .map((i) => pieces[i])
         .filter((p): p is (typeof pieces)[number] => p !== undefined);
+      // Reliability/speed fix, found via audit: relays each fresh piece's
+      // own completion back to the requesting frame the instant the
+      // provider resolves it — see remoteTranslator.ts's header comment
+      // for why this exists (a function property can't survive the
+      // messaging boundary on its own) and what it makes work again
+      // (beta.34's incremental write-back, previously inert outside a
+      // unit test's in-process translator). `missingIdx` is relative to
+      // `missingPieces`/`pieces` above; `missingIndices[missingIdx]` maps
+      // it back to the index in the ORIGINAL request the content script
+      // is keeping track of. Best-effort: a tab/frame that's navigated or
+      // closed between the request and this piece resolving just drops
+      // the notification — the final `outcomes` this function returns
+      // still carries every piece via the unchanged path below, so
+      // nothing is actually lost, only the early write-back for that one
+      // piece.
+      const tabId = sender.tab?.id;
       freshOutcomes = await provider.translateBatch({
         sourceLanguage,
         targetLanguage,
         pieces: missingPieces,
         dontSortResults,
+        onPieceComplete:
+          tabId === undefined
+            ? undefined
+            : (missingIdx, outcome) => {
+                const index = missingIndices[missingIdx];
+                if (index === undefined) return;
+                void sendMessage(
+                  'translatePiecesProgress',
+                  { requestId, index, outcome },
+                  { tabId, frameId: sender.frameId },
+                ).catch(() => {
+                  // Tab/frame gone — see this block's own comment above.
+                });
+              },
       });
     }
 
