@@ -256,6 +256,26 @@ export function createPageTranslator(options: PageTranslatorOptions) {
   }
 
   function requeueChangedTextNode(node: Text): void {
+    // Reliability fix, found via audit: this had no state check of its own,
+    // which mattered once `noteMissingResult`'s cooldown-retry timer (an
+    // untracked, ungenerationed `setTimeout` — see its own doc comment)
+    // could fire AFTER a `restorePage()` that emptied `queue` and moved
+    // `pageLanguageState` back to 'original'. Without this guard, that
+    // stray timer pushes the node into the now-empty `queue` anyway and
+    // sets `working = true` — but `runTranslationTick`'s two real work
+    // branches are both gated on `pageLanguageState === 'translated'`, so
+    // nothing ever drains it, and the tail's `nextDelay` computation (see
+    // its own updated comment below) used to fall through to `0` purely
+    // because `queue.length > 0`, producing a PERMANENT 0ms
+    // self-rescheduling tick loop for the rest of the tab's life, with the
+    // bubble stuck showing "Translating…" and its primary button disabled.
+    // Every real caller of this function (the mutation watcher's
+    // characterData path, which itself already checks `isTranslated()`
+    // before calling in; the resweep/new-root path, which only runs while
+    // translated) is already only ever reachable while translated, so this
+    // guard costs those paths nothing and closes the stray-timer path for
+    // free.
+    if (pageLanguageState !== 'translated') return;
     requeueAt.set(node, Date.now());
     dedupe.track([node]);
     lastSeenText.set(node, node.data);
@@ -329,16 +349,41 @@ export function createPageTranslator(options: PageTranslatorOptions) {
    * before that fires.
    */
   function noteMissingResult(node: Text): void {
-    if (!node.isConnected) return;
+    if (!node.isConnected) {
+      // Reliability fix, found via audit: this used to return here without
+      // clearing `lastSeenText` — unlike the two sibling give-up paths
+      // (the `allFailed` batch handler and the disconnected-node cleanup
+      // in the success path), which both delete it for exactly this
+      // reason. A node whose cooldown retry lands while a virtualized/
+      // recycled list has it off-DOM lost its only remaining lifeline:
+      // when it reappears with the SAME still-untranslated text,
+      // `queueOrRequeueIfChanged` sees `lastSeenText.get(node) ===
+      // node.data` and never requeues it — permanently stuck untranslated
+      // on a page the UI reports as fully translated, no error surfaced.
+      lastSeenText.delete(node);
+      return;
+    }
     const text = (node.textContent ?? '').trim();
     if (!text || !HAS_LETTER.test(text)) return;
     const last = requeueAt.get(node);
     if (last !== undefined && Date.now() - last < 1500) {
       if (!cooldownRetryScheduled.has(node)) {
         cooldownRetryScheduled.add(node);
+        // Reliability fix, found via audit: this timer used to carry no
+        // generation check at all, so it could fire after a
+        // `restorePage()` that already emptied `queue` and moved
+        // `pageLanguageState` back to 'original' — see
+        // `requeueChangedTextNode`'s own updated doc comment for the
+        // permanent 0ms tick-spin this caused. `requeueChangedTextNode`'s
+        // own new state guard already closes that specific hole, but
+        // checking the generation here too avoids even calling back into
+        // `noteMissingResult` (and re-touching `missingResultAttempts`)
+        // for a cycle nothing cares about anymore.
+        const scheduledGeneration = cycleGeneration;
         setTimeout(
           () => {
             cooldownRetryScheduled.delete(node);
+            if (scheduledGeneration !== cycleGeneration) return;
             noteMissingResult(node);
           },
           1500 - (Date.now() - last),
@@ -746,7 +791,18 @@ export function createPageTranslator(options: PageTranslatorOptions) {
       // capped independently — see batchedHttpProvider.ts's
       // DEFAULT_MAX_CONCURRENT). setTimeout(..., 0) still yields to the
       // event loop between batches rather than looping synchronously.
-      nextDelay = queue.length > 0 ? 0 : 2000;
+      //
+      // Reliability fix, found via audit (belt-and-braces alongside
+      // `requeueChangedTextNode`'s own new state guard above): this used
+      // to key purely on `queue.length > 0`, so ANY stray requeue landing
+      // while `pageLanguageState !== 'translated'` — the two real work
+      // branches above are both gated on 'translated' and would never
+      // drain it — produced a PERMANENT 0ms self-rescheduling tick loop,
+      // since neither branch above ever runs to empty the queue. Requiring
+      // 'translated' here too means a queue entry that somehow survives
+      // every other guard still can't produce a busy-spin; it just sits
+      // there inert until a real translate/restore cycle clears it.
+      nextDelay = pageLanguageState === 'translated' && queue.length > 0 ? 0 : 2000;
     }
     translationRoutineHandle = setTimeout(translationRoutine, nextDelay);
   }
@@ -950,6 +1006,18 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     surfacedErrorStreak = 0;
     setError(null);
     setState('original');
+    // Reliability fix, found via audit alongside the cooldown-timer/restore
+    // race above: restorePage() cleared `queue` but never touched
+    // `working` itself — so a restore while a legitimate retry was still
+    // pending (routine: any batch with even one failing piece leaves
+    // `working` true until it resolves) left the bubble's primary button
+    // permanently disabled, showing "Translating…" on the now-untranslated
+    // page, since nothing left running will ever recompute it back to
+    // false. `queue` is empty and every in-flight request from this cycle
+    // is either already abandoned (checked via `cycleGeneration` before
+    // touching shared state) or about to be, so `false` is correct
+    // immediately, not just eventually.
+    setWorking(false);
   }
 
   return {

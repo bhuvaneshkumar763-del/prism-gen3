@@ -28,6 +28,7 @@
     "reject-untrusted-privileged-ui-events",
     "remove-builtin-provider",
     "remove-libretranslate-provider",
+    "restore-vs-cooldown-timer-race",
     "revert-hover-fix",
     "selection-popup-language-awareness",
     "sender-validation-and-reflow-fix",

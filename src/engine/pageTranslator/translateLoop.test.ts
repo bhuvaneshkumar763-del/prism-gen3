@@ -1674,6 +1674,147 @@ describe('failure paths clear lastSeenText for disconnected nodes', () => {
 
     pageTranslator.restorePage();
   });
+
+  it("re-translates a node that disconnects WHILE sitting inside noteMissingResult's own 1500ms cooldown window, real bug this closed: noteMissingResult's disconnected early-return never cleared lastSeenText, unlike its two sibling give-up paths above — a node whose cooldown-retry timer fires after it was recycled off-DOM lost its only remaining lifeline and stayed untranslated forever even after reappearing with the same content", async () => {
+    document.body.innerHTML = '<p id="a">alpha</p>';
+    const p = document.getElementById('a') as HTMLParagraphElement;
+    const textNode = p.firstChild as Text;
+
+    let callCount = 0;
+    const translateBatch = vi.fn(async (): Promise<PieceOutcome[]> => {
+      callCount++;
+      // `ok` with an empty string — not an error — routes through
+      // noteMissingResult regardless of whether 'a' is alone in its batch;
+      // an `err` outcome for a single-node batch would instead take the
+      // unconditional-retry `allFailed` path, which never touches
+      // noteMissingResult at all (see this file's other
+      // "eventually translates a node..." test for why that distinction
+      // matters).
+      if (callCount <= 2) return [ok([''])];
+      return [ok(['ALPHA'])];
+    });
+
+    const pageTranslator = createPageTranslator({
+      translator: { translateBatch },
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+
+    vi.useFakeTimers();
+    try {
+      void pageTranslator.translatePage('es');
+      // tick 1: connected, missing (attempt 1) — no prior `requeueAt` yet,
+      // so this goes straight to requeueChangedTextNode's immediate
+      // re-queue, not the cooldown branch. tick 2 then fails again
+      // (attempt 2), THIS time within 1500ms of tick 1's `requeueAt` —
+      // noteMissingResult now takes the cooldown branch and schedules the
+      // real timer this test targets. Small non-zero advances, since a
+      // 0ms advance doesn't reliably cascade into a freshly-scheduled
+      // zero-delay timer under vitest's fake timers.
+      for (let i = 0; i < 20 && callCount < 2; i++) {
+        await vi.advanceTimersByTimeAsync(10);
+      }
+      expect(callCount).toBe(2);
+
+      p.remove(); // recycled off-DOM WHILE the cooldown timer scheduled above is still pending
+
+      await vi.advanceTimersByTimeAsync(1500); // cooldown timer fires: noteMissingResult(node) re-invoked, now disconnected
+    } finally {
+      vi.useRealTimers();
+    }
+
+    // Reattached with the SAME, still-untranslated content — the exact
+    // shape of a virtualized-list node pool reusing a recycled element.
+    document.body.appendChild(p);
+
+    await waitFor(() => textNode.data === 'ALPHA');
+    expect(textNode.data).toBe('ALPHA');
+
+    pageTranslator.restorePage();
+  });
+});
+
+describe("restorePage() vs. noteMissingResult's cooldown timer — real bug this closed: a cooldown timer scheduled before restorePage() fires AFTER it, with no state or generation check of its own, re-pushing the node into the just-emptied queue and permanently spinning runTranslationTick at a 0ms self-reschedule with the busy state stuck on", () => {
+  afterEach(() => {
+    document.body.innerHTML = '';
+    vi.restoreAllMocks();
+  });
+
+  it('does not resume working (busy) state, does not leave pageLanguageState translated, and does not requeue the node after restorePage() runs while a cooldown timer is still pending', async () => {
+    document.body.innerHTML = '<p id="a">alpha</p>';
+
+    let aAttempts = 0;
+    // `ok` with an empty string — not an error — routes through the
+    // `rawTranslated` falsy branch straight to `noteMissingResult`
+    // regardless of whether 'a' is alone in its batch (an `err` outcome
+    // for a single-node batch would instead take the unconditional-retry
+    // `allFailed` path, a completely different mechanism that never
+    // touches `noteMissingResult`/the cooldown timer this test targets —
+    // see this file's other "eventually translates a node..." test's own
+    // header comment for why that distinction matters).
+    const translateBatch = vi.fn(async (): Promise<PieceOutcome[]> => {
+      aAttempts++;
+      return [ok([''])];
+    });
+
+    const pageTranslator = createPageTranslator({
+      translator: { translateBatch },
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+
+    vi.useFakeTimers();
+    try {
+      void pageTranslator.translatePage('es');
+      // tick 1: 'a' missing (attempt 1) — no prior `requeueAt` entry yet,
+      // so noteMissingResult's cooldown check doesn't apply on this first
+      // call at all; it goes straight to requeueChangedTextNode, which
+      // re-queues 'a' immediately (a real, correct fast retry). tick 2
+      // (queue non-empty + translated => nextDelay 0) then runs and fails
+      // 'a' again (attempt 2), THIS time within 1500ms of the `requeueAt`
+      // tick 1 set — noteMissingResult now takes the cooldown branch and
+      // schedules the real timer under test. Each tick's own async chain
+      // needs its own microtask-flush pass beyond a single zero-delay
+      // advance, so drive this with a small bounded loop rather than
+      // assuming a fixed number of `advanceTimersByTimeAsync(0)` calls
+      // reaches it.
+      for (let i = 0; i < 20 && aAttempts < 2; i++) {
+        await vi.advanceTimersByTimeAsync(10);
+      }
+      expect(aAttempts).toBe(2);
+      // Confirm it's genuinely sitting in the cooldown (not still being
+      // retried immediately) before proceeding — further small advances
+      // (well under the 1500ms cooldown window) must NOT produce a 3rd
+      // attempt.
+      for (let i = 0; i < 20; i++) {
+        await vi.advanceTimersByTimeAsync(10);
+      }
+      expect(aAttempts).toBe(2);
+
+      pageTranslator.restorePage(); // queue emptied, pageLanguageState -> 'original', while the cooldown timer above is still outstanding
+
+      await vi.advanceTimersByTimeAsync(1500); // the stray cooldown timer fires now
+      // Advance well past what a real 0ms self-reschedule loop would need
+      // to run many times over, if the bug were still present — proves
+      // this isn't just "hasn't spun yet".
+      await vi.advanceTimersByTimeAsync(10000);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(pageTranslator.getState()).toBe('original');
+    // The real bug: the stray timer's requeue set `working = true` via
+    // `recomputeWorking()` with no real work ever able to drain it (both
+    // of runTranslationTick's work branches are gated on
+    // pageLanguageState === 'translated'), permanently disabling the
+    // bubble's primary button.
+    expect(pageTranslator.isWorking()).toBe(false);
+    // Only the two real attempts before restorePage() — the stray timer
+    // must not have triggered a further translateBatch call for 'a'.
+    expect(aAttempts).toBe(2);
+
+    pageTranslator.restorePage();
+  });
 });
 
 describe('pruneDisconnectedRestoreEntries', () => {
