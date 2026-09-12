@@ -706,9 +706,45 @@ export function createPageTranslator(options: PageTranslatorOptions) {
           });
           queue.unshift(...batch.filter((n) => n.isConnected));
         } else {
-          consecutiveBatchFailures = 0;
-          surfacedErrorStreak = 0;
-          setError(null);
+          // Reliability fix, found via audit: this used to reset both
+          // failure counters and clear any surfaced error unconditionally
+          // the instant `allFailed` was false — but `allFailed` requires
+          // EVERY outcome in the tick to fail; a rate-limited/degraded
+          // provider's normal shape is a MIXED batch (batchedHttpProvider.ts
+          // splits a tick into many HTTP sub-requests, and each
+          // sub-request's failure is confined to its own pieces), so a
+          // genuine partial outage — most pieces failing, a few still
+          // landing — took this branch on every tick, permanently
+          // preventing `consecutiveBatchFailures` from ever accumulating
+          // toward `CONSECUTIVE_FAILURES_BEFORE_SURFACING` and wiping any
+          // already-surfaced error. The failing nodes still went through
+          // `noteMissingResult`'s bounded (give-up-after-3) retry below and
+          // were eventually abandoned — but with the error state reset
+          // every tick, that abandonment produced no visible signal at
+          // all: `working` goes false, the bubble shows the normal green
+          // "translated" state, and whole regions of the page silently
+          // stay in the original language. Now only resets the counters
+          // when this tick had NO genuine (non-`'suspicious'`) failures —
+          // a batch that's all-`'suspicious'` or fully successful still
+          // resets normally, matching the reasoning `allFailedAreSuspicious`
+          // above already applies to the fully-failed case.
+          const hasGenuineFailure = failedOutcomes.some((o) => o && !o.ok && o.error.kind !== 'suspicious');
+          if (!hasGenuineFailure) {
+            consecutiveBatchFailures = 0;
+            surfacedErrorStreak = 0;
+            setError(null);
+          } else {
+            consecutiveBatchFailures++;
+            if (consecutiveBatchFailures >= CONSECUTIVE_FAILURES_BEFORE_SURFACING) {
+              const firstGenuineFailure = outcomes.find((o) => o && !o.ok && o.error.kind !== 'suspicious');
+              const message =
+                firstGenuineFailure && !firstGenuineFailure.ok
+                  ? firstGenuineFailure.error.message
+                  : 'translation failed';
+              setError(toUserFacingErrorMessage(message));
+              surfacedErrorStreak++;
+            }
+          }
           groups.forEach((group, groupIdx) => {
             const outcome = outcomes[groupIdx];
             group.forEach((node, nodeIdx) => {

@@ -1599,6 +1599,129 @@ describe('noteMissingResult — cooldown retry (not silent abandonment)', () => 
   });
 });
 
+describe("a partial (mixed-outcome) batch failure — real bug this closed: 'allFailed' requires EVERY outcome in a tick to fail, but a rate-limited/degraded provider's normal shape is a MIXED batch (some pieces land, others don't) — the success-path branch used to reset consecutiveBatchFailures/surfacedErrorStreak and clear any surfaced error EVERY tick as long as even one piece succeeded, so a real, ongoing partial outage could never accumulate toward the surfacing threshold and never showed an error, even though the failing nodes were silently being abandoned by noteMissingResult's bounded give-up in the background", () => {
+  afterEach(() => {
+    document.body.innerHTML = '';
+    vi.restoreAllMocks();
+  });
+
+  it('surfaces an error once a genuinely-failing piece keeps failing for CONSECUTIVE_FAILURES_BEFORE_SURFACING ticks, even though a companion piece in the SAME batch keeps succeeding on every one of those ticks', async () => {
+    document.body.innerHTML = '<p id="a">alpha0</p><p id="b">beta0</p>';
+    const aNode = (document.getElementById('a') as HTMLElement).firstChild as Text;
+    const bNode = (document.getElementById('b') as HTMLElement).firstChild as Text;
+
+    let aAttempts = 0;
+    let counter = 0;
+    const translateBatch = vi.fn(
+      async (request: { pieces: string[][] }): Promise<PieceOutcome[]> =>
+        request.pieces.map((piece): PieceOutcome => {
+          const text = piece[0] ?? '';
+          if (text.startsWith('alpha')) {
+            aAttempts++;
+            // A GENUINE (non-'suspicious') failure, every single attempt —
+            // the real bug only reproduces with a real network/http/parse
+            // failure kind, since an all-'suspicious' batch already takes a
+            // different, already-correct path (allFailedAreSuspicious).
+            return err({ kind: 'network', message: 'simulated persistent partial outage' });
+          }
+          return ok(piece.map((s) => s.toUpperCase())); // 'beta*' companion always succeeds
+        }),
+    );
+
+    const pageTranslator = createPageTranslator({
+      translator: { translateBatch },
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+
+    vi.useFakeTimers();
+    try {
+      void pageTranslator.translatePage('es');
+      await vi.advanceTimersByTimeAsync(0); // tick 1: 'a' fails genuinely, 'b0' succeeds — a MIXED outcome, not allFailed
+
+      expect(pageTranslator.getLastError()).toBeNull(); // not yet — below the surfacing threshold
+
+      // Keep refreshing BOTH nodes every 100ms (a characterData mutation
+      // picked up by mutationWatcher -> requeueChangedTextNode, which
+      // re-queues immediately with NO cooldown involved). Refreshing only
+      // 'b' isn't enough: 'a' would still be routed through
+      // noteMissingResult's OWN per-node 1500ms cooldown between its
+      // retries, which is a separate, unrelated throttle — real ticks in
+      // between (companion-only, 'a' absent while cooling down) would
+      // trivially have no genuine failure and correctly reset the counter,
+      // masking the actual tick-level bug this test targets. Refreshing
+      // 'a' too keeps it on the FAST immediate-requeue path every time
+      // (bypassing that per-node cooldown, same as the always-succeeding
+      // companion), so it's genuinely present in every tick's batch — the
+      // real shape of a degraded provider failing a meaningful fraction of
+      // a large page's DIFFERENT pieces on every tick, not one single node
+      // stuck cycling through its own retry cooldown. 40 refreshes
+      // comfortably exceeds the 3-tick surfacing threshold.
+      for (let i = 0; i < 40; i++) {
+        counter++;
+        aNode.data = `alpha${counter}`;
+        bNode.data = `beta${counter}`;
+        await vi.advanceTimersByTimeAsync(100);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+
+    // The real bug: this stayed null forever, no matter how long 'a' kept
+    // genuinely failing, as long as 'b' kept succeeding in the same batch —
+    // the counters reset to zero on every single tick.
+    expect(pageTranslator.getLastError()).not.toBeNull();
+    expect(aAttempts).toBeGreaterThanOrEqual(3); // genuinely kept being retried, not silently abandoned after 1
+
+    pageTranslator.restorePage();
+  });
+
+  it('does NOT surface an error for an all-suspicious mixed tick (a companion succeeding alongside a suspicious-but-not-broken piece) — the existing allFailedAreSuspicious reasoning still applies, this fix only changes the GENUINE-failure case', async () => {
+    document.body.innerHTML = '<p id="a">alpha0</p><p id="b">beta0</p>';
+    const aNode = (document.getElementById('a') as HTMLElement).firstChild as Text;
+    const bNode = (document.getElementById('b') as HTMLElement).firstChild as Text;
+
+    let counter = 0;
+    const translateBatch = vi.fn(
+      async (request: { pieces: string[][] }): Promise<PieceOutcome[]> =>
+        request.pieces.map((piece): PieceOutcome => {
+          const text = piece[0] ?? '';
+          if (text.startsWith('alpha')) {
+            return err({ kind: 'suspicious', message: 'looks like a silent echo, not a broken provider' });
+          }
+          return ok(piece.map((s) => s.toUpperCase()));
+        }),
+    );
+
+    const pageTranslator = createPageTranslator({
+      translator: { translateBatch },
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+
+    vi.useFakeTimers();
+    try {
+      void pageTranslator.translatePage('es');
+      // Refresh both nodes every 100ms, same reasoning as the test above —
+      // keeps 'a' on the fast immediate-requeue path instead of
+      // noteMissingResult's own per-node cooldown, so it's genuinely
+      // present (and suspicious) in every tick, not an incidental absence.
+      for (let i = 0; i < 40; i++) {
+        counter++;
+        aNode.data = `alpha${counter}`;
+        bNode.data = `beta${counter}`;
+        await vi.advanceTimersByTimeAsync(100);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(pageTranslator.getLastError()).toBeNull();
+
+    pageTranslator.restorePage();
+  });
+});
+
 describe('failure paths clear lastSeenText for disconnected nodes', () => {
   afterEach(() => {
     document.body.innerHTML = '';

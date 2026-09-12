@@ -21,6 +21,7 @@
     "keepalive-scoping-and-retry-loop-fix",
     "link-cluster-isolation",
     "new-icon",
+    "partial-batch-failure-reports-success",
     "popup-full-parity",
     "post-launch-audit-pass",
     "pre-tags-configurable",
