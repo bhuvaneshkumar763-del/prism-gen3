@@ -200,6 +200,7 @@ export function FloatingBubble(props: FloatingBubbleProps) {
     let longPressTimer: ReturnType<typeof setTimeout> | null = null;
 
     const onPointerDown = (e: PointerEvent) => {
+      if (!e.isTrusted) return;
       dragging = true;
       moved = false;
       sx = e.clientX;
@@ -228,6 +229,7 @@ export function FloatingBubble(props: FloatingBubbleProps) {
       if (moved) pos = previewAt(ox + dx, oy + dy);
     };
     const onPointerUp = (e: PointerEvent) => {
+      if (!e.isTrusted) return;
       dragging = false;
       if (longPressTimer) clearTimeout(longPressTimer);
       try {
@@ -283,6 +285,7 @@ export function FloatingBubble(props: FloatingBubbleProps) {
     document.addEventListener('pointerdown', onDocPointerDown, true);
 
     const onKeydown = (e: KeyboardEvent) => {
+      if (!e.isTrusted) return;
       if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault();
         toggleTranslate();
@@ -348,11 +351,13 @@ export function FloatingBubble(props: FloatingBubbleProps) {
   });
 
   function onPrimaryClick(e: MouseEvent): void {
+    if (!e.isTrusted) return;
     e.stopPropagation();
     handlePrimaryAction();
   }
 
   function onAlwaysClick(e: MouseEvent): void {
+    if (!e.isTrusted) return;
     e.stopPropagation();
     const snapshot = readListsSnapshot(configStore);
     if (!alwaysOn()) {
@@ -365,11 +370,13 @@ export function FloatingBubble(props: FloatingBubbleProps) {
   }
 
   function onSettingsClick(e: MouseEvent): void {
+    if (!e.isTrusted) return;
     e.stopPropagation();
     void sendMessage('openOptionsPage', undefined);
   }
 
   function onHideClick(e: MouseEvent): void {
+    if (!e.isTrusted) return;
     e.stopPropagation();
     // props.onClose() below hides the bubble in this session's DOM
     // immediately regardless — that's the correct, expected UX for the
@@ -396,6 +403,7 @@ export function FloatingBubble(props: FloatingBubbleProps) {
    * back to auto regardless of what's picked here.
    */
   function onSourceLanguageChange(e: Event): void {
+    if (!e.isTrusted) return;
     e.stopPropagation();
     const code = (e.currentTarget as HTMLSelectElement).value;
     const previous = sourceLanguage();
@@ -413,6 +421,7 @@ export function FloatingBubble(props: FloatingBubbleProps) {
   }
 
   function onTargetLanguageChange(e: Event): void {
+    if (!e.isTrusted) return;
     e.stopPropagation();
     const code = (e.currentTarget as HTMLSelectElement).value;
     const previous = targetLanguage();
@@ -425,6 +434,7 @@ export function FloatingBubble(props: FloatingBubbleProps) {
   }
 
   function onServiceChange(e: Event): void {
+    if (!e.isTrusted) return;
     e.stopPropagation();
     const id = (e.currentTarget as HTMLSelectElement).value as ProviderId;
     const previous = service();

@@ -96,7 +96,13 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
       () =>
         SelectionPopup({
           ...state,
-          onTranslateClick: () => void handleTranslateClick(),
+          // Security: reject a synthetic click driving the actual translate
+          // request through the user's configured provider — see onMouseUp's
+          // isTrusted comment above for why this matters here too.
+          onTranslateClick: (e) => {
+            if (!e.isTrusted) return;
+            void handleTranslateClick();
+          },
           onCloseClick: () => {
             state = { ...state, buttonVisible: false, panelOpen: false };
             renderNow();
@@ -217,6 +223,13 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
   }
 
   function onMouseUp(e: MouseEvent): void {
+    // Security: a page can dispatch a synthetic 'mouseup' at the document
+    // to fake "the user just finished selecting text," feeding
+    // attacker-controlled content into `selectedText` and, via the
+    // trigger, into a real translate request through the user's
+    // configured (possibly paid) provider. Real user interaction always
+    // has isTrusted:true; only script-dispatched events don't.
+    if (!e.isTrusted) return;
     // Ignore mouseup inside our own shadow host (e.g. releasing a click
     // on the trigger button) so it doesn't immediately re-hide itself.
     if (e.composedPath().includes(host)) return;
@@ -233,6 +246,7 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
    * key combination here.
    */
   function onKeyUp(e: KeyboardEvent): void {
+    if (!e.isTrusted) return;
     if (e.composedPath().includes(host)) return;
     void updateFromCurrentSelection(e);
   }

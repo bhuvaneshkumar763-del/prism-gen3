@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { configStore } from '../../src/platform/configStore';
+import { trusted } from '../../tests/trustedEvent';
 import { mountBubble } from './mountBubble';
 
 function bubbleShadowRoot(): ShadowRoot {
@@ -77,7 +78,9 @@ describe('mountBubble', () => {
     controller.update({ pageState: 'translated' });
 
     const shadow = bubbleShadowRoot();
-    (shadow.querySelector('.primary') as HTMLButtonElement).click();
+    (shadow.querySelector('.primary') as HTMLButtonElement).dispatchEvent(
+      trusted(new MouseEvent('click', { bubbles: true, composed: true })),
+    );
 
     expect(onRestore).toHaveBeenCalledTimes(1);
     controller.unmount();
@@ -89,7 +92,7 @@ describe('mountBubble', () => {
 
     const shadow = bubbleShadowRoot();
     const hideChip = Array.from(shadow.querySelectorAll('.chip')).find((el) => el.textContent?.includes('Hide'));
-    (hideChip as HTMLElement).click();
+    (hideChip as HTMLElement).dispatchEvent(trusted(new MouseEvent('click', { bubbles: true, composed: true })));
 
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(document.getElementById('prism-bubble-host')).toBeNull();
@@ -131,7 +134,9 @@ describe('mountBubble', () => {
 
     const shadow = bubbleShadowRoot();
     expect(shadow.querySelector('.primary')?.textContent).toBe('Retry');
-    (shadow.querySelector('.primary') as HTMLButtonElement).click();
+    (shadow.querySelector('.primary') as HTMLButtonElement).dispatchEvent(
+      trusted(new MouseEvent('click', { bubbles: true, composed: true })),
+    );
 
     expect(onTranslate).toHaveBeenCalledTimes(1);
     controller.unmount();

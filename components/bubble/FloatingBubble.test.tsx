@@ -2,6 +2,7 @@
 import { render } from 'solid-js/web';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { configStore } from '../../src/platform/configStore';
+import { trusted } from '../../tests/trustedEvent';
 import { FloatingBubble } from './FloatingBubble';
 
 describe('FloatingBubble', () => {
@@ -94,8 +95,12 @@ describe('FloatingBubble', () => {
     });
     const ball = el.querySelector('.ball') as HTMLButtonElement;
 
-    ball.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1, clientX: 10, clientY: 10 }));
-    ball.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1, clientX: 10, clientY: 10 }));
+    ball.dispatchEvent(
+      trusted(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1, clientX: 10, clientY: 10 })),
+    );
+    ball.dispatchEvent(
+      trusted(new PointerEvent('pointerup', { bubbles: true, pointerId: 1, clientX: 10, clientY: 10 })),
+    );
 
     expect(onTranslate).not.toHaveBeenCalled();
   });
@@ -106,14 +111,18 @@ describe('FloatingBubble', () => {
       state: { pageState: 'translated', busy: false, errorMessage: null, errorKind: null },
       onRestore,
     });
-    (el.querySelector('.primary') as HTMLButtonElement).click();
+    (el.querySelector('.primary') as HTMLButtonElement).dispatchEvent(
+      trusted(new MouseEvent('click', { bubbles: true })),
+    );
     expect(onRestore).toHaveBeenCalledTimes(1);
   });
 
   it('invokes onTranslate with the current target language when the primary button is clicked while original', () => {
     const onTranslate = vi.fn();
     const { el } = mount({ onTranslate });
-    (el.querySelector('.primary') as HTMLButtonElement).click();
+    (el.querySelector('.primary') as HTMLButtonElement).dispatchEvent(
+      trusted(new MouseEvent('click', { bubbles: true })),
+    );
     expect(onTranslate).toHaveBeenCalledWith('es');
   });
 
@@ -135,7 +144,9 @@ describe('FloatingBubble', () => {
       onRestore,
     });
     expect(el.querySelector('.primary')?.textContent).toBe('Retry');
-    (el.querySelector('.primary') as HTMLButtonElement).click();
+    (el.querySelector('.primary') as HTMLButtonElement).dispatchEvent(
+      trusted(new MouseEvent('click', { bubbles: true })),
+    );
     expect(onTranslate).toHaveBeenCalledTimes(1);
     expect(onRestore).not.toHaveBeenCalled();
   });
@@ -169,7 +180,9 @@ describe('FloatingBubble', () => {
       onTranslate,
       onRestore,
     });
-    (el.querySelector('.primary') as HTMLButtonElement).click();
+    (el.querySelector('.primary') as HTMLButtonElement).dispatchEvent(
+      trusted(new MouseEvent('click', { bubbles: true })),
+    );
     expect(onTranslate).not.toHaveBeenCalled();
     expect(onRestore).not.toHaveBeenCalled();
   });
@@ -178,7 +191,7 @@ describe('FloatingBubble', () => {
     const onClose = vi.fn();
     const { el } = mount({ onClose });
     const hideChip = Array.from(el.querySelectorAll('.chip')).find((chip) => chip.textContent?.includes('Hide'));
-    (hideChip as HTMLElement).click();
+    (hideChip as HTMLElement).dispatchEvent(trusted(new MouseEvent('click', { bubbles: true })));
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
@@ -193,7 +206,7 @@ describe('FloatingBubble', () => {
     const onTranslate = vi.fn();
     const { el } = mount({ onTranslate });
     const alwaysChip = Array.from(el.querySelectorAll('.chip')).find((chip) => chip.textContent?.includes('Always'));
-    (alwaysChip as HTMLElement).click();
+    (alwaysChip as HTMLElement).dispatchEvent(trusted(new MouseEvent('click', { bubbles: true })));
     expect(onTranslate).toHaveBeenCalledWith('es');
   });
 
@@ -203,7 +216,7 @@ describe('FloatingBubble', () => {
     const panel = el.querySelector('.panel') as HTMLElement;
     expect(panel.classList.contains('pinned')).toBe(false);
 
-    ball.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    ball.dispatchEvent(trusted(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })));
 
     expect(panel.classList.contains('pinned')).toBe(true);
     expect(panel.contains(document.activeElement)).toBe(true);
@@ -229,7 +242,80 @@ describe('FloatingBubble', () => {
     const selects = el.querySelectorAll('.selrow select');
     const toSelect = selects[1] as HTMLSelectElement;
     toSelect.value = 'ja';
-    toSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    toSelect.dispatchEvent(trusted(new Event('change', { bubbles: true })));
     expect(onTranslate).toHaveBeenCalledWith('ja');
+  });
+
+  describe('rejects synthetic (page-dispatched) events on every privileged handler — security fix, round-4 audit', () => {
+    // The bubble mounts into an open shadow root at a fixed, guessable id
+    // (`prism-bubble-host`), and this component holds no auth/origin check
+    // of its own — any web page can get a reference to these exact
+    // elements via `document.getElementById('prism-bubble-host').shadowRoot`
+    // and dispatch events at them. A real user click/keypress always has
+    // `isTrusted: true`; only a script-dispatched event does not — proven
+    // live this session (the bubble was driven this exact way from
+    // page-context JS during an unrelated investigation, and it worked).
+    // These tests use a bare, unmarked event (no `trusted()` wrapper) to
+    // simulate exactly what an attacker page would dispatch.
+
+    it('a synthetic click on the primary button does not call onTranslate/onRestore', () => {
+      const onTranslate = vi.fn();
+      const onRestore = vi.fn();
+      const { el } = mount({ onTranslate, onRestore });
+      (el.querySelector('.primary') as HTMLButtonElement).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      expect(onTranslate).not.toHaveBeenCalled();
+      expect(onRestore).not.toHaveBeenCalled();
+    });
+
+    it('a synthetic click on the Always chip does not persist alwaysTranslateSites or trigger a translate', async () => {
+      await configStore.set('alwaysTranslateSites', []);
+      const onTranslate = vi.fn();
+      const { el } = mount({ onTranslate });
+      const alwaysChip = Array.from(el.querySelectorAll('.chip')).find((chip) => chip.textContent?.includes('Always'));
+      (alwaysChip as HTMLElement).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(onTranslate).not.toHaveBeenCalled();
+      expect(configStore.get('alwaysTranslateSites')).toEqual([]);
+    });
+
+    it('a synthetic click on the Hide chip does not persist bubbleByHost or call onClose', async () => {
+      await configStore.set('bubbleByHost', {});
+      const onClose = vi.fn();
+      const { el } = mount({ onClose });
+      const hideChip = Array.from(el.querySelectorAll('.chip')).find((chip) => chip.textContent?.includes('Hide'));
+      (hideChip as HTMLElement).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(onClose).not.toHaveBeenCalled();
+      expect(configStore.get('bubbleByHost')).toEqual({});
+    });
+
+    it('a synthetic change on the To select does not persist targetLanguage or call onTranslate', async () => {
+      await configStore.set('targetLanguage', 'es');
+      const onTranslate = vi.fn();
+      const { el } = mount({ onTranslate });
+      const toSelect = el.querySelectorAll('.selrow select')[1] as HTMLSelectElement;
+      toSelect.value = 'ja';
+      toSelect.dispatchEvent(new Event('change', { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(onTranslate).not.toHaveBeenCalled();
+      expect(configStore.get('targetLanguage')).toBe('es');
+    });
+
+    it('a synthetic pointerdown+pointerup on the ball does not toggle translate', () => {
+      const onTranslate = vi.fn();
+      const { el } = mount({ onTranslate });
+      const ball = el.querySelector('.ball') as HTMLButtonElement;
+      ball.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1, clientX: 10, clientY: 10 }));
+      ball.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1, clientX: 10, clientY: 10 }));
+      expect(onTranslate).not.toHaveBeenCalled();
+    });
+
+    it('a synthetic Enter keydown on the ball does not toggle translate', () => {
+      const onTranslate = vi.fn();
+      const { el } = mount({ onTranslate });
+      const ball = el.querySelector('.ball') as HTMLButtonElement;
+      ball.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      expect(onTranslate).not.toHaveBeenCalled();
+    });
   });
 });

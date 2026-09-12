@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { PieceOutcome, Translator } from '../../src/engine/translator';
 import { ok } from '../../src/shared/result';
+import { trusted } from '../../tests/trustedEvent';
 import { mountSelectionPopup } from './mountSelectionPopup';
 
 function shadowRoot(): ShadowRoot | null {
@@ -56,7 +57,7 @@ describe('mountSelectionPopup', () => {
       getTargetLanguage: () => 'es',
     });
 
-    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    document.dispatchEvent(trusted(new MouseEvent('mouseup', { bubbles: true })));
     await new Promise((resolve) => setTimeout(resolve, 0)); // language detection is now always awaited, see selectedTextLanguage's doc comment
 
     expect(shadowRoot()?.querySelector('.trigger')).not.toBeNull();
@@ -71,7 +72,7 @@ describe('mountSelectionPopup', () => {
       getTargetLanguage: () => 'es',
     });
 
-    document.dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowRight', shiftKey: true, bubbles: true }));
+    document.dispatchEvent(trusted(new KeyboardEvent('keyup', { key: 'ArrowRight', shiftKey: true, bubbles: true })));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(shadowRoot()?.querySelector('.trigger')).not.toBeNull();
@@ -99,7 +100,7 @@ describe('mountSelectionPopup', () => {
       getTargetLanguage: () => 'es',
     });
 
-    const event = new MouseEvent('mouseup', { bubbles: true });
+    const event = trusted(new MouseEvent('mouseup', { bubbles: true }));
     Object.defineProperty(event, 'composedPath', { value: () => [host] });
     document.dispatchEvent(event);
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -117,7 +118,7 @@ describe('mountSelectionPopup', () => {
       getTargetLanguage: () => 'es',
     });
 
-    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    document.dispatchEvent(trusted(new MouseEvent('mouseup', { bubbles: true })));
 
     expect(shadowRoot()?.querySelector('.trigger')).toBeNull();
     controller.destroy();
@@ -131,10 +132,10 @@ describe('mountSelectionPopup', () => {
       getTargetLanguage: () => 'es',
     });
 
-    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    document.dispatchEvent(trusted(new MouseEvent('mouseup', { bubbles: true })));
     await new Promise((resolve) => setTimeout(resolve, 0));
     const trigger = shadowRoot()?.querySelector('.trigger') as HTMLButtonElement;
-    trigger.click();
+    trigger.dispatchEvent(trusted(new MouseEvent('click', { bubbles: true, composed: true })));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(shadowRoot()?.querySelector('.result')?.textContent).toBe('HELLO');
@@ -154,10 +155,10 @@ describe('mountSelectionPopup', () => {
       getTargetLanguage: () => 'es',
     });
 
-    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    document.dispatchEvent(trusted(new MouseEvent('mouseup', { bubbles: true })));
     await new Promise((resolve) => setTimeout(resolve, 0));
     const trigger = shadowRoot()?.querySelector('.trigger') as HTMLButtonElement | undefined;
-    trigger?.click();
+    trigger?.dispatchEvent(trusted(new MouseEvent('click', { bubbles: true, composed: true })));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(shadowRoot()?.querySelector('.errorText')?.textContent).toBe('boom');
@@ -185,19 +186,19 @@ describe('mountSelectionPopup', () => {
     // Select "first" and click translate — starts a request that won't
     // resolve until resolveFirst() is called below.
     vi.spyOn(window, 'getSelection').mockReturnValue(fakeSelection('first'));
-    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    document.dispatchEvent(trusted(new MouseEvent('mouseup', { bubbles: true })));
     await new Promise((resolve) => setTimeout(resolve, 0));
     const firstTrigger = shadowRoot()?.querySelector('.trigger') as HTMLButtonElement;
-    firstTrigger.click();
+    firstTrigger.dispatchEvent(trusted(new MouseEvent('click', { bubbles: true, composed: true })));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     // Before it resolves, select "second" and translate that instead — this
     // one resolves immediately.
     vi.spyOn(window, 'getSelection').mockReturnValue(fakeSelection('second'));
-    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    document.dispatchEvent(trusted(new MouseEvent('mouseup', { bubbles: true })));
     await new Promise((resolve) => setTimeout(resolve, 0));
     const secondTrigger = shadowRoot()?.querySelector('.trigger') as HTMLButtonElement;
-    secondTrigger.click();
+    secondTrigger.dispatchEvent(trusted(new MouseEvent('click', { bubbles: true, composed: true })));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(shadowRoot()?.querySelector('.result')?.textContent).toBe('SECOND');
@@ -219,7 +220,7 @@ describe('mountSelectionPopup', () => {
       getTargetLanguage: () => 'es',
     });
 
-    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    document.dispatchEvent(trusted(new MouseEvent('mouseup', { bubbles: true })));
 
     expect(shadowRoot()?.querySelector('.trigger')).toBeNull();
     controller.destroy();
@@ -234,7 +235,7 @@ describe('mountSelectionPopup', () => {
       getSkipInvalidText: () => false,
     });
 
-    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    document.dispatchEvent(trusted(new MouseEvent('mouseup', { bubbles: true })));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(shadowRoot()?.querySelector('.trigger')).not.toBeNull();
@@ -254,7 +255,7 @@ describe('mountSelectionPopup', () => {
       getSkipTargetLanguageText: () => true,
     });
 
-    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    document.dispatchEvent(trusted(new MouseEvent('mouseup', { bubbles: true })));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(shadowRoot()?.querySelector('.trigger')).toBeNull();
@@ -274,7 +275,7 @@ describe('mountSelectionPopup', () => {
       getSkipTargetLanguageText: () => true,
     });
 
-    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    document.dispatchEvent(trusted(new MouseEvent('mouseup', { bubbles: true })));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(shadowRoot()?.querySelector('.trigger')).not.toBeNull();
@@ -291,7 +292,7 @@ describe('mountSelectionPopup', () => {
       getSkipTargetLanguageText: () => true,
     });
 
-    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    document.dispatchEvent(trusted(new MouseEvent('mouseup', { bubbles: true })));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(shadowRoot()?.querySelector('.trigger')).not.toBeNull();
@@ -326,10 +327,10 @@ describe('mountSelectionPopup', () => {
       getTargetLanguage: () => 'en',
     });
 
-    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    document.dispatchEvent(trusted(new MouseEvent('mouseup', { bubbles: true })));
     await new Promise((resolve) => setTimeout(resolve, 0));
     const trigger = shadowRoot()?.querySelector('.trigger') as HTMLButtonElement;
-    trigger.click();
+    trigger.dispatchEvent(trusted(new MouseEvent('click', { bubbles: true, composed: true })));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(sourceLanguagesSeen).toEqual(['zh']);
@@ -352,10 +353,10 @@ describe('mountSelectionPopup', () => {
       getTargetLanguage: () => 'en',
     });
 
-    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    document.dispatchEvent(trusted(new MouseEvent('mouseup', { bubbles: true })));
     await new Promise((resolve) => setTimeout(resolve, 0));
     const trigger = shadowRoot()?.querySelector('.trigger') as HTMLButtonElement;
-    trigger.click();
+    trigger.dispatchEvent(trusted(new MouseEvent('click', { bubbles: true, composed: true })));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(sourceLanguagesSeen).toEqual(['auto']);
@@ -373,5 +374,52 @@ describe('mountSelectionPopup', () => {
     controller.destroy();
 
     expect(document.getElementById('prism-selection-popup-host')).toBeNull();
+  });
+
+  describe('rejects synthetic (page-dispatched) events — security fix, round-4 audit', () => {
+    // The trigger mounts into an open shadow root at a fixed, guessable id
+    // (`prism-selection-popup-host`), and `onMouseUp`/`onKeyUp` are plain
+    // `document`-level listeners with no origin check — a page can fake
+    // "the user just finished selecting text" with a bare
+    // `document.dispatchEvent(new MouseEvent('mouseup'))` (no shadow access
+    // even needed for that part) and then reach the trigger the same way
+    // `bubbleShadowRoot()`-style test helpers do, to fire a real translate
+    // request through the user's configured (possibly billed) provider
+    // with attacker-controlled text. These tests use a bare, unmarked
+    // event to simulate exactly that.
+
+    it('a synthetic mouseup does not show the trigger even with a real selection present', () => {
+      vi.spyOn(window, 'getSelection').mockReturnValue(fakeSelection('hello'));
+      const controller = mountSelectionPopup({
+        translator: uppercaseTranslator(),
+        getSourceLanguage: () => 'en',
+        getTargetLanguage: () => 'es',
+      });
+
+      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+
+      expect(shadowRoot()?.querySelector('.trigger')).toBeNull();
+      controller.destroy();
+    });
+
+    it('a synthetic click on the trigger does not call the translator, even if the trigger is already showing from a real selection', async () => {
+      const translateBatch = vi.fn(uppercaseTranslator().translateBatch);
+      vi.spyOn(window, 'getSelection').mockReturnValue(fakeSelection('hello'));
+      const controller = mountSelectionPopup({
+        translator: { translateBatch },
+        getSourceLanguage: () => 'en',
+        getTargetLanguage: () => 'es',
+      });
+
+      document.dispatchEvent(trusted(new MouseEvent('mouseup', { bubbles: true })));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const trigger = shadowRoot()?.querySelector('.trigger') as HTMLButtonElement;
+
+      trigger.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(translateBatch).not.toHaveBeenCalled();
+      controller.destroy();
+    });
   });
 });

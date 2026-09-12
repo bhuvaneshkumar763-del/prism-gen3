@@ -20,7 +20,7 @@ export interface SelectionPopupProps {
   buttonVisible: boolean;
   buttonTop: number;
   buttonLeft: number;
-  onTranslateClick: () => void;
+  onTranslateClick: (e: MouseEvent) => void;
   panelOpen: boolean;
   busy: boolean;
   translatedText: string;

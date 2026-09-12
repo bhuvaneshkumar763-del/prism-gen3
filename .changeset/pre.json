@@ -25,6 +25,7 @@
     "post-launch-audit-pass",
     "pre-tags-configurable",
     "real-progress-and-honest-errors",
+    "reject-untrusted-privileged-ui-events",
     "remove-builtin-provider",
     "remove-libretranslate-provider",
     "revert-hover-fix",
