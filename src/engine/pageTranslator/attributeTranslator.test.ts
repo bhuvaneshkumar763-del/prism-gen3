@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { err, ok } from '../../shared/result';
 import type { PieceOutcome, Translator } from '../translator';
-import { createAttributeTranslator } from './attributeTranslator';
+import { createAttributeTranslator, pruneDisconnectedAttributeEntries } from './attributeTranslator';
 
 const translateBatch = vi.fn<Translator['translateBatch']>();
 const translator: Translator = { translateBatch };
@@ -225,5 +225,103 @@ describe('createAttributeTranslator', () => {
     expect(document.getElementById('a')?.getAttribute('placeholder')).toBe('TR:Search');
     expect(document.getElementById('a')?.getAttribute('title')).toBe('TR:Search box');
     expect(translateBatch).toHaveBeenCalledTimes(1); // one batch covers both attributes
+  });
+
+  it('coalesces mutations arriving while a translate is already in flight into the SAME serialized drain, instead of firing a new concurrent request per mutation — real bug this closed, diagnosed live on a virtualized/infinite-scroll feed: the observer used to call translateTargets per callback with no debounce, coalescing, or cap, so a fast mutation stream could fire many unthrottled concurrent HTTP requests at once', async () => {
+    document.body.innerHTML = '';
+    const t = newTranslator();
+    await t.start('es'); // nothing to translate yet — observer now live
+
+    let resolveFirst!: (outcomes: PieceOutcome[]) => void;
+    translateBatch.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveFirst = resolve;
+        }),
+    );
+
+    const inputA = document.createElement('input');
+    inputA.setAttribute('placeholder', 'First');
+    document.body.appendChild(inputA);
+    await flushAsyncWork(); // observer callback fires, dispatches — now in flight
+
+    // A second mutation arrives WHILE the first translate is still in
+    // flight — must be coalesced into the pending batch, not dispatched as
+    // its own concurrent request.
+    const inputB = document.createElement('input');
+    inputB.setAttribute('placeholder', 'Second');
+    document.body.appendChild(inputB);
+    await flushAsyncWork();
+
+    expect(translateBatch).toHaveBeenCalledTimes(1);
+
+    // Resolving the first call drains the coalesced second target as its
+    // own, separate, SERIALIZED (not concurrent) follow-up call.
+    uppercaseOnce();
+    resolveFirst([ok(['FIRST'])]);
+    await flushAsyncWork();
+    await flushAsyncWork();
+
+    expect(translateBatch).toHaveBeenCalledTimes(2);
+    expect(inputA.getAttribute('placeholder')).toBe('FIRST');
+    expect(inputB.getAttribute('placeholder')).toBe('SECOND');
+  });
+
+  it('does not install the mutation observer if restore() lands while start() is still awaiting the initial translate — real bug this closed: start() used to install the observer unconditionally after its await, so a restore() (or a fast re-translate) landing during that gap was silently undone the instant the network call resolved, and the observer kept shipping attribute text to the provider after the user had already asked for the original page back', async () => {
+    document.body.innerHTML = '<input id="a" placeholder="Search">';
+    let resolveStart!: (outcomes: PieceOutcome[]) => void;
+    translateBatch.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveStart = resolve;
+        }),
+    );
+
+    const t = newTranslator();
+    const startPromise = t.start('es');
+    t.restore(); // lands while start()'s own translate is still in flight
+    resolveStart([ok(['BUSCAR'])]);
+    await startPromise;
+
+    // The initial translate's own write-back still happens (it was already
+    // in flight when restore() landed) — restore() couldn't have undone
+    // something that hadn't been written yet. What matters is what
+    // happens AFTER: no observer should have been installed, so a later
+    // page-driven mutation is never picked up.
+    document.getElementById('a')?.setAttribute('placeholder', 'Filter');
+    await flushAsyncWork();
+
+    expect(translateBatch).toHaveBeenCalledTimes(1); // only the initial call — no observer-driven retranslate
+  });
+
+  describe("pruneDisconnectedAttributeEntries (bounds originals' growth the same way translateLoop.ts bounds nodesToRestore)", () => {
+    it('drops an entry only after TWO CONSECUTIVE disconnected ticks, not one — a virtualized/recycled list widget detaching and reattaching the SAME element within one resweep interval must not lose its restore entry', () => {
+      const el = document.createElement('input');
+      const originals = new Map<Element, Map<string, string>>([[el, new Map([['placeholder', 'Search']])]]);
+      const disconnectedLastTick = new WeakSet<Element>();
+
+      // Never attached to document.body — .isConnected is false throughout.
+      pruneDisconnectedAttributeEntries(originals, disconnectedLastTick);
+      expect(originals.has(el)).toBe(true); // first disconnected tick: noted, not yet pruned
+
+      pruneDisconnectedAttributeEntries(originals, disconnectedLastTick);
+      expect(originals.has(el)).toBe(false); // second consecutive tick: pruned
+    });
+
+    it('resets the disconnected streak if the element reconnects in between, so a transient detach/reattach never loses the entry', () => {
+      const el = document.createElement('input');
+      document.body.appendChild(el);
+      const originals = new Map<Element, Map<string, string>>([[el, new Map([['placeholder', 'Search']])]]);
+      const disconnectedLastTick = new WeakSet<Element>();
+
+      el.remove();
+      pruneDisconnectedAttributeEntries(originals, disconnectedLastTick); // 1st disconnected tick
+      document.body.appendChild(el); // reconnects before the 2nd tick
+      pruneDisconnectedAttributeEntries(originals, disconnectedLastTick); // reconnected: streak reset, not pruned
+      el.remove();
+      pruneDisconnectedAttributeEntries(originals, disconnectedLastTick); // 1st disconnected tick again
+
+      expect(originals.has(el)).toBe(true);
+    });
   });
 });

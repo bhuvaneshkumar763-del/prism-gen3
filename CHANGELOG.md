@@ -1,5 +1,11 @@
 # prism-gen3
 
+## 0.3.0-beta.47
+
+### Patch Changes
+
+- Speed and reliability fix (round-4 audit, item 6): `attributeTranslator.ts` (added in beta.38 to translate `placeholder`/`alt`/`value`/`title`) never inherited the lifecycle discipline the rest of the page translator already has. Three related fixes, all in one file: the mutation observer called `translateTargets()` once per callback with no debounce, coalescing, or cap — on a virtualized/infinite-scroll feed (diagnosed live on X.com) this could fire many unthrottled, fully concurrent HTTP requests at once, now coalesced into a pending batch drained by one serialized in-flight call; `originals` and `lastWritten` both pinned every translated element (and its whole detached subtree) for the rest of the page's life, growing monotonically with scroll distance — `lastWritten` is now a `WeakMap`, and `originals` gets the same two-consecutive-resweep-tick pruning `translateLoop.ts` already uses for `nodesToRestore`; `start()` awaited its initial translate request before installing the mutation observer unconditionally, so a `restore()` (or a fast re-translate) landing during that await was silently undone the instant the network call resolved and kept shipping attribute text to the provider after the user had already asked for the original page back — now guarded by a generation counter, the same pattern `translateLoop.ts` already uses for its own async races.
+
 ## 0.3.0-beta.46
 
 ### Patch Changes

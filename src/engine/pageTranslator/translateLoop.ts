@@ -926,6 +926,9 @@ export function createPageTranslator(options: PageTranslatorOptions) {
       // removal, not a recycle-pool blip — before pruning, giving a full
       // resweep interval for a transient detach/reattach to resolve first.
       pruneDisconnectedRestoreEntries(nodesToRestore, disconnectedLastTick);
+      // Same growth bound, applied to attributeTranslator's own `originals`
+      // map — see that module's `pruneDisconnected` doc comment.
+      attributeTranslator.pruneDisconnected();
       const added = collectTextNodes(document.body, noTranslateOptions()).filter((n) =>
         queueOrRequeueIfChanged(n),
       ).length;

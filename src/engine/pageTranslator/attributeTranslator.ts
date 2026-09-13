@@ -2,6 +2,32 @@ import type { Translator } from '../translator';
 import { type AttributeTarget, collectAttributeTargets, isNoTranslateNode } from './collectTextNodes';
 
 /**
+ * Drops an `originals` entry once its element has been disconnected for two
+ * CONSECUTIVE resweep ticks, not one — same discipline, and the same real
+ * bug it closes, as `translateLoop.ts`'s `pruneDisconnectedRestoreEntries`
+ * (see that function's doc comment). Exported as a standalone function, for
+ * the same reason: directly unit-testable via plain Map/WeakSet
+ * manipulation, instead of only through the full resweep-scheduler/
+ * MutationObserver timing stack.
+ */
+export function pruneDisconnectedAttributeEntries(
+  originals: Map<Element, Map<string, string>>,
+  disconnectedLastTick: WeakSet<Element>,
+): void {
+  for (const el of originals.keys()) {
+    if (!el.isConnected) {
+      if (disconnectedLastTick.has(el)) {
+        originals.delete(el);
+      } else {
+        disconnectedLastTick.add(el);
+      }
+    } else {
+      disconnectedLastTick.delete(el);
+    }
+  }
+}
+
+/**
  * Attribute translation (round-3 audit follow-up, deferred from beta.35's
  * accuracy round for its own design pass): `placeholder`, `alt`, `value`
  * (button/submit/reset only), and `title` — see
@@ -35,19 +61,55 @@ export interface AttributeTranslatorOptions {
 const WATCHED_ATTRIBUTES: AttributeTarget['attribute'][] = ['placeholder', 'alt', 'value', 'title'];
 
 export function createAttributeTranslator(options: AttributeTranslatorOptions) {
-  /** Original values, for `restore()`. Element -> attribute -> pre-translation value. */
+  /**
+   * Original values, for `restore()`. Element -> attribute -> pre-translation
+   * value. A plain `Map`, not a `WeakMap`, since `restore()` must ENUMERATE
+   * it — but that means every translated element is pinned (with its whole
+   * detached subtree) for as long as this map holds it, so `pruneDisconnected`
+   * below bounds its growth the same way `translateLoop.ts`'s own
+   * `pruneDisconnectedRestoreEntries` bounds `nodesToRestore` (same two-tick
+   * discipline, for the same reason — see that function's doc comment).
+   */
   const originals = new Map<Element, Map<string, string>>();
+  /** Two consecutive disconnected resweep ticks before pruning an `originals` entry — see `pruneDisconnected` below. */
+  const disconnectedLastTick = new WeakSet<Element>();
   /**
    * The last value THIS module wrote for a given element/attribute — the
    * mutation-observer loop guard. Without this, translating "Search" ->
    * "Buscar" and writing it back would itself fire an 'attributes'
    * mutation, which would be mistaken for the page changing the attribute
    * and re-queued for translation forever.
+   *
+   * A `WeakMap`, not a `Map` (real leak this closed, found via a round-4
+   * audit): unlike `originals`, nothing ever needs to enumerate this one —
+   * it's purely a point lookup keyed by the element itself — so there is no
+   * reason to keep a strong reference to every element this module has ever
+   * written to for the rest of the page's life. `WeakMap` has no `.clear()`,
+   * so `restore()` reassigns a fresh instance instead.
    */
-  const lastWritten = new Map<Element, Map<string, string>>();
+  let lastWritten = new WeakMap<Element, Map<string, string>>();
 
   let currentTargetLanguage = '';
   let observer: MutationObserver | null = null;
+  // Generation guard (real bug this closed, found via a round-4 audit):
+  // `start()` awaits a network round trip before installing the observer.
+  // A `restore()` (or a second `start()`, e.g. a fast re-translate) landing
+  // during that await used to be silently undone the instant the await
+  // resolved — the observer got installed unconditionally, so it kept
+  // shipping attribute text to the provider after the user had already
+  // asked for the original page back. Same pattern as `translateLoop.ts`'s
+  // own `cycleGeneration`.
+  let generation = 0;
+  // Serializes attribute-translate dispatch (real bug this closed, found
+  // via a round-4 audit, diagnosed live on X.com): the observer used to
+  // call `void translateTargets(newTargets)` per callback with no
+  // debounce, coalescing, or cap — on a virtualized/infinite-scroll feed
+  // this fired one unthrottled, uncapped HTTP request per mutation batch,
+  // all concurrently. Mutations arriving while a translate is already in
+  // flight are coalesced into `pendingTargets` and drained by the SAME
+  // single in-flight call instead of starting a new one.
+  let pendingTargets: AttributeTarget[] = [];
+  let translateInFlight = false;
 
   function noteOriginal(el: Element, attribute: string, value: string): void {
     let perEl = originals.get(el);
@@ -125,7 +187,7 @@ export function createAttributeTranslator(options: AttributeTranslatorOptions) {
         }
       }
 
-      if (newTargets.length > 0) void translateTargets(newTargets);
+      scheduleTranslate(newTargets);
     });
     observer.observe(document.body, {
       childList: true,
@@ -135,21 +197,61 @@ export function createAttributeTranslator(options: AttributeTranslatorOptions) {
     });
   }
 
+  function scheduleTranslate(newTargets: AttributeTarget[]): void {
+    if (newTargets.length === 0) return;
+    pendingTargets.push(...newTargets);
+    if (translateInFlight) return; // already draining — this batch is picked up by that drain's own trailing check
+    void drainPending();
+  }
+
+  async function drainPending(): Promise<void> {
+    if (pendingTargets.length === 0) return;
+    translateInFlight = true;
+    const batch = pendingTargets;
+    pendingTargets = [];
+    try {
+      await translateTargets(batch);
+    } finally {
+      translateInFlight = false;
+      // More mutations arrived while this batch was in flight — drain
+      // those too instead of leaving them stranded until the next
+      // unrelated mutation happens to call scheduleTranslate again.
+      if (pendingTargets.length > 0) void drainPending();
+    }
+  }
+
   function stopWatching(): void {
     observer?.disconnect();
     observer?.takeRecords();
     observer = null;
   }
 
+  /**
+   * Bounds `originals`' growth — see `pruneDisconnectedAttributeEntries`'s
+   * doc comment. Called from `translateLoop.ts`'s existing `onResweep`,
+   * right alongside its own `pruneDisconnectedRestoreEntries` call.
+   */
+  function pruneDisconnected(): void {
+    pruneDisconnectedAttributeEntries(originals, disconnectedLastTick);
+  }
+
   async function start(targetLanguage: string): Promise<void> {
+    const myGeneration = ++generation;
     currentTargetLanguage = targetLanguage;
     const targets = collectAttributeTargets(document.body);
     await translateTargets(targets);
+    // A restore() (or a newer start(), e.g. a fast re-translate) landed
+    // while the above await was in flight — installing the observer now
+    // would keep shipping attribute text to the provider after the user
+    // already asked for the original page back.
+    if (myGeneration !== generation) return;
     startWatching();
   }
 
   function restore(): void {
+    generation++;
     stopWatching();
+    pendingTargets = [];
     originals.forEach((perEl, el) => {
       if (!el.isConnected) return;
       perEl.forEach((original, attribute) => {
@@ -157,10 +259,10 @@ export function createAttributeTranslator(options: AttributeTranslatorOptions) {
       });
     });
     originals.clear();
-    lastWritten.clear();
+    lastWritten = new WeakMap();
   }
 
-  return { start, restore };
+  return { start, restore, pruneDisconnected };
 }
 
 export type AttributeTranslator = ReturnType<typeof createAttributeTranslator>;
