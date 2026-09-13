@@ -1,5 +1,11 @@
 # prism-gen3
 
+## 0.3.0-beta.49
+
+### Patch Changes
+
+- Security/privacy fix (round-4 audit, item 8): a manual translate in an incognito window wrote the page's source text into the normal profile's on-disk translation cache. Extensions run in "spanning" mode by default — one shared background service worker across normal and incognito windows — so `translatePiecesWithCache` ran identically regardless of which kind of window a request came from; `translationCacheEnabled` said nothing about that, and the cache key itself contains the source text. Fixed by also checking `sender.tab.incognito` before either reading or writing the cache. (Settings already had a working "Clear translation cache" button — no change needed there.)
+
 ## 0.3.0-beta.48
 
 ### Patch Changes

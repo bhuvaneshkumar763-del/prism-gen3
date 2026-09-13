@@ -294,7 +294,19 @@ export default defineBackground(() => {
       return pieces.map(() => ({ ok: false, error }));
     }
 
-    const cacheEnabled = configStore.get('translationCacheEnabled');
+    // Security/privacy fix, found via a round-4 audit: extensions run in
+    // "spanning" mode by default (one shared service worker across normal
+    // AND incognito windows), so this handler runs the same regardless of
+    // which kind of window the request came from — `translationCacheEnabled`
+    // alone said nothing about that. A manual translate in an incognito
+    // window used to write the page's source text (the cache key literally
+    // contains it) into the NORMAL profile's IndexedDB, persisting past
+    // the incognito session ending, with no way for the user to know it
+    // happened. `sender.tab.incognito` is the standard WebExtensions field
+    // for exactly this; skips BOTH the read and the write below, so an
+    // incognito translate neither leaks into nor benefits from the normal
+    // profile's cache.
+    const cacheEnabled = configStore.get('translationCacheEnabled') && !sender.tab?.incognito;
     const pieceKeys = pieces.map((piece) =>
       cacheKeyFor(providerId, sourceLanguage, targetLanguage, JSON.stringify(piece)),
     );
