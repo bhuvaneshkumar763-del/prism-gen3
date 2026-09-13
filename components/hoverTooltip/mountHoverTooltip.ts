@@ -15,6 +15,15 @@ export interface HoverTooltipController {
 /** Only what this module actually needs from a PageTranslator — a narrower dependency than the full interface, and easier to stub in tests. */
 export interface TranslatedNodesSource {
   getTranslatedNodes(): ReadonlyArray<{ node: Text; original: string }>;
+  /**
+   * Speed fix, found via a round-4 audit: same lookup as
+   * `findOriginalTextForElement(target, getTranslatedNodes())` but without
+   * materialising an intermediate array first — see this file's own
+   * `onMouseMove` for why that matters on a high-frequency event. Used
+   * ONLY there; `onMouseOver` below still uses `getTranslatedNodes()`
+   * directly, since it fires far less often (once per hovered element).
+   */
+  findOriginalTextForElement(target: Element): string | null;
 }
 
 /**
@@ -78,8 +87,11 @@ export function mountHoverTooltip(pageTranslator: TranslatedNodesSource): HoverT
 
   function onMouseMove(e: MouseEvent): void {
     if (currentTarget && !showTimer) {
-      // Tooltip already visible for the current target — follow the cursor.
-      const original = findOriginalTextForElement(currentTarget as Element, pageTranslator.getTranslatedNodes());
+      // Tooltip already visible for the current target — follow the
+      // cursor. Fires on EVERY mousemove while visible, so this uses the
+      // allocation-free lookup rather than getTranslatedNodes() — see
+      // TranslatedNodesSource's doc comment.
+      const original = pageTranslator.findOriginalTextForElement(currentTarget as Element);
       if (original) renderState(true, original, e.clientY + 16, e.clientX + 8);
     }
   }

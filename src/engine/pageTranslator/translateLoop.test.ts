@@ -594,6 +594,27 @@ describe('createPageTranslator', () => {
     expect(pageTranslator.getTranslatedNodes()).toHaveLength(0);
   });
 
+  it("findOriginalTextForElement() looks up the same original text as getTranslatedNodes() would, without materialising an array first — speed fix, found via a round-4 audit: getTranslatedNodes() allocates a fresh N-object array on every call, which the hover tooltip's onMouseMove used to pay on every mousemove event while visible", async () => {
+    document.body.innerHTML = '<p id="a">hello</p><p id="b">world</p>';
+    const pageTranslator = createPageTranslator({
+      translator: uppercaseTranslator(),
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+
+    await pageTranslator.translatePage('es');
+    await waitFor(() => document.body.textContent === 'HELLOWORLD');
+
+    const elA = document.getElementById('a') as Element;
+    const elB = document.getElementById('b') as Element;
+    expect(pageTranslator.findOriginalTextForElement(elA)).toBe('hello');
+    expect(pageTranslator.findOriginalTextForElement(elB)).toBe('world');
+    expect(pageTranslator.findOriginalTextForElement(document.body)).toBeNull();
+
+    pageTranslator.restorePage();
+    expect(pageTranslator.findOriginalTextForElement(elA)).toBeNull();
+  });
+
   function setVisibility(state: 'visible' | 'hidden'): void {
     Object.defineProperty(document, 'visibilityState', { value: state, configurable: true });
     document.dispatchEvent(new Event('visibilitychange'));

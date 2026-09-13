@@ -12,6 +12,19 @@ function dispatchMouseEvent(type: string, target: Element, opts: Partial<MouseEv
   target.dispatchEvent(new MouseEvent(type, { bubbles: true, clientX: 10, clientY: 10, ...opts }));
 }
 
+/** Mirrors hoverOriginalText.ts's real scan, so findOriginalTextForElement behaves identically to getTranslatedNodes()'s data — both must stay in sync for a mock to be realistic. */
+function makeSource(entries: Array<{ node: Text; original: string }>): TranslatedNodesSource {
+  return {
+    getTranslatedNodes: () => entries,
+    findOriginalTextForElement: (target) => {
+      for (const { node, original } of entries) {
+        if (node.parentElement === target && node.data !== original) return original;
+      }
+      return null;
+    },
+  };
+}
+
 describe('mountHoverTooltip', () => {
   let originalUserAgent: string;
 
@@ -36,7 +49,7 @@ describe('mountHoverTooltip', () => {
       value: 'Mozilla/5.0 (Linux; Android 10)',
       configurable: true,
     });
-    const source: TranslatedNodesSource = { getTranslatedNodes: () => [] };
+    const source: TranslatedNodesSource = makeSource([]);
     mountHoverTooltip(source);
 
     expect(document.getElementById('prism-hover-tooltip-host')).toBeNull();
@@ -45,9 +58,7 @@ describe('mountHoverTooltip', () => {
   it('shows the original text after hovering a translated element past the debounce delay', () => {
     const p = document.getElementById('target') as HTMLParagraphElement;
     const textNode = p.firstChild as Text;
-    const source: TranslatedNodesSource = {
-      getTranslatedNodes: () => [{ node: textNode, original: 'Hello' }],
-    };
+    const source: TranslatedNodesSource = makeSource([{ node: textNode, original: 'Hello' }]);
     const controller = mountHoverTooltip(source);
 
     dispatchMouseEvent('mouseover', p);
@@ -67,9 +78,7 @@ describe('mountHoverTooltip', () => {
     // freezing the tooltip in its initial position for the rest of that hover.
     const p = document.getElementById('target') as HTMLParagraphElement;
     const textNode = p.firstChild as Text;
-    const source: TranslatedNodesSource = {
-      getTranslatedNodes: () => [{ node: textNode, original: 'Hello' }],
-    };
+    const source: TranslatedNodesSource = makeSource([{ node: textNode, original: 'Hello' }]);
     const controller = mountHoverTooltip(source);
 
     dispatchMouseEvent('mouseover', p, { clientX: 10, clientY: 10 });
@@ -85,9 +94,38 @@ describe('mountHoverTooltip', () => {
     controller.destroy();
   });
 
+  it('onMouseMove uses findOriginalTextForElement, not getTranslatedNodes() — speed fix, found via a round-4 audit: getTranslatedNodes() allocates a fresh N-object array on every call, so calling it on every mousemove event while the tooltip is visible was real, measurable jank on a page with thousands of translated nodes', () => {
+    const p = document.getElementById('target') as HTMLParagraphElement;
+    const textNode = p.firstChild as Text;
+    let getTranslatedNodesCalls = 0;
+    const source: TranslatedNodesSource = {
+      // Deliberately returns WRONG data — if onMouseMove regressed to
+      // calling this instead of findOriginalTextForElement, the tooltip
+      // would fail to move/update and this test would catch it.
+      getTranslatedNodes: () => {
+        getTranslatedNodesCalls++;
+        return [];
+      },
+      findOriginalTextForElement: (target) => (target === p && textNode.data !== 'Hello' ? 'Hello' : null),
+    };
+    const controller = mountHoverTooltip(source);
+
+    dispatchMouseEvent('mouseover', p, { clientX: 10, clientY: 10 });
+    vi.advanceTimersByTime(350);
+    const callsAfterShow = getTranslatedNodesCalls; // onMouseOver legitimately calls it once
+
+    dispatchMouseEvent('mousemove', p, { clientX: 200, clientY: 200 });
+    dispatchMouseEvent('mousemove', p, { clientX: 300, clientY: 300 });
+
+    expect(tooltipShadowRoot()?.querySelector('.tooltip')?.textContent).toBe('Hello');
+    expect(getTranslatedNodesCalls).toBe(callsAfterShow); // no further calls from onMouseMove
+
+    controller.destroy();
+  });
+
   it('does not show a tooltip for an element with no translated node', () => {
     const p = document.getElementById('target') as HTMLParagraphElement;
-    const source: TranslatedNodesSource = { getTranslatedNodes: () => [] };
+    const source: TranslatedNodesSource = makeSource([]);
     const controller = mountHoverTooltip(source);
 
     dispatchMouseEvent('mouseover', p);
@@ -100,9 +138,7 @@ describe('mountHoverTooltip', () => {
   it('hides the tooltip on mouseout', () => {
     const p = document.getElementById('target') as HTMLParagraphElement;
     const textNode = p.firstChild as Text;
-    const source: TranslatedNodesSource = {
-      getTranslatedNodes: () => [{ node: textNode, original: 'Hello' }],
-    };
+    const source: TranslatedNodesSource = makeSource([{ node: textNode, original: 'Hello' }]);
     const controller = mountHoverTooltip(source);
 
     dispatchMouseEvent('mouseover', p);
@@ -116,7 +152,7 @@ describe('mountHoverTooltip', () => {
   });
 
   it('destroy() removes the host and listeners', () => {
-    const source: TranslatedNodesSource = { getTranslatedNodes: () => [] };
+    const source: TranslatedNodesSource = makeSource([]);
     const controller = mountHoverTooltip(source);
     expect(document.getElementById('prism-hover-tooltip-host')).not.toBeNull();
 
