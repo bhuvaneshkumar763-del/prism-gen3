@@ -1,5 +1,11 @@
 # prism-gen3
 
+## 0.3.0-beta.50
+
+### Patch Changes
+
+- Reliability fix (round-4 audit, item 9): removing a per-site bubble-visibility or source-language override in Settings didn't actually delete it — the row would keep reappearing, and the next unrelated save could write the "removed" override straight back into storage. Solid's `setStore(key, objectValue)` merges a plain object into whatever's already at that store path rather than replacing it — `bubbleByHost` and `sourceLanguageByHost` are both `Record<string, ...>`, so a removal produced a smaller object, but the merge silently kept the deleted entry in the page's own mirror. "Restore defaults" hit the same bug resetting either key to `{}`. Fixed with Solid's own `reconcile()`, scoped to just these two keys — verified directly that applying it to an array-valued config key would trade this bug for a different one (`reconcile()` doesn't shrink arrays correctly), so every other key is left untouched. Added a real end-to-end regression test that seeds a per-host override, removes it via the actual UI, and confirms it stays removed even after an unrelated save.
+
 ## 0.3.0-beta.49
 
 ### Patch Changes

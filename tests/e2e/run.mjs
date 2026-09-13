@@ -64,6 +64,57 @@ const candidateEntrypoints = [
       if (panelCount !== 5) return `expected 5 role="tabpanel" elements, found ${panelCount}`;
       const hasBackup = (await page.locator('button', { hasText: 'Export settings' }).count()) > 0;
       if (!hasBackup) return 'expected the "Export settings" button to be present';
+
+      // Real bug this closed (round-4 audit, item 9): Solid's setStore(key,
+      // objectValue) MERGES a plain object into the existing value at that
+      // path rather than replacing it — removing a per-host override
+      // produced a SMALLER object, but the merge silently kept the deleted
+      // host sitting in the page's own mirror, so the row never actually
+      // disappeared from storage and a later unrelated save re-spread the
+      // stale mirror, resurrecting the override the user had just deleted.
+      // Seed a per-host override directly in storage, reload so the page's
+      // onMount hydrates from it, remove it via the real UI, then verify
+      // BOTH the DOM and (critically) actual persisted storage reflect the
+      // removal — and stay removed after an unrelated save, the exact
+      // resurrection this bug caused.
+      await page.evaluate(() => chrome.storage.local.set({ bubbleByHost: { 'example.com': false } }));
+      await page.reload({ waitUntil: 'load' });
+      await page.waitForTimeout(300);
+
+      await page.locator('[role="tab"]', { hasText: 'Bubble' }).click();
+      const hostRow = page.locator('.siteTable li', { hasText: 'example.com' });
+      if ((await hostRow.count()) !== 1)
+        return 'expected a per-host override row for example.com after seeding storage';
+
+      await page.locator('button[aria-label="Remove override for example.com"]').click();
+      await page.waitForTimeout(200);
+      if ((await hostRow.count()) !== 0) return 'expected the example.com override row to disappear after removal';
+
+      let stored = await page.evaluate(() => chrome.storage.local.get('bubbleByHost'));
+      if (Object.keys(stored.bubbleByHost ?? {}).length !== 0) {
+        return `expected bubbleByHost to be empty in storage after removal, got ${JSON.stringify(stored.bubbleByHost)}`;
+      }
+
+      // An unrelated save on the SAME key's tab must not resurrect it —
+      // this is the actual regression: without reconcile(), the page's
+      // stale in-memory mirror (still holding the "removed" host) would
+      // get re-spread and written back to storage by the next save.
+      // Toggled TWICE (and back) so this test doesn't leave `bubbleEnabled`
+      // permanently flipped for whatever runs after it in this shared
+      // browser profile — each click is still its own real setField() save.
+      const bubbleToggle = page
+        .locator('.toggleRow', { hasText: 'Show the floating translate bubble by default' })
+        .locator('input[type="checkbox"]');
+      await bubbleToggle.click();
+      await page.waitForTimeout(300);
+
+      stored = await page.evaluate(() => chrome.storage.local.get('bubbleByHost'));
+      if (Object.keys(stored.bubbleByHost ?? {}).length !== 0) {
+        return `expected bubbleByHost to STAY empty after an unrelated save, got ${JSON.stringify(stored.bubbleByHost)} — a removed per-host override was resurrected`;
+      }
+
+      await bubbleToggle.click(); // restore bubbleEnabled to its original value
+      await page.waitForTimeout(300);
     },
   },
 ];

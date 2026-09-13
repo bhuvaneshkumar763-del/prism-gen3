@@ -1,5 +1,5 @@
 import { createSignal, For, onCleanup, onMount, Show } from 'solid-js';
-import { createStore } from 'solid-js/store';
+import { createStore, reconcile } from 'solid-js/store';
 import { StringListEditor } from '../../components/options/StringListEditor';
 import { TabPanel } from '../../components/options/TabPanel';
 import { TabSwitcher } from '../../components/options/TabSwitcher';
@@ -52,8 +52,46 @@ const TABS = [
   { id: 'advanced', label: 'Advanced' },
 ];
 
+/**
+ * Reliability fix, found via a round-4 audit: `setStore(key, objectValue)`
+ * MERGES a plain object value into whatever's already at that path — it
+ * never removes a key the new object is missing. For most config keys
+ * that's fine (every mutator already returns the full replacement shape,
+ * and either a fresh scalar or an ARRAY value at a path IS replaced
+ * wholesale, confirmed directly against the actual solid-js store
+ * behavior, not assumed). But `bubbleByHost`/`sourceLanguageByHost` are
+ * both `Record<string, ...>` — removing a per-host override (or
+ * "Restore defaults" resetting either back to `{}`) produces a SMALLER
+ * object, and the merge silently kept the deleted host's entry sitting in
+ * the page's own mirror: the removed row kept rendering, and the next
+ * unrelated save on that same key re-spread the stale mirror and wrote
+ * the "removed" entry straight back into persistent storage — an
+ * override the user had just deleted, resurrected.
+ *
+ * `reconcile()` is Solid's own targeted fix for exactly this — a diff-
+ * based replace instead of a shallow merge. Deliberately NOT applied to
+ * every key: verified directly (a throwaway solid-js store script, not
+ * assumed) that `reconcile()` on an ARRAY value at a path does NOT
+ * correctly shrink it — a 3-item array reconciled down to 2 items left a
+ * trailing `null` instead of actually removing the third slot. Every
+ * OTHER config key already works correctly without `reconcile` (arrays
+ * replace natively; scalars always did), so scoping this to only the two
+ * genuinely-broken `Record`-shaped keys avoids introducing that array
+ * regression while still fixing the real bug.
+ */
+const RECONCILED_KEYS = new Set<ConfigKey>(['bubbleByHost', 'sourceLanguageByHost']);
+
 function App() {
   const [settings, setSettings] = createStore<Config>({} as Config);
+
+  function applySetting<K extends ConfigKey>(key: K, value: Config[K]): void {
+    if (RECONCILED_KEYS.has(key)) {
+      setSettings(key, reconcile(value) as never);
+    } else {
+      setSettings(key, value as never);
+    }
+  }
+
   const [ready, setReady] = createSignal(false);
   const [activeTab, setActiveTab] = createSignal('general');
   const [savedField, setSavedField] = createSignal<ConfigKey | null>(null);
@@ -115,13 +153,13 @@ function App() {
   });
 
   const unsubscribe = configStore.onChanged((name, value) => {
-    setSettings(name, value as never);
+    applySetting(name, value as never);
   });
   onCleanup(unsubscribe);
 
   async function setField<K extends ConfigKey>(key: K, value: Config[K]): Promise<void> {
     const previous = settings[key];
-    setSettings(key, value as never);
+    applySetting(key, value);
     try {
       await configStore.set(key, value);
       flashSaved(key);
@@ -129,7 +167,7 @@ function App() {
       // Roll back the optimistic update — otherwise the field keeps
       // showing the new value as if it had saved, when it never actually
       // persisted.
-      setSettings(key, previous as never);
+      applySetting(key, previous);
       setSaveError(`Couldn't save this setting: ${describeError(e)}`);
     }
   }

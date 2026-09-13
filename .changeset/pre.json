@@ -26,6 +26,7 @@
     "link-cluster-isolation",
     "mobile-translatepieces-timeout",
     "new-icon",
+    "options-per-host-reconcile",
     "partial-batch-failure-reports-success",
     "popup-full-parity",
     "post-launch-audit-pass",
