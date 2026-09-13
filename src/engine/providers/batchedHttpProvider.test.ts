@@ -351,6 +351,70 @@ describe('createBatchedHttpProvider — lifecycle hooks and concurrency', () => 
     expect(maxObservedInFlight).toBeLessThanOrEqual(3);
   });
 
+  it("shares ONE concurrency budget across SEPARATE translateBatch() calls on the same provider instance, not just within one call — real bug this closed: the concurrency limiter used to create a FRESH counter on every call, so the main translate tick, attributeTranslator.ts, and titleTranslator.ts — which all share one cached provider instance from background.ts (see that file's own comment on why the provider is memoized) — each got their own independent budget. Clicking Translate on a long page could open up to 3x maxConcurrent simultaneous requests against a free endpoint that rate-limits by IP", async () => {
+    let inFlight = 0;
+    let maxObservedInFlight = 0;
+    const fetchMock = vi.fn(async () => {
+      inFlight++;
+      maxObservedInFlight = Math.max(maxObservedInFlight, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      inFlight--;
+      return jsonResponse({ texts: ['x'] });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const provider = createBatchedHttpProvider({
+      name: 'shared-across-calls',
+      baseUrl: 'https://example.com',
+      method: 'POST',
+      maxConcurrent: 2,
+      maxBatchChars: 1, // force every piece into its own request
+      callbacks: { ...plainCallbacks(), getRequestBody: () => '{}' },
+    });
+
+    // Three SEPARATE translateBatch() calls fired concurrently (not
+    // awaited one at a time) — matches the real shape of the main tick,
+    // attributeTranslator.ts, and titleTranslator.ts all dispatching
+    // through the one cached provider instance around the same time.
+    await Promise.all([
+      provider.translateBatch({ sourceLanguage: 'en', targetLanguage: 'es', pieces: [['a'], ['b']] }),
+      provider.translateBatch({ sourceLanguage: 'en', targetLanguage: 'es', pieces: [['c'], ['d']] }),
+      provider.translateBatch({ sourceLanguage: 'en', targetLanguage: 'es', pieces: [['e'], ['f']] }),
+    ]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+    expect(maxObservedInFlight).toBeLessThanOrEqual(2);
+  });
+
+  it('does not deadlock when a repair retry is needed and the concurrency limit is very low (e.g. 1) — real regression risk from sharing one gate across nesting levels: a parent batch task holding its only slot while awaiting a child repair dispatched into that SAME gate would starve the child forever, since the parent never releases its slot until the child (which it is waiting on) completes', async () => {
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      const sent = JSON.parse(init.body as string) as string[];
+      // The 2-piece top-level batch comes back with only 1 result — the
+      // other piece is "missing" and triggers an individual repair
+      // request, which must be able to acquire a slot even though the
+      // parent batch's own task is still occupying the only one.
+      if (sent.length > 1) return jsonResponse({ texts: ['only-one-translated'] });
+      return jsonResponse({ texts: [`${sent[0]}-translated`] });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const provider = createBatchedHttpProvider({
+      name: 'low-limit-repair',
+      baseUrl: 'https://example.com',
+      method: 'POST',
+      maxConcurrent: 1,
+      callbacks: { ...plainCallbacks(), getRequestBody: (_s, _t, texts) => JSON.stringify(texts) },
+    });
+
+    const results = await provider.translateBatch({
+      sourceLanguage: 'en',
+      targetLanguage: 'es',
+      pieces: [['a'], ['b']],
+    });
+
+    expect(results.filter((r) => r.ok)).toHaveLength(2);
+  });
+
   it("an individual-piece repair retry inherits the PARENT's deadline instead of starting a fresh OVERALL_DEADLINE_MS budget, real bug this closed: a handleBatch() that had already spent most of its ~30s budget on the initial request used to hand a missing-piece repair retry a FRESH ~30s budget, so one handleBatch() could run ~60s total — double what the constant's own doc comment says it bounds", async () => {
     vi.useFakeTimers();
     try {

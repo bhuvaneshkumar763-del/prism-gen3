@@ -38,6 +38,7 @@
     "sender-validation-and-reflow-fix",
     "settings-full-parity",
     "shadow-dom-and-google-reflow",
+    "shared-concurrency-gate",
     "speed-accuracy-audit-round-2",
     "speed-accuracy-audit-round-3-part1",
     "speed-accuracy-audit-round-3-part2",

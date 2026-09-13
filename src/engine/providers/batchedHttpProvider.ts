@@ -170,50 +170,86 @@ const SUSPICIOUS_RATIO_THRESHOLD = 0.9;
 // the budget, not a fresh timeout each time.
 const OVERALL_DEADLINE_MS = 30000;
 
+interface ConcurrencyGate {
+  run<T>(worker: () => Promise<T>): Promise<T>;
+}
+
 /**
- * Runs `worker` over `items` with at most `getLimit()` concurrently in
- * flight. Factored out (found via a speed/reliability audit) so the
- * top-level batch dispatch loop and the individual-piece repair retry
- * share ONE concurrency gate instead of the repair path bypassing it
- * entirely via a bare `Promise.all` — a batch-wide echo/truncation
- * failure used to fan out into dozens of simultaneous uncounted requests,
- * exactly the rate-limiter stampede a concurrency cap exists to prevent,
- * and exactly when the endpoint is already struggling. `getLimit` is
- * polled fresh on every dispatch, not read once, so a connection-quality
- * change mid-run is picked up without restarting (matches the adaptive
- * behavior the top-level loop already had).
+ * A shared semaphore gating at most `getLimit()` concurrently in-flight
+ * tasks. `getLimit` is polled fresh on every dispatch, not read once, so a
+ * connection-quality change mid-run is picked up without restarting
+ * (matches the adaptive behavior this always had).
+ *
+ * Speed fix, found via a round-4 audit: this used to be a plain function
+ * (`runWithConcurrencyLimit`) that created a FRESH `inFlight` counter on
+ * every call, so the top-level batch dispatch loop and the individual-
+ * piece repair retry — despite intending to share one cap — each got
+ * their OWN independent budget for the SAME `translateBatch()` call. Worse,
+ * `createProvider()`'s result is a singleton memoized for the whole
+ * service-worker lifetime (see `background.ts`'s `cachedProvider` comment,
+ * which already documented the INTENT that `maxConcurrent` lives at the
+ * provider level — the actual counter just never did): the main
+ * translate tick, `attributeTranslator.ts`, and `titleTranslator.ts` all
+ * share that one provider instance, but each of their own
+ * `translateBatch()` calls also got an independent local counter. Clicking
+ * Translate on a long page could open 6 (main tick) + 6
+ * (`attributeTranslator`) + 1 (`titleTranslator`) = 13 simultaneous
+ * requests against a `maxConcurrent` of 6, against a free endpoint that
+ * rate-limits by IP. Fixed by hoisting ONE gate into
+ * `createBatchedHttpProvider`'s closure (alongside `inFlightByKey`) so
+ * every caller — both call sites below, and every separate
+ * `translateBatch()` invocation sharing this provider instance — draws
+ * from the same budget.
  */
-async function runWithConcurrencyLimit<T>(
-  items: T[],
-  getLimit: () => number,
-  worker: (item: T) => Promise<void>,
-): Promise<void> {
-  if (items.length === 0) return;
-  let cursor = 0;
+function createConcurrencyGate(getLimit: () => number): ConcurrencyGate {
   let inFlight = 0;
-  await new Promise<void>((resolveAll) => {
-    let completed = 0;
-    const pump = () => {
-      const limit = getLimit();
-      while (inFlight < limit && cursor < items.length) {
-        const item = items[cursor++];
-        if (item === undefined) continue;
+  const waiters: Array<() => void> = [];
+
+  function pump(): void {
+    while (inFlight < getLimit() && waiters.length > 0) {
+      const next = waiters.shift();
+      if (next) {
         inFlight++;
-        worker(item).then(() => {
-          inFlight--;
-          completed++;
-          if (completed === items.length) resolveAll();
-          else pump();
-        });
+        next();
       }
-    };
-    pump();
-  });
+    }
+  }
+
+  return {
+    run<T>(worker: () => Promise<T>): Promise<T> {
+      return new Promise<T>((resolve, reject) => {
+        waiters.push(() => {
+          worker().then(
+            (value) => {
+              inFlight--;
+              resolve(value);
+              pump();
+            },
+            (error: unknown) => {
+              inFlight--;
+              reject(error as Error);
+              pump();
+            },
+          );
+        });
+        pump();
+      });
+    },
+  };
 }
 
 export function createBatchedHttpProvider(options: BatchedProviderOptions): Translator {
   const maxBatchChars = options.maxBatchChars ?? DEFAULT_MAX_BATCH_CHARS;
   const configuredMaxConcurrent = options.maxConcurrent ?? DEFAULT_MAX_CONCURRENT;
+
+  // Provider-level (not per-`translateBatch()` call) — see
+  // `createConcurrencyGate`'s doc comment for the real bug this closes:
+  // both call sites below (the top-level batch dispatch and the
+  // individual-piece repair retry), and every separate `translateBatch()`
+  // call sharing this one cached provider instance (the main tick,
+  // `attributeTranslator.ts`, `titleTranslator.ts`), now draw from ONE
+  // shared concurrency budget instead of each getting their own.
+  const concurrencyGate = createConcurrencyGate(() => getAdaptiveConcurrency(configuredMaxConcurrent));
 
   /** In-flight dedupe: two identical concurrent piece requests share one HTTP call's result. */
   const inFlightByKey = new Map<string, Promise<{ text: string; detectedLanguage: string | null } | null>>();
@@ -458,10 +494,28 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
       // missing piece (no data at all — truncation/parse failure) has no
       // such evidence about the source language being wrong, so it keeps
       // retrying with the ORIGINAL declared source, unchanged.
-      await runWithConcurrencyLimit(
-        missing,
-        () => getAdaptiveConcurrency(configuredMaxConcurrent),
-        (p) =>
+      //
+      // Dispatched, NOT awaited — real deadlock this closed, found while
+      // sharing one gate across both call sites (see createConcurrencyGate's
+      // doc comment): THIS call is itself running inside a
+      // `concurrencyGate.run(...)` slot from the top-level dispatch below.
+      // Awaiting these child repairs here would hold that slot hostage
+      // until every repair also finishes — which deadlocks outright once
+      // the adaptive limit is low enough that no slot is ever free for a
+      // child while its parent still occupies one (reproduces reliably at
+      // limit=1, a real value `getAdaptiveConcurrency` returns on a
+      // detected slow connection — exactly when a repair retry is also
+      // more likely to be needed). This request already has its own
+      // answer back by this point; each repair is dispatched as its own
+      // independent, gate-managed unit of work instead. Nothing here
+      // needs to wait for it: the piece's own promise (`resolveFn`, wired
+      // up in `translateBatch`) is what the real caller awaits via
+      // `resultPromises`, entirely independent of whether THIS
+      // `handleBatch()` call's own returned promise has settled.
+      // `handleBatch` never throws (its own catch block below resolves
+      // pending pieces instead), so no unhandled rejection risk either.
+      missing.forEach((p) => {
+        void concurrencyGate.run(() =>
           handleBatch(
             missingBecauseSuspicious.has(p) && sourceLanguage !== 'auto' ? 'auto' : sourceLanguage,
             targetLanguage,
@@ -469,7 +523,8 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
             true,
             deadline,
           ),
-      );
+        );
+      });
     } catch (e) {
       console.error(`[${options.name}] translation request failed`, e);
       pending.forEach((p) => {
@@ -578,14 +633,11 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
 
       options.onBatchStart?.();
       try {
-        // Resolved fresh on every dispatch inside runWithConcurrencyLimit,
-        // not captured once — a long page's connection quality can change
-        // mid-batch (e.g. a real network degradation partway through 500
-        // paragraphs), and this picks that up without restarting.
-        await runWithConcurrencyLimit(
-          batches,
-          () => getAdaptiveConcurrency(configuredMaxConcurrent),
-          (batch) => handleBatch(sourceLanguage, targetLanguage, batch),
+        // concurrencyGate is shared with the individual-piece repair retry
+        // above, and with every other translateBatch() call sharing this
+        // provider instance — see createConcurrencyGate's doc comment.
+        await Promise.all(
+          batches.map((batch) => concurrencyGate.run(() => handleBatch(sourceLanguage, targetLanguage, batch))),
         );
 
         // Every entry was already computed the instant its own
