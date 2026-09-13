@@ -258,6 +258,7 @@ export default defineContentScript({
           shouldTranslate,
           targetLanguage: configStore.get('targetLanguage'),
           originalLanguage: originalLanguageTracker.get(),
+          mainFrameOrigin: location.origin,
         });
         if (shouldTranslate) {
           await pageTranslator.translatePage(configStore.get('targetLanguage'));
@@ -290,7 +291,18 @@ export default defineContentScript({
           const MAX_ATTEMPTS = 15; // ~3s
           for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
             const decision = await sendMessage('getFrameLanguageDecision', undefined);
-            if (decision) {
+            // Reliability/privacy fix, found via a round-4 audit: a stale
+            // entry from the PREVIOUS page (frameLanguageDecisions is only
+            // ever overwritten by the new main frame's own fresh report,
+            // never proactively cleared) could otherwise be accepted here
+            // immediately, before that fresh report has a chance to land —
+            // see FrameLanguageDecision's `mainFrameOrigin` doc comment.
+            // `window.top.location.origin` reflects THIS frame's own
+            // current page the instant its navigation commits, so a
+            // mismatch here reliably means "not yet updated for this
+            // load," not a permanent condition — treated exactly like "no
+            // decision yet" and left to the existing retry budget.
+            if (decision && decision.mainFrameOrigin === window.top?.location.origin) {
               // Accuracy fix, found via audit: this used to omit the
               // second argument, so every sub-frame translate silently
               // used the literal 'auto' regardless of what the main frame
@@ -314,16 +326,29 @@ export default defineContentScript({
       }
     }
 
+    // Reliability/privacy fix, found via a round-4 audit: `pageRestore`
+    // used to be registered top-frame-only, like every other popup-facing
+    // handler here — but unlike those (genuinely fine to scope to the top
+    // frame; the popup's own UI only ever needs the main frame's state), a
+    // same-origin sub-frame DOES auto-translate itself (see the polling
+    // relay above), so "Show original" never reaching it left the page
+    // permanently half-translated: the sub-frame's mutation watcher kept
+    // right on translating new content and sending it to the provider
+    // after the user had explicitly asked for the original page back.
+    // `tabs.sendMessage(tabId, message)` with no explicit `frameId` already
+    // broadcasts to every frame in the tab — the gap was purely that only
+    // the top frame ever installed a listener to receive it.
+    onMessage('pageRestore', (message) => {
+      if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');
+      pageTranslator.restorePage();
+      return pageTranslator.getState();
+    });
+
     if (window.self === window.top) {
       onMessage('pageTranslate', async (message) => {
         if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');
         await configStore.onReady();
         await pageTranslator.translatePage(message.data.targetLanguage);
-        return pageTranslator.getState();
-      });
-      onMessage('pageRestore', (message) => {
-        if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');
-        pageTranslator.restorePage();
         return pageTranslator.getState();
       });
       onMessage('getPageState', (message) => {

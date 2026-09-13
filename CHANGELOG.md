@@ -1,5 +1,11 @@
 # prism-gen3
 
+## 0.3.0-beta.48
+
+### Patch Changes
+
+- Reliability and privacy fix (round-4 audit, item 7): two related same-origin-iframe bugs. `pageRestore` was registered top-frame-only, like every other popup-facing message handler — but unlike those, a same-origin sub-frame does auto-translate itself, so "Show original" never reached an iframe: the page stayed permanently half-translated, and the sub-frame's mutation watcher kept translating new content after the user asked for the original page back. Fixed by registering that one handler unconditionally, relying on `tabs.sendMessage`'s existing default broadcast-to-all-frames behavior. Separately, `frameLanguageDecisions` (background.ts) was only ever overwritten by the main frame's next report, never cleared on navigation — a same-origin sub-frame's content script can run before the new main frame's does, so its first poll could accept the PREVIOUS page's still-present decision immediately, including translating a site on `neverTranslateSites` because the inherited entry was from a site that wasn't. Fixed by proactively clearing the entry on `tabs.onUpdated` (no new permission needed) and, as the actual correctness fix, stamping each decision with the reporting frame's own origin so a sub-frame rejects one that doesn't match its own current main frame's origin.
+
 ## 0.3.0-beta.47
 
 ### Patch Changes

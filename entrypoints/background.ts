@@ -142,12 +142,25 @@ async function resolveActiveProvider() {
  * A tab's main frame's auto-translate-on-load decision, so a same-origin
  * iframe in the same tab can inherit it instead of running its own
  * independent detection — real gap: `all_frames` was never enabled at all,
- * so no iframe got a decision, translated or not. Not cleared explicitly
- * on navigation — the main frame overwrites its own entry on every fresh
- * load, so a stale entry only matters for the brief window before that
- * happens, and `getFrameLanguageDecision` callers already retry briefly
- * rather than trusting a single query. Cleared on tab close (below) so
- * this doesn't grow unbounded over a long browser session.
+ * so no iframe got a decision, translated or not.
+ *
+ * Reliability/privacy fix, found via a round-4 audit: this used to rely
+ * solely on "the main frame overwrites its own entry on every fresh load,
+ * so a stale entry only matters for the brief window before that happens"
+ * — real gap in that reasoning: on an ordinary navigation, a same-origin
+ * sub-frame's content script can run BEFORE the new main frame's does
+ * (it's typically the smaller document), so its very first
+ * `getFrameLanguageDecision` poll could accept the PREVIOUS page's still-
+ * present entry immediately, with no way to tell it was stale — including,
+ * concretely, translating a site that IS on `neverTranslateSites` because
+ * the entry it inherited was left over from a site that wasn't. Now
+ * cleared proactively the instant a new top-level navigation starts
+ * (`tabs.onUpdated` below), and `FrameLanguageDecision` itself carries the
+ * reporting frame's origin so a sub-frame can independently reject a
+ * decision that doesn't match its OWN current main frame's origin even if
+ * a poll still races ahead of that clear — see that type's doc comment.
+ * Also cleared on tab close (below) so this doesn't grow unbounded over a
+ * long browser session.
  */
 const frameLanguageDecisions = new Map<number, FrameLanguageDecision>();
 
@@ -436,6 +449,20 @@ export default defineBackground(() => {
 
   browser.tabs.onRemoved.addListener((tabId) => {
     frameLanguageDecisions.delete(tabId);
+  });
+
+  // Reliability/privacy fix, found via a round-4 audit: proactively drop a
+  // tab's entry the instant a new top-level navigation starts, rather than
+  // only ever overwriting it once the new main frame's content script gets
+  // around to reporting its own fresh decision. Needs no extra permission
+  // — `changeInfo.status` alone is enough, no permission-gated field (url/
+  // title) is read. Belt-and-suspenders alongside the `mainFrameOrigin`
+  // check in content.ts's poll loop (the actual correctness fix, since
+  // this alone can't close a race where a sub-frame's poll still fires
+  // between this delete and the new main frame's report) — see
+  // `FrameLanguageDecision`'s doc comment for the full reasoning.
+  browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
+    if (changeInfo.status === 'loading') frameLanguageDecisions.delete(tabId);
   });
 
   onMessage('reportFrameLanguageDecision', (message) => {

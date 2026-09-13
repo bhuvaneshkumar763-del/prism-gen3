@@ -122,6 +122,30 @@ export interface FrameLanguageDecision {
    * `translatePage()` call as an explicit source language.
    */
   originalLanguage: string;
+  /**
+   * Reliability/privacy fix, found via a round-4 audit: `frameLanguageDecisions`
+   * (background.ts) is keyed by tabId alone and only ever overwritten by
+   * the main frame's NEXT report — never explicitly cleared on navigation.
+   * On an ordinary full-page navigation, the new main frame and a same-
+   * origin sub-frame both start loading concurrently; if the sub-frame's
+   * content script runs first (very plausible — it's typically a smaller
+   * document), its very first `getFrameLanguageDecision` poll can find the
+   * PREVIOUS page's still-present entry and accept it immediately as if it
+   * were current, with no way to tell it's stale. Concretely: navigating
+   * from a site NOT on `neverTranslateSites` to one that IS could still
+   * have that new site's sub-frame translate, because it inherited the old
+   * page's positive decision before the new main frame ever got a chance
+   * to report its own (correct, negative) one. Stamped with the reporting
+   * frame's own origin at report time so a sub-frame can reject a decision
+   * that doesn't match its OWN main frame's CURRENT origin (read via
+   * `window.top.location.origin`, already proven same-origin-accessible by
+   * this exact call site) instead of trusting any truthy value blindly —
+   * a stale same-origin, different-page decision (a rarer, lower-stakes
+   * accuracy edge case, not the neverTranslateSites/privacy one above) is
+   * NOT covered by this check and is accepted as a known, smaller residual
+   * gap rather than adding a per-navigation generation counter for it.
+   */
+  mainFrameOrigin: string;
 }
 
 export const { sendMessage, onMessage } = defineExtensionMessaging<ProtocolMap>();
