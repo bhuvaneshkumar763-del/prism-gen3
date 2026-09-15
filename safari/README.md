@@ -28,34 +28,50 @@ team** — the baked-in team ID will show as invalid/inaccessible otherwise.
 This is expected and not a bug; it's exactly the situation Xcode's own
 "Signing & Capabilities" pane exists to fix.
 
-## The one confirmed-working way to load this for local testing
+## Root cause found: the app has to live in `/Applications`, not `DerivedData`
 
-**Confirmed live, end-to-end, on macOS 27.0 (beta)**: the normal path —
-build `Prism (macOS)`, run the app once, enable it in Safari → Settings →
-Extensions — never surfaced Prism in that Extensions list on this system,
-even though `pluginkit -m -v -i com.bhuvaneshkumar.Prism.Extension` confirmed
-the `.appex` was correctly registered at the OS level. **Left as an open,
-unresolved gap** — not chased further once a genuinely working alternative
-was confirmed, but worth knowing before you assume the normal path is
-broken on your end specifically.
+**Confirmed live, end-to-end, on macOS 27.0 (beta)**: building
+`Prism (macOS)` and running it straight out of Xcode's `DerivedData` build
+folder never surfaced Prism in Safari → Settings → Extensions, even though
+`pluginkit -m -v -i com.bhuvaneshkumar.Prism.Extension` confirmed the
+`.appex` was correctly registered at the OS level. Copying the exact same
+built `.app` to `/Applications` and launching it from there fixed this
+immediately — Safari discovered and listed it within one relaunch. This
+matches a known real-world Safari Web Extension gotcha: Safari's own
+extension discovery doesn't reliably pick up a host app sitting deep in a
+build-product path, even when the system-level extension registry
+(`pluginkit`) already has it.
 
-**What does work, confirmed live**: Safari's own "load unpacked" equivalent.
+**For ongoing local development** (no full Xcode rebuild needed per
+change): Develop menu → Developer Settings… → **"Add Temporary Extension…"**,
+pointing at `safari/Prism/Shared (Extension)/Resources` (the folder
+containing `manifest.json` directly), works immediately and is session-only
+— useful for a quick JS-only iteration loop (`npm run safari:sync`, repeat
+the picker) without touching Xcode at all.
 
-1. **Develop menu → Developer Settings…**
-2. Under **Extensions:**, click **"Add Temporary Extension…"**
-3. Select this exact folder (the one containing `manifest.json` directly —
-   select the folder itself, don't navigate inside it):
-   ```
-   safari/Prism/Shared (Extension)/Resources
-   ```
-4. Prism appears immediately in Safari → Settings → Extensions, versioned
-   and described correctly, ready to enable.
+**For actually using it day to day**: build once in Xcode, then install to
+`/Applications` for real:
 
-This is session-only (Safari forgets it on quit, same as
-"Allow Unsigned Extensions"), but it's the reliable path for iterating
-locally — re-run `npm run safari:sync` after a code change, then repeat
-step 3 (no rebuild-in-Xcode step needed at all for this path, since it
-loads the resource folder directly rather than through the `.appex`).
+```bash
+DERIVED="$(find ~/Library/Developer/Xcode/DerivedData -maxdepth 1 -iname 'Prism-*' | head -1)"
+rm -rf /Applications/Prism.app
+cp -R "$DERIVED/Build/Products/Debug/Prism.app" /Applications/Prism.app
+open /Applications/Prism.app
+```
+
+Then enable it once in Safari → Settings → Extensions. It now persists
+across Safari relaunches like any other installed extension — no more
+re-loading via Add Temporary Extension each session. The one thing that
+**does** still need re-doing after every FULL Safari quit (not just closing
+a window): Develop menu → Developer Settings… → check **"Allow unsigned
+extensions"**. That's not fixable here — it's Apple's security requirement
+for any extension signed with a free personal-team certificate (what this
+setup uses). The only way past it entirely is a paid Apple Developer
+Program membership ($99/yr) with proper Developer ID signing.
+
+After a code change: `npm run safari:sync`, rebuild the `Prism (macOS)`
+scheme in Xcode, then re-run the install snippet above to refresh
+`/Applications/Prism.app`.
 
 ## What isn't done, and can't be done by an agent
 
