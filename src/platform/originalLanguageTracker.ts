@@ -27,6 +27,16 @@ import { withTimeout } from '../shared/withTimeout';
 import { sendMessage } from './messaging/protocol';
 
 /**
+ * Round-5 bloat audit: named and exported (previously an unexported
+ * `timeoutMs = 5000` default parameter) so `content.ts`'s sub-frame
+ * decision-poll budget can be derived from the SAME numbers that bound
+ * `start()`'s real worst case, instead of the two being set independently
+ * and drifting apart — see `MAIN_FRAME_DECISION_WORST_CASE_MS` below for
+ * what that drift caused.
+ */
+export const VISIBILITY_TIMEOUT_MS = 5000;
+
+/**
  * Resolves when the tab becomes visible — but never waits forever. The cap
  * matters because `start()`'s result gates the auto-translate-on-load
  * decision in content.ts: a permanently-pending promise here means "always
@@ -37,7 +47,7 @@ import { sendMessage } from './messaging/protocol';
  * after the timeout is safe: the worst case is detecting language on a page
  * that isn't on screen yet, which costs nothing.
  */
-async function waitUntilVisible(timeoutMs = 5000): Promise<void> {
+async function waitUntilVisible(timeoutMs = VISIBILITY_TIMEOUT_MS): Promise<void> {
   if (document.visibilityState === 'visible') return;
   await new Promise<void>((resolve) => {
     let settled = false;
@@ -76,6 +86,26 @@ async function waitUntilVisible(timeoutMs = 5000): Promise<void> {
  * nothing. 3s is generous for what should be a near-instant local call.
  */
 const DETECT_LANGUAGE_TIMEOUT_MS = 3000;
+
+/**
+ * `start()`'s real worst case: `waitUntilVisible` runs to completion BEFORE
+ * detection begins (see `start()` below), so the two bounds stack rather
+ * than overlap — a page opened in a background tab (never visible, so
+ * `waitUntilVisible` burns its full timeout) with slow detection can take
+ * up to this long to report a decision.
+ *
+ * Round-5 bloat audit: exported specifically so `content.ts`'s sub-frame
+ * decision-poll budget is derived from this number instead of being set
+ * independently. It used to be a fixed `200ms x 15 = 3s` budget, well under
+ * this worst case — on a page opened in a background tab or with slow
+ * detection, every same-origin sub-frame exhausted its poll budget and
+ * gave up silently, well before the main frame's own perfectly good
+ * decision ever arrived. Real waste (up to 15 wasted background round
+ * trips per sub-frame) and a real correctness gap (the sub-frame never
+ * translates) from the same root cause: two independently-set timing
+ * budgets on either side of one relay, never reconciled.
+ */
+export const MAIN_FRAME_DECISION_WORST_CASE_MS = VISIBILITY_TIMEOUT_MS + DETECT_LANGUAGE_TIMEOUT_MS;
 
 /**
  * Speed fix, found via audit: this used to read `document.body.innerText`

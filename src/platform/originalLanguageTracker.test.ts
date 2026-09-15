@@ -2,7 +2,11 @@
 import { fakeBrowser } from '@webext-core/fake-browser';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { onMessage } from './messaging/protocol';
-import { createOriginalLanguageTracker } from './originalLanguageTracker';
+import {
+  createOriginalLanguageTracker,
+  MAIN_FRAME_DECISION_WORST_CASE_MS,
+  VISIBILITY_TIMEOUT_MS,
+} from './originalLanguageTracker';
 
 /**
  * `browser.i18n.detectLanguage`'s type is an overloaded
@@ -266,4 +270,31 @@ describe('createOriginalLanguageTracker', () => {
 
     expect(tracker.get()).toBe('ko');
   }, 10000);
+});
+
+describe('MAIN_FRAME_DECISION_WORST_CASE_MS', () => {
+  // Round-5 bloat audit: this constant is what `content.ts`'s sub-frame
+  // decision-poll budget is derived from — see that file's `MAX_ATTEMPTS`
+  // doc comment. The real bug this guards against isn't a wrong constant
+  // value per se, it's the two budgets being set INDEPENDENTLY and
+  // drifting apart again the way they did before (a fixed 15-attempt/~3s
+  // poll budget against an ~8s real worst case). This test can't reach
+  // into `content.ts` (no unit harness exists for entrypoints — see
+  // CLAUDE.md's Testing section), so it locks down the shared NUMBER
+  // instead: as long as this stays `waitUntilVisible`'s timeout plus
+  // language detection's timeout, and `content.ts` keeps deriving its
+  // budget from it (verified by reading, not by this test), the two
+  // cannot drift apart silently again.
+  it('equals VISIBILITY_TIMEOUT_MS plus DETECT_LANGUAGE_TIMEOUT_MS — the real, fully-serial worst case start() can take', () => {
+    // DETECT_LANGUAGE_TIMEOUT_MS itself isn't exported (no other file
+    // needs it directly), so this derives it from the one relationship
+    // that must hold rather than importing a private constant.
+    expect(MAIN_FRAME_DECISION_WORST_CASE_MS).toBeGreaterThan(VISIBILITY_TIMEOUT_MS);
+    expect(MAIN_FRAME_DECISION_WORST_CASE_MS - VISIBILITY_TIMEOUT_MS).toBe(3000);
+  });
+
+  it('is larger than the poll budget content.ts used before this fix (200ms x 15 = 3000ms) — the regression this constant exists to prevent', () => {
+    const OLD_FIXED_POLL_BUDGET_MS = 200 * 15;
+    expect(MAIN_FRAME_DECISION_WORST_CASE_MS).toBeGreaterThan(OLD_FIXED_POLL_BUDGET_MS);
+  });
 });

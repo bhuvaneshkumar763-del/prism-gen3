@@ -6,7 +6,10 @@ import { createPageTranslator } from '../src/engine/pageTranslator/translateLoop
 import { getBatchingHint } from '../src/engine/providers/descriptors';
 import { configStore } from '../src/platform/configStore';
 import { isTrustedSender, onMessage, sendMessage } from '../src/platform/messaging/protocol';
-import { createOriginalLanguageTracker } from '../src/platform/originalLanguageTracker';
+import {
+  createOriginalLanguageTracker,
+  MAIN_FRAME_DECISION_WORST_CASE_MS,
+} from '../src/platform/originalLanguageTracker';
 import { createRemoteTranslator } from '../src/platform/remoteTranslator';
 import { resolveBubbleVisibility } from '../src/shared/config/siteOverrides';
 
@@ -69,6 +72,32 @@ export default defineContentScript({
   // before anything real happens).
   runAt: 'document_end',
   main() {
+    // Round-5 bloat audit: a CROSS-ORIGIN sub-frame — the overwhelming
+    // majority of real-world ad/tracker/embed iframes — never gets an
+    // auto-translate decision (that always required passing this exact
+    // same-origin check, previously performed again further down, after
+    // all the construction below had already run) and can never receive a
+    // `pageTranslate` message (that handler, further down, is registered
+    // top-frame-only). So
+    // building a full `PageTranslator` and reading the whole config store
+    // for one was pure dead weight, paid unconditionally on every such
+    // frame of every page — `matches: ['*://*/*']` + `allFrames: true`
+    // means this script runs there too. Bail before any of that work
+    // starts; `pageRestore`'s handler (registered further down,
+    // unconditionally, for the beta.48 iframe-restore fix) is also skipped
+    // here, which is safe: restoring a `PageTranslator` that never
+    // translated is already a no-op, and a cross-origin frame's
+    // `PageTranslator` was never reachable to translate it in the first
+    // place. A same-origin sub-frame (or the top frame) is unaffected —
+    // this only short-circuits the case that was always fully inert.
+    if (window.self !== window.top) {
+      try {
+        void window.top?.location.href;
+      } catch {
+        return;
+      }
+    }
+
     void configStore.onReady();
 
     // Hoisted above pageTranslator (not a fire-and-forget IIFE-local
@@ -265,20 +294,14 @@ export default defineContentScript({
         }
       })();
     } else {
-      // Sub-frame: same-origin access to window.top throws for a
-      // cross-origin frame — that throw itself is the same-origin check,
-      // no separate origin comparison needed. Cross-origin iframes are a
-      // deliberate scope cut (matching the pre-existing documented
-      // decision) — they get a pageTranslator (reachable if something ever
-      // messages this frame directly) but no auto-translate decision of
-      // any kind, same as before this change.
-      let sameOrigin = true;
-      try {
-        void window.top?.location.href;
-      } catch {
-        sameOrigin = false;
-      }
-      if (sameOrigin) {
+      // Sub-frame: reaching this point already proves same-origin — a
+      // cross-origin sub-frame returned at the very top of `main()`
+      // (round-5 bloat audit), before any of this ran, so there is
+      // nothing left to check here. A same-origin sub-frame gets a
+      // pageTranslator (reachable if something ever messages this frame
+      // directly) but no auto-translate decision until the poll below
+      // resolves one.
+      {
         void (async () => {
           await configStore.onReady();
           // The main frame's own report can arrive after this sub-frame
@@ -288,7 +311,19 @@ export default defineContentScript({
           // reports (translation disabled, an error) must not leave this
           // polling forever.
           const POLL_INTERVAL_MS = 200;
-          const MAX_ATTEMPTS = 15; // ~3s
+          // Round-5 bloat audit: derived from the main frame's own real
+          // worst case (`MAIN_FRAME_DECISION_WORST_CASE_MS` —
+          // `waitUntilVisible`'s 5s plus language detection's 3s, fully
+          // serial) instead of an independently-chosen 15 (~3s). The old
+          // fixed budget was SMALLER than the producer's worst case, so a
+          // page opened in a background tab (never visible, burning the
+          // full visibility timeout) or with slow detection left every
+          // same-origin sub-frame exhausting its poll budget and giving up
+          // silently — never translating — before the main frame's own
+          // perfectly good decision had even arrived. +5 attempts (~1s) of
+          // margin for this poll's own round-trip overhead on top of the
+          // producer's bound.
+          const MAX_ATTEMPTS = Math.ceil(MAIN_FRAME_DECISION_WORST_CASE_MS / POLL_INTERVAL_MS) + 5; // ~9s
           for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
             const decision = await sendMessage('getFrameLanguageDecision', undefined);
             // Reliability/privacy fix, found via a round-4 audit: a stale

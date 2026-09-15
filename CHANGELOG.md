@@ -1,5 +1,11 @@
 # prism-gen3
 
+## 0.3.0-beta.53
+
+### Patch Changes
+
+- Speed/reliability fix (round-5 bloat audit, release 2): the content script (`allFrames: true`, matches every origin) had no guard against a cross-origin sub-frame — the overwhelming majority of real-world ad/tracker/embed iframes. Every such frame paid a full config-storage read and a full `PageTranslator` construction, even though it can never receive a `pageTranslate` message or get an auto-translate decision. `main()` now checks same-origin first and returns immediately for a cross-origin sub-frame — pure dead weight removed, no behavior change for any frame that was ever reachable. Also fixed a real latent gap found alongside it: a same-origin sub-frame's decision-poll budget (200ms × 15 ≈ 3s) was smaller than the main frame's own real worst case (~8s, visibility wait + language detection, fully serial) — a page opened in a background tab or with slow detection could leave every same-origin sub-frame giving up silently before the main frame's decision arrived. The two budgets are now derived from one shared exported constant so they can't drift apart again.
+
 ## 0.3.0-beta.52
 
 ### Patch Changes

@@ -21,6 +21,7 @@
     "google-single-item-piece-wrapping",
     "graceful-degradation",
     "hover-tooltip-allocation-fix",
+    "idle-frame-cost",
     "incognito-cache-skip",
     "incremental-write-back-messaging-boundary",
     "keepalive-scoping-and-retry-loop-fix",
