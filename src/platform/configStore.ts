@@ -1,5 +1,6 @@
 import { applyConfigMigrations, CONFIG_SCHEMA_VERSION } from '../shared/config/migrations';
-import { type Config, type ConfigKey, configSchema, defaultConfig } from '../shared/config/schema';
+import { type Config, type ConfigKey, defaultConfig } from '../shared/config/schema';
+import { configValidators, parsePartialConfigOrThrow } from '../shared/config/validate';
 import { localStorageBackend } from './storage/localBackend';
 import type { StorageBackend } from './storage/types';
 
@@ -72,13 +73,13 @@ export function createConfigStore(backend: StorageBackend = localStorageBackend)
     const raw = await migrateIfNeeded();
     for (const key of Object.keys(defaultConfig) as ConfigKey[]) {
       if (!Object.hasOwn(raw, key)) continue;
-      const result = configSchema.shape[key].safeParse(raw[key]);
-      if (result.success) {
-        (state as Record<ConfigKey, unknown>)[key] = result.data;
+      const result = configValidators[key](raw[key]);
+      if (result.ok) {
+        (state as Record<ConfigKey, unknown>)[key] = result.value;
       } else {
         console.warn(
           `[prism] stored value for config key "${key}" failed validation, using the default instead`,
-          result.error,
+          result.message,
         );
       }
     }
@@ -100,7 +101,7 @@ export function createConfigStore(backend: StorageBackend = localStorageBackend)
   /** Shared by `import()` and `restoreToDefault()` — not called via `this` so neither depends on how the returned object is invoked. */
   async function applyValidatedConfig(json: string): Promise<void> {
     const parsed: unknown = JSON.parse(json);
-    const validated = configSchema.partial().parse(parsed);
+    const validated = parsePartialConfigOrThrow(parsed);
     const entries = Object.fromEntries(
       (Object.keys(validated) as ConfigKey[])
         .filter((key) => validated[key] !== undefined)

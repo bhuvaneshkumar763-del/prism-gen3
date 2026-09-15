@@ -1,5 +1,11 @@
 # prism-gen3
 
+## 0.3.0-beta.52
+
+### Patch Changes
+
+- Speed/size fix (round-5 bloat audit): removed the `zod` runtime dependency, replacing it with a small hand-written validator (`src/shared/config/validate.ts`) scoped exactly to what the 23-key config schema actually needs — no transforms, coercion, defaults, or refinements. Measured directly: `zod` was 51% of the shipped extension's bytes (202KB of a 393KB build), landing three separate times because content scripts can't share a chunk with the background graph — once each in `content-scripts/content.js`, `background.js`, and the options page's own chunk. Combined with the content script's `allFrames: true`, that meant ~67KB of validation-library code was parsed in every iframe of every page visited, to do exactly three things: validate one stored value on load, validate a partial object on import/restore, and the same on a settings-file import. The new validator preserves both zod behaviors real call sites depend on (unknown keys silently dropped rather than rejected; `bubblePosition`'s inner object strips its own unknown keys too). `Config` is now a hand-written interface with a mapped-type validator table keeping it and `configValidators` in sync at compile time. Total build size: 393.17KB → 194.04KB. Every pre-existing config test passes unchanged.
+
 ## 0.3.0-beta.51
 
 ### Patch Changes

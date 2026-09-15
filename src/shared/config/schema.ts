@@ -1,5 +1,3 @@
-import { z } from 'zod';
-
 /**
  * The config schema — fresh key names and shape, not a port of the old
  * repo's `defaultConfig` (see the Gen 3 plan's Session 3 section). Grows
@@ -45,36 +43,46 @@ import { z } from 'zod';
  * off, not just a checkbox with no effect (the exact "shipped a settings
  * field with no effect" mistake this codebase's own custom-dictionary
  * scope note elsewhere warns against). Also purely additive.
+ *
+ * Round-5 bloat audit: this used to be `z.object({...})` (the `zod` schema
+ * library), with `Config` derived from it via `z.infer`. Measured directly:
+ * zod was 51% of the shipped extension's bytes, tripled across the content
+ * script, background, and options bundles — see `validate.ts`'s header
+ * comment for the full measurement and reasoning. `Config` is now a
+ * hand-written interface; `validate.ts`'s `configValidators` is a mapped
+ * type over it, which is what keeps the two in sync — adding a field here
+ * without adding its validator there is a compile error, the same static
+ * coupling `z.infer` gave for free.
  */
-export const configSchema = z.object({
-  targetLanguage: z.string(),
+export interface Config {
+  targetLanguage: string;
   /** ISO 639-1 code, or 'auto' to let the provider detect it. */
-  sourceLanguage: z.string(),
-  pageTranslatorProvider: z.enum(['google', 'googleCloudTranslate', 'llm']),
-  googleCloudTranslateApiKey: z.string(),
-  llmBaseUrl: z.string(),
-  llmApiKey: z.string(),
-  llmModel: z.string(),
+  sourceLanguage: string;
+  pageTranslatorProvider: 'google' | 'googleCloudTranslate' | 'llm';
+  googleCloudTranslateApiKey: string;
+  llmBaseUrl: string;
+  llmApiKey: string;
+  llmModel: string;
   /** Hostnames the user has explicitly chosen to always/never auto-translate — takes priority over the language-based decision. */
-  alwaysTranslateSites: z.array(z.string()),
-  neverTranslateSites: z.array(z.string()),
+  alwaysTranslateSites: string[];
+  neverTranslateSites: string[];
   /** Detected source-language codes to always/never auto-translate from. */
-  alwaysTranslateLangs: z.array(z.string()),
-  neverTranslateLangs: z.array(z.string()),
+  alwaysTranslateLangs: string[];
+  neverTranslateLangs: string[];
   /** Global default for whether the floating bubble shows at all. Per-site overrides live in `bubbleByHost`. */
-  bubbleEnabled: z.boolean(),
+  bubbleEnabled: boolean;
   /** Per-hostname override of `bubbleEnabled` — present means override, absent means "use the global default" (see `src/shared/config/siteOverrides.ts`). */
-  bubbleByHost: z.record(z.string(), z.boolean()),
+  bubbleByHost: Record<string, boolean>;
   /** Remembered edge-docked position, `null` until the user drags it once. */
-  bubblePosition: z.object({ side: z.enum(['left', 'right']), yFrac: z.number() }).nullable(),
+  bubblePosition: { side: 'left' | 'right'; yFrac: number } | null;
   /** Per-hostname source-language override, set via the bubble's "From" select. Absent means auto-detect. */
-  sourceLanguageByHost: z.record(z.string(), z.string()),
+  sourceLanguageByHost: Record<string, string>;
   /** Recency-ordered list of target languages the user has actually picked — powers the popup's quick-pick pills, most recent first. */
-  targetLanguages: z.array(z.string()),
-  hoverTooltipEnabled: z.boolean(),
-  selectionPopupEnabled: z.boolean(),
-  theme: z.enum(['auto', 'light', 'dark']),
-  translationCacheEnabled: z.boolean(),
+  targetLanguages: string[];
+  hoverTooltipEnabled: boolean;
+  selectionPopupEnabled: boolean;
+  theme: 'auto' | 'light' | 'dark';
+  translationCacheEnabled: boolean;
   /**
    * Whether `<pre>` blocks get translated. Default **on** — matches TWP's
    * real default exactly (`translateTag_pre: "yes"` in their actual
@@ -89,7 +97,7 @@ export const configSchema = z.object({
    * protected regardless of this setting — real code samples almost
    * always use it, nested inside `<pre>` or standalone.
    */
-  translatePreTags: z.boolean(),
+  translatePreTags: boolean;
   /**
    * Hide the selection-translate trigger for a selection with nothing
    * translatable in it (a lone character, or only punctuation/digits/
@@ -98,7 +106,7 @@ export const configSchema = z.object({
    * settings that defaults on — verified directly, not assumed, the same
    * way the `translatePreTags` default mistake was caught).
    */
-  selectionPopupSkipInvalidText: z.boolean(),
+  selectionPopupSkipInvalidText: boolean;
   /**
    * Hide the selection-translate trigger when the selected text is
    * already confidently detected as the target language — the selection-
@@ -110,10 +118,9 @@ export const configSchema = z.object({
    * two fixes — confirmed their own default doesn't filter here either,
    * so this is opt-in, not a silent behavior change.
    */
-  selectionPopupSkipTargetLanguageText: z.boolean(),
-});
+  selectionPopupSkipTargetLanguageText: boolean;
+}
 
-export type Config = z.infer<typeof configSchema>;
 export type ConfigKey = keyof Config;
 
 export const defaultConfig: Config = {

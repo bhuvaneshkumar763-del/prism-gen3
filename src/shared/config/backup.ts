@@ -1,5 +1,6 @@
 import { err, ok, type Result } from '../result';
-import { type Config, configSchema } from './schema';
+import type { Config } from './schema';
+import { validatePartialConfig } from './validate';
 
 /**
  * Settings backup serialization for the options page's Export/Import —
@@ -57,12 +58,11 @@ export function parseBackup(json: string): Result<Partial<Config>, string> {
     (configCandidate as Record<string, unknown>).pageTranslatorProvider = 'google';
   }
 
-  const result = configSchema.partial().safeParse(configCandidate);
-  if (!result.success) {
-    const issue = result.error.issues[0];
+  const result = validatePartialConfig(configCandidate);
+  if (!result.ok) {
     return err(
-      `That doesn't look like a Prism settings file${issue ? ` (${issue.path.join('.')}: ${issue.message})` : ''}.`,
+      `That doesn't look like a Prism settings file${result.path ? ` (${result.path}: ${result.message})` : ''}.`,
     );
   }
-  return ok(result.data);
+  return ok(result.value);
 }

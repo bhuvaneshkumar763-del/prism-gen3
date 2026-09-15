@@ -36,6 +36,7 @@
     "reject-untrusted-privileged-ui-events",
     "remove-builtin-provider",
     "remove-libretranslate-provider",
+    "remove-zod-dependency",
     "restore-vs-cooldown-timer-race",
     "revert-hover-fix",
     "selection-popup-language-awareness",
