@@ -28,6 +28,35 @@ team** — the baked-in team ID will show as invalid/inaccessible otherwise.
 This is expected and not a bug; it's exactly the situation Xcode's own
 "Signing & Capabilities" pane exists to fix.
 
+## The one confirmed-working way to load this for local testing
+
+**Confirmed live, end-to-end, on macOS 27.0 (beta)**: the normal path —
+build `Prism (macOS)`, run the app once, enable it in Safari → Settings →
+Extensions — never surfaced Prism in that Extensions list on this system,
+even though `pluginkit -m -v -i com.bhuvaneshkumar.Prism.Extension` confirmed
+the `.appex` was correctly registered at the OS level. **Left as an open,
+unresolved gap** — not chased further once a genuinely working alternative
+was confirmed, but worth knowing before you assume the normal path is
+broken on your end specifically.
+
+**What does work, confirmed live**: Safari's own "load unpacked" equivalent.
+
+1. **Develop menu → Developer Settings…**
+2. Under **Extensions:**, click **"Add Temporary Extension…"**
+3. Select this exact folder (the one containing `manifest.json` directly —
+   select the folder itself, don't navigate inside it):
+   ```
+   safari/Prism/Shared (Extension)/Resources
+   ```
+4. Prism appears immediately in Safari → Settings → Extensions, versioned
+   and described correctly, ready to enable.
+
+This is session-only (Safari forgets it on quit, same as
+"Allow Unsigned Extensions"), but it's the reliable path for iterating
+locally — re-run `npm run safari:sync` after a code change, then repeat
+step 3 (no rebuild-in-Xcode step needed at all for this path, since it
+loads the resource folder directly rather than through the `.appex`).
+
 ## What isn't done, and can't be done by an agent
 
 - **Real distribution.** A free/personal Apple ID (what's configured here)

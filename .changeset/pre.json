@@ -43,6 +43,7 @@
     "restore-vs-cooldown-timer-race",
     "revert-hover-fix",
     "safari-extension",
+    "safari-webextension-syntax-error",
     "selection-popup-language-awareness",
     "sender-validation-and-reflow-fix",
     "settings-full-parity",

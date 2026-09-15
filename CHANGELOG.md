@@ -1,5 +1,11 @@
 # prism-gen3
 
+## 0.3.0-beta.57
+
+### Patch Changes
+
+- Fixed a real bug found live testing the Safari build: `outputSanityCheck.ts`'s large Unicode character-class regex (used to detect a silently-untranslated non-Latin-script result) failed to parse in Safari's actual WebExtension background-page runtime with `SyntaxError: Invalid regular expression: range out of order in character class` — breaking the whole background script, so nothing could respond to any message ("No response" in Safari). Every codepoint range is correctly ordered and the regex parses fine under Node/V8, Firefox/SpiderMonkey, and even JavaScriptCore's own standalone `jsc` CLI — this was specific to Safari's real WebExtension runtime. Rewriting the literal's boundaries as `\u{XXXX}` escapes made no difference (the build's minifier normalizes those back to raw characters). Fixed by building the character class at runtime via `new RegExp()` from a plain array of codepoint pairs instead of a regex literal at all. Confirmed live: a real page translates correctly in Safari with no console errors. Also documents the one reliable way found to load the extension for local Safari testing (Develop → Developer Settings… → Add Temporary Extension…) since the normal installed-app path never surfaced it in Safari's Extensions list on this system, despite the OS confirming the extension was correctly registered — left as an open, unresolved gap.
+
 ## 0.3.0-beta.56
 
 ### Patch Changes

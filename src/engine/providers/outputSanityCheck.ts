@@ -63,10 +63,69 @@ const MIN_SUSPICIOUS_IDENTICAL_LENGTH = 40;
  * reporting success, because this exact gap. Added the missing blocks
  * (BMP-only, no surrogate pairs needed) so every script
  * `NON_LATIN_TARGET_LANGUAGES` already names has matching coverage here.
+ *
+ * Reliability fix, found live in Safari (round-5 Safari-platform work):
+ * this character class used to be a REGEX LITERAL with raw Unicode
+ * characters as the range boundaries (e.g. `Ͱ-Ͽ`) — every codepoint pair
+ * verified correctly ordered (start <= end) by hand, and it parses and
+ * runs fine under Node/V8, Firefox/SpiderMonkey, and even JavaScriptCore's
+ * own standalone `jsc` CLI. Despite that, Safari's actual WebExtension
+ * background-page runtime (confirmed live, a real user report:
+ * "SyntaxError: Invalid regular expression: range out of order in
+ * character class" at `background.js:1`, reproduced on a guaranteed-fresh
+ * build, ruled out as a stale-build artifact) rejects it.
+ *
+ * A first attempt rewrote the literal's boundaries as explicit `\u{XXXX}`
+ * escapes — same live failure, because the build's minifier normalizes
+ * `\u{XXXX}` escapes inside a REGEX LITERAL back into raw characters
+ * during minification (confirmed by inspecting the actual built
+ * `background.js`: byte-for-byte identical to before the escape
+ * rewrite) — so source-level literal syntax has zero effect on what
+ * Safari's engine actually receives; whatever it is about regex
+ * LITERALS specifically that Safari's validator is unhappy with survives
+ * any way of spelling one.
+ *
+ * Fixed by not using a regex literal for this at all: `RANGES` below is
+ * plain data (a minifier has no special-case pass for arrays of
+ * numbers), and the regex is built at runtime via `new RegExp(...)` from
+ * a string. This sidesteps the minifier's regex-literal normalization
+ * entirely (a string's minification can't reintroduce the failure mode,
+ * since `new RegExp()` parses the STRING VALUE directly, not a re-derived
+ * literal), and a `RegExp` constructed at runtime may also simply take a
+ * different internal parsing path than a literal in Safari's engine —
+ * plausible given the bug is literal-specific to begin with. Same exact
+ * ranges, same order, values unchanged from the original.
  */
-const NON_LATIN_SCRIPT = /[Ͱ-ϿЀ-ӿ԰-֏֐-׿؀-ۿऀ-ॿ฀-๿぀-ヿ㐀-䶿一-鿿가-힯ঀ-৿਀-੿઀-૿஀-௿ఀ-౿ಀ-೿ഀ-ൿ඀-෿຀-໿က-႟Ⴀ-ჿក-៿᠀-᢯]/;
+const NON_LATIN_SCRIPT_RANGES: ReadonlyArray<readonly [number, number]> = [
+  [0x370, 0x3ff],
+  [0x400, 0x4ff],
+  [0x530, 0x58f],
+  [0x590, 0x5ff],
+  [0x600, 0x6ff],
+  [0x900, 0x97f],
+  [0xe00, 0xe7f],
+  [0x3040, 0x30ff],
+  [0x3400, 0x4dbf],
+  [0x4e00, 0x9fff],
+  [0xac00, 0xd7af],
+  [0x980, 0x9ff],
+  [0xa00, 0xa7f],
+  [0xa80, 0xaff],
+  [0xb80, 0xbff],
+  [0xc00, 0xc7f],
+  [0xc80, 0xcff],
+  [0xd00, 0xd7f],
+  [0xd80, 0xdff],
+  [0xe80, 0xeff],
+  [0x1000, 0x109f],
+  [0x10a0, 0x10ff],
+  [0x1780, 0x17ff],
+  [0x1800, 0x18af],
+];
+const NON_LATIN_SCRIPT_CLASS = `[${NON_LATIN_SCRIPT_RANGES.map(([start, end]) => `\\u{${start.toString(16)}}-\\u{${end.toString(16)}}`).join('')}]`;
+const NON_LATIN_SCRIPT = new RegExp(NON_LATIN_SCRIPT_CLASS, 'u');
 /** Same ranges as `NON_LATIN_SCRIPT`, global-flagged so `hasScriptMismatch` can count every match rather than just testing presence. */
-const NON_LATIN_SCRIPT_GLOBAL = /[Ͱ-ϿЀ-ӿ԰-֏֐-׿؀-ۿऀ-ॿ฀-๿぀-ヿ㐀-䶿一-鿿가-힯ঀ-৿਀-੿઀-૿஀-௿ఀ-౿ಀ-೿ഀ-ൿ඀-෿຀-໿က-႟Ⴀ-ჿក-៿᠀-᢯]/gu;
+const NON_LATIN_SCRIPT_GLOBAL = new RegExp(NON_LATIN_SCRIPT_CLASS, 'gu');
 const LETTER_GLOBAL = /\p{L}/gu;
 
 /**
