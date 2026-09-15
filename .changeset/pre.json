@@ -9,6 +9,7 @@
     "auth-key-invalidation-and-suspicious-ratio",
     "bubble-full-parity",
     "builtin-availability",
+    "bundle-guard-retighten",
     "enter-beta-prerelease",
     "firefox-amo-signing",
     "firefox-detect-language-hang",

@@ -120,8 +120,12 @@ const KATEX_CLASS = 'katex';
  * translated regardless of the setting, since there's nothing there to be
  * "code embedded in an article." Matched here as `translatePreTags`
  * (`src/shared/config/schema.ts`) plus `isWholePageBarePre` below.
+ *
+ * Round-5 bloat audit: no longer `export`ed — confirmed (repo-wide grep)
+ * that nothing outside this file, including tests, ever imported it; only
+ * `isNoTranslateNode` below calls it.
  */
-export function isWholePageBarePre(): boolean {
+function isWholePageBarePre(): boolean {
   return (
     typeof document !== 'undefined' &&
     document.body?.childElementCount === 1 &&

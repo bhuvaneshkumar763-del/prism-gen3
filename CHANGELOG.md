@@ -1,5 +1,11 @@
 # prism-gen3
 
+## 0.3.0-beta.54
+
+### Patch Changes
+
+- Bloat audit round 5, release 3 (the small stale items from this round): `scripts/check-bundle-size.mjs`'s `MAX_BYTES` retightened from 1MB (3.5x headroom over a ~286KB baseline — exactly what let `zod` triple itself across bundles unnoticed for 51 releases) to 300KB (~1.5x the real ~194KB total measured after this round's earlier two releases); `remoteTranslator.ts`'s `TRANSLATE_PIECES_TIMEOUT_MS` doc comment corrected (it cited a now-superseded "~62s worst case" — `OVERALL_DEADLINE_MS` bounds a single batch at 30s; 90s is still right for a multi-batch request, the comment's reasoning just needed fixing); `collectTextNodes.ts`'s `isWholePageBarePre` un-exported (used only inside its own file).
+
 ## 0.3.0-beta.53
 
 ### Patch Changes

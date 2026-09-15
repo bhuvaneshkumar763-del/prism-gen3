@@ -6,17 +6,27 @@
 // it constantly.
 //
 // Threshold picked from a real measurement, not a round number pulled out
-// of the air: the actual Session 8 build totals ~286KB (see `wxt build`'s
-// own size report). 1MB gives ~3.5x headroom over that — enough for
-// Sessions yet to land real feature weight (i18n corpus, more providers'
-// worth of UI, DeepL if it comes back) without masking a real regression
-// the way a multi-MB placeholder would.
+// of the air — but see the round-5 bloat audit note below for why the
+// FIRST version of that sentence wasn't enough on its own.
+//
+// Original Session 8 threshold: the build totaled ~286KB, and 1MB was
+// picked for ~3.5x headroom. That headroom is exactly what let `zod`
+// triple itself across the content-script/background/options bundles
+// (202KB, 51% of the shipped extension) unnoticed for 51 releases — a
+// guard with that much slack only catches a MASSIVE regression, not a
+// meaningful one. Round-5 bloat audit (beta.52-53) removed `zod` and cut
+// idle-frame cost, landing at a real measured ~194KB. New threshold is
+// ~1.5x that — enough for legitimate incremental feature growth between
+// audits without hiding another multi-hundred-KB dependency for 50+
+// releases. If this growth is legitimate, raise MAX_BYTES with a note on
+// why (and re-anchor the headroom multiplier to the new measured total,
+// not to this comment's now-historical one).
 
 import { readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 const BUILD_DIR = '.output/chrome-mv3';
-const MAX_BYTES = 1 * 1024 * 1024; // 1MB
+const MAX_BYTES = 300 * 1024; // 300KB — ~1.5x the ~194KB post-round-5 measured total
 
 function totalSize(dir) {
   let total = 0;

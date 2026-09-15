@@ -49,9 +49,8 @@ let nextRequestId = 0;
 
 /**
  * Reliability fix, found via a real mobile bug report: the background's own
- * worst-case processing time for one `translatePieces` call is bounded
- * (`batchedHttpProvider.ts`'s retry loop tops out around ~62s), but the
- * round trip back across the messaging boundary to THIS call was not. If
+ * worst-case processing time for one `translatePieces` call is bounded, but
+ * the round trip back across the messaging boundary to THIS call was not. If
  * the background service worker is torn down mid-request — the keepalive
  * alarm in `background.ts` defeats Chrome's own idle eviction, but not an
  * OS-level low-memory kill, which is a real risk on a constrained mobile
@@ -62,6 +61,21 @@ let nextRequestId = 0;
  * generous margin for concurrency-queue wait, not a tight bound; a
  * rejection here is already handled the same as any other failed batch by
  * `translateLoop.ts`'s existing retry/error-surfacing logic.
+ *
+ * Round-5 bloat audit correction: this comment used to cite a "~62s worst
+ * case" for a single `translatePieces` call — that was true when written,
+ * but `batchedHttpProvider.ts`'s later shared-concurrency-gate fix
+ * (round-4 audit item 5) introduced `OVERALL_DEADLINE_MS = 30000`, which
+ * bounds ONE `translateBatch()` call's whole retry sequence at 30s, not
+ * ~62s. The 90s value here is still correct, but for a different reason:
+ * one `translatePieces` request can cover MULTIPLE batches serialized
+ * through that same shared concurrency gate (see its own doc comment), so
+ * the real worst case is closer to several 30s deadlines queued behind
+ * each other, not one. 90s was not re-derived as part of this correction —
+ * only the stale reasoning was fixed; a future round could measure the
+ * real worst case on a large multi-batch page and re-tune this value with
+ * live-page evidence the way `DEFAULT_MAX_BATCH_CHARS` was (see the
+ * improvement-history ledger's Speed section).
  */
 const TRANSLATE_PIECES_TIMEOUT_MS = 90000;
 
