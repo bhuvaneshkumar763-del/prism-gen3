@@ -159,6 +159,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
   const stateListeners = new Set<(state: PageLanguageState) => void>();
   const errorListeners = new Set<(message: string | null, kind: ErrorKind) => void>();
   const workingListeners = new Set<(working: boolean) => void>();
+  const progressListeners = new Set<(done: number, total: number) => void>();
 
   /**
    * Real bug, found via a live user report: `setState('translated')` in
@@ -184,6 +185,59 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     workingListeners.forEach((cb) => {
       cb(next);
     });
+  }
+
+  /**
+   * Perceived-speed fix: real progress instead of just a binary busy flag —
+   * "N of M pieces translated," updated as pieces actually complete, not a
+   * fake/estimated bar. `totalPieces` is set once per cycle (`translatePage()`,
+   * the full node count collected up front); `completedPieces` only ever
+   * counts UP within that cycle. `completedNodes` is what makes counting
+   * exactly-once-per-node safe despite `writeTranslatedNode` legitimately
+   * being called twice for the same node in the same tick (once by
+   * `onPieceComplete`'s early write, once more by the tick's own
+   * always-runs trailing loop — see that function's header comment for why
+   * the redundant DOM write itself is already safe) — without this guard,
+   * every node would be double-counted and `completedPieces` would
+   * overshoot `totalPieces`.
+   */
+  let totalPieces = 0;
+  let completedPieces = 0;
+  let completedNodes = new WeakSet<Text>();
+  /**
+   * Coalesces a burst of same-tick `onPieceComplete` calls (a whole
+   * resolved batch can complete many pieces within the same microtask
+   * window) into at most one listener notification per task-queue drain,
+   * so wiring this up to a Solid signal in the UI doesn't itself become a
+   * new source of jank in a pass whose whole point is removing jank.
+   */
+  let progressNotifyScheduled = false;
+
+  function notifyProgress(): void {
+    if (progressNotifyScheduled) return;
+    progressNotifyScheduled = true;
+    queueMicrotask(() => {
+      progressNotifyScheduled = false;
+      const total = totalPieces;
+      const done = completedPieces;
+      progressListeners.forEach((cb) => {
+        cb(done, total);
+      });
+    });
+  }
+
+  function recordPieceCompleted(node: Text): void {
+    if (completedNodes.has(node)) return;
+    completedNodes.add(node);
+    completedPieces++;
+    notifyProgress();
+  }
+
+  function resetProgress(): void {
+    totalPieces = 0;
+    completedPieces = 0;
+    completedNodes = new WeakSet<Text>();
+    notifyProgress();
   }
 
   /**
@@ -458,14 +512,35 @@ export function createPageTranslator(options: PageTranslatorOptions) {
 
     if (pageLanguageState === 'translated' && queue.length > 0) {
       // Perceived-speed win, Phase 4a of the graceful-degradation pass:
-      // translate what the user is actually looking at first. Only
-      // bothers reordering (and paying for getBoundingClientRect() calls,
-      // a real reflow cost) when the queue is bigger than what fits in one
-      // tick — a page that fits in one batch already translates
-      // everything this tick regardless of order. This only changes which
-      // nodes land in `batch` below; grouping still runs on whatever comes
-      // out, unmodified.
-      if (queue.length > MAX_PIECES_PER_TICK && viewportDirty) {
+      // translate what the user is actually looking at first.
+      //
+      // Perceived-speed audit correction: this used to also require
+      // `queue.length > MAX_PIECES_PER_TICK` (300), reasoning "a page that
+      // fits in one batch already translates everything this tick
+      // regardless of order" — checked directly and that reasoning is
+      // wrong. `batchedHttpProvider.ts` dispatches groups through its
+      // shared concurrency gate IN ARRAY ORDER
+      // (`batches.map((batch) => concurrencyGate.run(...))`, a FIFO
+      // semaphore), so a piece queued first tends to RESOLVE first — and
+      // therefore gets written via `onPieceComplete` first — even when
+      // every piece lands in the same tick. Most real pages have well
+      // under 300 translatable pieces, so the old gate meant this
+      // reordering never ran on a typical page at all: the header,
+      // sidebar, and footer could resolve before the paragraph the user
+      // is actually reading, just because that's DOM order. Also checked
+      // the actual cost the gate was protecting against:
+      // `prioritizeByViewport` measures each unique BLOCK ancestor's
+      // `getBoundingClientRect()` once (memoized per block, not per text
+      // node — see its own header comment), which is cheap for a typical
+      // page's handful-to-low-hundreds of blocks. The `viewportDirty`
+      // check below is a real, worth-keeping cache guard (skip
+      // re-measuring when nothing has scrolled since the last reorder,
+      // and it's already `true` on the very first tick of every
+      // `translatePage()` call); `queue.length > 1` just avoids the
+      // pointless call when there's nothing to reorder. This only changes
+      // which nodes land in `batch` below; grouping still runs on
+      // whatever comes out, unmodified.
+      if (queue.length > 1 && viewportDirty) {
         queue = prioritizeByViewport(queue, { top: 0, bottom: window.innerHeight });
         viewportDirty = false;
       }
@@ -568,6 +643,10 @@ export function createPageTranslator(options: PageTranslatorOptions) {
           requeueChangedTextNode(node);
           return;
         }
+        // Perceived-speed fix: count exactly once per node here, not in
+        // the early-return branch above — a stale/externally-changed node
+        // gets requeued for a FRESH translation, not counted as done yet.
+        recordPieceCompleted(node);
         const original = originalWhitespace.get(node);
         // Strips a leading non-letter/non-digit run (not just whitespace)
         // from Google's own output before wrapping — Google's behavior at
@@ -1011,6 +1090,15 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     // viewportDirty=true (this populates `queue` directly, not through it).
     viewportDirty = true;
 
+    // A fresh cycle's progress is entirely new too — `nodes.length` is the
+    // real total this cycle will actually translate (not an estimate),
+    // known up front since `collectTextNodes` already ran synchronously
+    // above.
+    totalPieces = nodes.length;
+    completedPieces = 0;
+    completedNodes = new WeakSet<Text>();
+    notifyProgress();
+
     consecutiveBatchFailures = 0;
     setError(null); // also recomputes `working` — queue is already populated above.
     setState('translated');
@@ -1030,6 +1118,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     });
     nodesToRestore = new Map();
     queue = [];
+    resetProgress();
     cycleGeneration++;
     if (translationRoutineHandle) clearTimeout(translationRoutineHandle);
     translationRoutineHandle = null;
@@ -1106,6 +1195,21 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     onWorkingChange(cb: (working: boolean) => void): () => void {
       workingListeners.add(cb);
       return () => workingListeners.delete(cb);
+    },
+    /**
+     * Perceived-speed fix: `(done, total)` for the current cycle, updated
+     * as pieces actually complete — not an estimate. `done` can settle
+     * short of `total` (a genuinely untranslatable fragment gives up after
+     * 3 attempts, a node can leave the DOM for good) — this is by design,
+     * not a bug to chase: a consumer should hide/reset its progress UI on
+     * `working` going `false` (already fires for exactly this case, see
+     * `onWorkingChange` above), not by waiting for `done === total`, which
+     * isn't guaranteed to happen even on a fully successful, fully
+     * "done" translate.
+     */
+    onProgressChange(cb: (done: number, total: number) => void): () => void {
+      progressListeners.add(cb);
+      return () => progressListeners.delete(cb);
     },
   };
 }

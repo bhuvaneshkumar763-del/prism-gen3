@@ -330,12 +330,30 @@ function App() {
       <Show
         when={translated()}
         fallback={
-          <button type="button" class="primaryBtn" disabled={status() === 'busy'} onClick={onTranslateClick}>
+          <button
+            type="button"
+            class="primaryBtn"
+            classList={{ busy: status() === 'busy' }}
+            disabled={status() === 'busy'}
+            onClick={onTranslateClick}
+          >
+            {/* Perceived-speed fix: previously text-only while busy, the one
+                translate-triggering surface with no motion at all — see
+                FloatingBubble.tsx's matching .spinner for the pattern this
+                reuses. */}
+            <span class="spinner" />
             {status() === 'busy' ? 'Translating…' : 'Translate this page'}
           </button>
         }
       >
-        <button type="button" class="primaryBtn" disabled={status() === 'busy'} onClick={onRestoreClick}>
+        <button
+          type="button"
+          class="primaryBtn"
+          classList={{ busy: status() === 'busy' }}
+          disabled={status() === 'busy'}
+          onClick={onRestoreClick}
+        >
+          <span class="spinner" />
           {status() === 'busy' ? 'Restoring…' : 'Show original'}
         </button>
       </Show>

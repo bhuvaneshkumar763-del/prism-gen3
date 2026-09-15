@@ -17,6 +17,16 @@ export interface BubbleViewState {
   errorMessage: string | null;
   /** `'offline'` vs `'provider'` vs `null` — see `translateLoop.ts`'s `ErrorKind`. Additive alongside `errorMessage`, not a replacement for it. */
   errorKind: 'offline' | 'provider' | null;
+  /**
+   * Perceived-speed fix: a real `done/total` fraction (0-1) from
+   * `translateLoop.ts`'s `onProgressChange`, or `null` before the current
+   * cycle has a known total yet. Can settle short of `1` even on a
+   * completely finished translate (see `onProgressChange`'s own doc
+   * comment) — `FloatingBubble.tsx` hides its progress bar on `busy` going
+   * `false`, the same signal that already hides the spinner, not on
+   * `progress === 1`.
+   */
+  progress: number | null;
 }
 
 export const DEFAULT_BUBBLE_VIEW_STATE: BubbleViewState = {
@@ -24,6 +34,7 @@ export const DEFAULT_BUBBLE_VIEW_STATE: BubbleViewState = {
   busy: false,
   errorMessage: null,
   errorKind: null,
+  progress: null,
 };
 
 export function createBubbleState(

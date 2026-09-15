@@ -615,6 +615,103 @@ describe('createPageTranslator', () => {
     expect(pageTranslator.findOriginalTextForElement(elA)).toBeNull();
   });
 
+  describe('onProgressChange — perceived-speed fix: real (done, total) instead of a binary busy flag', () => {
+    it('fires with the total set up front and done increasing up to total as pieces complete', async () => {
+      document.body.innerHTML = '<p>hello</p><p>world</p><p>again</p>';
+      const pageTranslator = createPageTranslator({
+        translator: uppercaseTranslator(),
+        getSourceLanguage: () => 'en',
+        getBatchingHint: () => undefined,
+      });
+
+      const seen: Array<[number, number]> = [];
+      pageTranslator.onProgressChange((done, total) => seen.push([done, total]));
+
+      await pageTranslator.translatePage('es');
+      await waitFor(() => document.body.textContent === 'HELLOWORLDAGAIN');
+      // The microtask-coalesced notify (see notifyProgress()'s doc comment)
+      // needs one more drain to fire after the last write.
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(seen.length).toBeGreaterThan(0);
+      // Every total reported is the real, fixed count (3) — never a
+      // moving target within one cycle.
+      expect(seen.every(([, total]) => total === 3)).toBe(true);
+      // done is monotonically non-decreasing and never overshoots total.
+      const doneValues = seen.map(([done]) => done);
+      for (let i = 1; i < doneValues.length; i++) {
+        expect(doneValues[i]).toBeGreaterThanOrEqual(doneValues[i - 1] ?? 0);
+      }
+      expect(seen.every(([done, total]) => done <= total)).toBe(true);
+      // The final observed value reflects all 3 pieces completed.
+      expect(seen.at(-1)).toEqual([3, 3]);
+
+      pageTranslator.restorePage();
+    });
+
+    it("does not double-count a node that writeTranslatedNode legitimately touches twice in the same tick (onPieceComplete, then the tick's own always-runs trailing loop)", async () => {
+      // A translator whose onPieceComplete fires for every piece (like the
+      // real remote provider does) — writeTranslatedNode runs once via
+      // that early callback, then again via the tick's own trailing loop,
+      // which is already known-safe for the DOM write itself (see that
+      // function's header comment) but would double-count a naive counter.
+      document.body.innerHTML = '<p>hello</p>';
+      const translator: Translator = {
+        async translateBatch(request) {
+          const outcomes = request.pieces.map((piece): PieceOutcome => ok(piece.map((s) => s.toUpperCase())));
+          outcomes.forEach((outcome, i) => {
+            request.onPieceComplete?.(i, outcome);
+          });
+          return outcomes;
+        },
+      };
+      const pageTranslator = createPageTranslator({
+        translator,
+        getSourceLanguage: () => 'en',
+        getBatchingHint: () => undefined,
+      });
+
+      const seen: Array<[number, number]> = [];
+      pageTranslator.onProgressChange((done, total) => seen.push([done, total]));
+
+      await pageTranslator.translatePage('es');
+      await waitFor(() => document.body.textContent === 'HELLO');
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // Exactly 1 piece total, done must settle AT 1, never 2.
+      expect(seen.every(([done]) => done <= 1)).toBe(true);
+      expect(seen.at(-1)).toEqual([1, 1]);
+
+      pageTranslator.restorePage();
+    });
+
+    it('resets both done and total to 0 on restorePage()', async () => {
+      document.body.innerHTML = '<p>hello</p><p>world</p>';
+      const pageTranslator = createPageTranslator({
+        translator: uppercaseTranslator(),
+        getSourceLanguage: () => 'en',
+        getBatchingHint: () => undefined,
+      });
+
+      const seen: Array<[number, number]> = [];
+      pageTranslator.onProgressChange((done, total) => seen.push([done, total]));
+
+      await pageTranslator.translatePage('es');
+      await waitFor(() => document.body.textContent === 'HELLOWORLD');
+      await Promise.resolve();
+
+      pageTranslator.restorePage();
+      // restorePage()'s reset also goes through the microtask-coalesced
+      // notify (see notifyProgress()'s doc comment) — restorePage() itself
+      // is synchronous, so the reset notification hasn't fired yet at this
+      // exact point without an explicit drain.
+      await Promise.resolve();
+      expect(seen.at(-1)).toEqual([0, 0]);
+    });
+  });
+
   function setVisibility(state: 'visible' | 'hidden'): void {
     Object.defineProperty(document, 'visibilityState', { value: state, configurable: true });
     document.dispatchEvent(new Event('visibilitychange'));
@@ -1331,6 +1428,54 @@ describe('viewport-priority reordering — dirty-flag gating', () => {
 
     pageTranslator.restorePage();
   }, 10000);
+
+  it('reorders by viewport even on a typical, small page — perceived-speed fix: this used to be gated behind queue.length > MAX_PIECES_PER_TICK (300), so on any page with fewer pieces than that (the common case) reordering never ran at all', async () => {
+    // 10 paragraphs total, well under the old 300-piece gate — a page this
+    // size used to get zero viewport-priority reordering, dispatched in
+    // plain DOM order regardless of what the user was actually looking at.
+    for (let i = 0; i < 10; i++) {
+      const p = document.createElement('p');
+      p.textContent = `paragraph ${i}`;
+      document.body.appendChild(p);
+    }
+    // Only the LAST paragraph reports itself as visible — a real page
+    // scrolled to its end, the opposite of DOM order.
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+      const isLast = this === document.body.lastElementChild;
+      return {
+        top: isLast ? 0 : -1000,
+        bottom: isLast ? 10 : -990,
+        left: 0,
+        right: 0,
+        width: 0,
+        height: 10,
+        x: 0,
+        y: 0,
+      } as DOMRect;
+    });
+
+    const seenOrder: string[] = [];
+    const orderTrackingTranslator: Translator = {
+      async translateBatch(request) {
+        seenOrder.push(...request.pieces.flat());
+        return request.pieces.map((piece): PieceOutcome => ok(piece.map((s) => s.toUpperCase())));
+      },
+    };
+    const pageTranslator = createPageTranslator({
+      translator: orderTrackingTranslator,
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+
+    await pageTranslator.translatePage('es');
+    await waitFor(() => seenOrder.length === 10);
+
+    // The visible (last) paragraph must have been sent FIRST, not last —
+    // proving the queue was actually reordered, not sent in DOM order.
+    expect(seenOrder[0]).toBe('paragraph 9');
+
+    pageTranslator.restorePage();
+  });
 });
 
 describe('original whitespace restoration', () => {

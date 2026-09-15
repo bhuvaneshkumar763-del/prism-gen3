@@ -68,6 +68,15 @@ export const BUBBLE_STYLES = `
   .head .htitle { font-size: 13.5px; font-weight: 700; }
   .head .hsub { font-size: 11px; opacity: .85; font-weight: 500; }
 
+  /* Perceived-speed fix: real progress instead of just a spinner — see
+     FloatingBubble.tsx's showProgress()/translateLoop.ts's onProgressChange. */
+  .progressTrack { height: 3px; background: rgba(15,23,42,.08); overflow: hidden; }
+  .progressFill {
+    height: 100%;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    transition: width .2s ease;
+  }
+
   .body { padding: 12px; display: flex; flex-direction: column; gap: 11px; }
   .primary {
     width: 100%; border: none; cursor: pointer; border-radius: 11px;
@@ -116,11 +125,13 @@ export const BUBBLE_STYLES = `
     .sel { background: #232342; border-color: #33335a; color: #f1f5f9; }
     .sel option { background: #1f1f38; color: #f1f5f9; }
     .errorText { color: #fca5a5; }
+    .progressTrack { background: rgba(255,255,255,.1); }
   }
 
   @media (prefers-reduced-motion: reduce) {
     .ball, .panel { transition: opacity .12s linear !important; }
     .ball .spinner { animation-duration: 1.2s; }
+    .progressFill { transition: none !important; }
   }
 
   @media print { .wrap { display: none !important; } }

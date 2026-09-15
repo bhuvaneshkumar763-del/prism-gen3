@@ -204,6 +204,14 @@ export default defineContentScript({
       pageTranslator.onWorkingChange((working) => {
         bubble?.update({ busy: working });
       });
+      // Perceived-speed fix: real progress instead of just a binary busy
+      // flag — see `onProgressChange`'s own doc comment (translateLoop.ts)
+      // for why `progress` can settle short of `1` and why that's by
+      // design, not a bug (FloatingBubble.tsx hides on `busy` going false,
+      // same as it already does for the spinner, not on `progress === 1`).
+      pageTranslator.onProgressChange((done, total) => {
+        bubble?.update({ progress: total > 0 ? done / total : null });
+      });
       configStore.onChanged((name) => {
         if (name === 'bubbleEnabled' || name === 'bubbleByHost') syncBubbleVisibility();
       });
@@ -294,71 +302,62 @@ export default defineContentScript({
         }
       })();
     } else {
-      // Sub-frame: reaching this point already proves same-origin — a
-      // cross-origin sub-frame returned at the very top of `main()`
-      // (round-5 bloat audit), before any of this ran, so there is
-      // nothing left to check here. A same-origin sub-frame gets a
-      // pageTranslator (reachable if something ever messages this frame
-      // directly) but no auto-translate decision until the poll below
-      // resolves one.
-      {
-        void (async () => {
-          await configStore.onReady();
-          // The main frame's own report can arrive after this sub-frame
-          // has already loaded (e.g. the iframe's own document finishes
-          // parsing first) — poll briefly rather than querying once and
-          // giving up. Bounded, not indefinite: a main frame that never
-          // reports (translation disabled, an error) must not leave this
-          // polling forever.
-          const POLL_INTERVAL_MS = 200;
-          // Round-5 bloat audit: derived from the main frame's own real
-          // worst case (`MAIN_FRAME_DECISION_WORST_CASE_MS` —
-          // `waitUntilVisible`'s 5s plus language detection's 3s, fully
-          // serial) instead of an independently-chosen 15 (~3s). The old
-          // fixed budget was SMALLER than the producer's worst case, so a
-          // page opened in a background tab (never visible, burning the
-          // full visibility timeout) or with slow detection left every
-          // same-origin sub-frame exhausting its poll budget and giving up
-          // silently — never translating — before the main frame's own
-          // perfectly good decision had even arrived. +5 attempts (~1s) of
-          // margin for this poll's own round-trip overhead on top of the
-          // producer's bound.
-          const MAX_ATTEMPTS = Math.ceil(MAIN_FRAME_DECISION_WORST_CASE_MS / POLL_INTERVAL_MS) + 5; // ~9s
-          for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-            const decision = await sendMessage('getFrameLanguageDecision', undefined);
-            // Reliability/privacy fix, found via a round-4 audit: a stale
-            // entry from the PREVIOUS page (frameLanguageDecisions is only
-            // ever overwritten by the new main frame's own fresh report,
-            // never proactively cleared) could otherwise be accepted here
-            // immediately, before that fresh report has a chance to land —
-            // see FrameLanguageDecision's `mainFrameOrigin` doc comment.
-            // `window.top.location.origin` reflects THIS frame's own
-            // current page the instant its navigation commits, so a
-            // mismatch here reliably means "not yet updated for this
-            // load," not a permanent condition — treated exactly like "no
-            // decision yet" and left to the existing retry budget.
-            if (decision && decision.mainFrameOrigin === window.top?.location.origin) {
-              // Accuracy fix, found via audit: this used to omit the
-              // second argument, so every sub-frame translate silently
-              // used the literal 'auto' regardless of what the main frame
-              // actually detected — see FrameLanguageDecision's
-              // `originalLanguage` doc comment for why that's the same
-              // input beta.29 replaced everywhere else. Same 'und' → 'auto'
-              // normalization as `pageTranslator`'s own `getSourceLanguage`
-              // above — `sourceLanguageOverride` (what this second argument
-              // sets) is sent to the provider AS-IS with no fallback
-              // handling of its own, unlike the ambient path, so 'und'
-              // must be normalized here rather than passed through raw.
-              if (decision.shouldTranslate) {
-                const sourceLanguage = decision.originalLanguage === 'und' ? 'auto' : decision.originalLanguage;
-                await pageTranslator.translatePage(decision.targetLanguage, sourceLanguage);
-              }
-              return;
+      void (async () => {
+        await configStore.onReady();
+        // The main frame's own report can arrive after this sub-frame
+        // has already loaded (e.g. the iframe's own document finishes
+        // parsing first) — poll briefly rather than querying once and
+        // giving up. Bounded, not indefinite: a main frame that never
+        // reports (translation disabled, an error) must not leave this
+        // polling forever.
+        const POLL_INTERVAL_MS = 200;
+        // Round-5 bloat audit: derived from the main frame's own real
+        // worst case (`MAIN_FRAME_DECISION_WORST_CASE_MS` —
+        // `waitUntilVisible`'s 5s plus language detection's 3s, fully
+        // serial) instead of an independently-chosen 15 (~3s). The old
+        // fixed budget was SMALLER than the producer's worst case, so a
+        // page opened in a background tab (never visible, burning the
+        // full visibility timeout) or with slow detection left every
+        // same-origin sub-frame exhausting its poll budget and giving up
+        // silently — never translating — before the main frame's own
+        // perfectly good decision had even arrived. +5 attempts (~1s) of
+        // margin for this poll's own round-trip overhead on top of the
+        // producer's bound.
+        const MAX_ATTEMPTS = Math.ceil(MAIN_FRAME_DECISION_WORST_CASE_MS / POLL_INTERVAL_MS) + 5; // ~9s
+        for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+          const decision = await sendMessage('getFrameLanguageDecision', undefined);
+          // Reliability/privacy fix, found via a round-4 audit: a stale
+          // entry from the PREVIOUS page (frameLanguageDecisions is only
+          // ever overwritten by the new main frame's own fresh report,
+          // never proactively cleared) could otherwise be accepted here
+          // immediately, before that fresh report has a chance to land —
+          // see FrameLanguageDecision's `mainFrameOrigin` doc comment.
+          // `window.top.location.origin` reflects THIS frame's own
+          // current page the instant its navigation commits, so a
+          // mismatch here reliably means "not yet updated for this
+          // load," not a permanent condition — treated exactly like "no
+          // decision yet" and left to the existing retry budget.
+          if (decision && decision.mainFrameOrigin === window.top?.location.origin) {
+            // Accuracy fix, found via audit: this used to omit the
+            // second argument, so every sub-frame translate silently
+            // used the literal 'auto' regardless of what the main frame
+            // actually detected — see FrameLanguageDecision's
+            // `originalLanguage` doc comment for why that's the same
+            // input beta.29 replaced everywhere else. Same 'und' → 'auto'
+            // normalization as `pageTranslator`'s own `getSourceLanguage`
+            // above — `sourceLanguageOverride` (what this second argument
+            // sets) is sent to the provider AS-IS with no fallback
+            // handling of its own, unlike the ambient path, so 'und'
+            // must be normalized here rather than passed through raw.
+            if (decision.shouldTranslate) {
+              const sourceLanguage = decision.originalLanguage === 'und' ? 'auto' : decision.originalLanguage;
+              await pageTranslator.translatePage(decision.targetLanguage, sourceLanguage);
             }
-            await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+            return;
           }
-        })();
-      }
+          await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+        }
+      })();
     }
 
     // Reliability/privacy fix, found via a round-4 audit: `pageRestore`

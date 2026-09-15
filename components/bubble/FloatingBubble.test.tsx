@@ -34,6 +34,7 @@ describe('FloatingBubble', () => {
         busy: false,
         errorMessage: null as string | null,
         errorKind: null as 'offline' | 'provider' | null,
+        progress: null as number | null,
       },
       hostname: 'example.com',
       shadowHost: container,
@@ -69,7 +70,9 @@ describe('FloatingBubble', () => {
   });
 
   it('shows "Show original" once translated', () => {
-    const { el } = mount({ state: { pageState: 'translated', busy: false, errorMessage: null, errorKind: null } });
+    const { el } = mount({
+      state: { pageState: 'translated', busy: false, errorMessage: null, errorKind: null, progress: null },
+    });
     expect(el.querySelector('.primary')?.textContent).toBe('Show original');
   });
 
@@ -77,7 +80,9 @@ describe('FloatingBubble', () => {
     // pageState:'translated' + busy:true is what an active RE-translate
     // looks like, not a restore in progress — see mountBubble.test.ts's
     // matching test for the full explanation.
-    const { el } = mount({ state: { pageState: 'translated', busy: true, errorMessage: null, errorKind: null } });
+    const { el } = mount({
+      state: { pageState: 'translated', busy: true, errorMessage: null, errorKind: null, progress: null },
+    });
     const primary = el.querySelector('.primary') as HTMLButtonElement;
     expect(primary.textContent).toBe('Translating…');
     expect(primary.disabled).toBe(true);
@@ -90,7 +95,7 @@ describe('FloatingBubble', () => {
     // while props.state.busy is true used to fire another onTranslate.
     const onTranslate = vi.fn();
     const { el } = mount({
-      state: { pageState: 'original', busy: true, errorMessage: null, errorKind: null },
+      state: { pageState: 'original', busy: true, errorMessage: null, errorKind: null, progress: null },
       onTranslate,
     });
     const ball = el.querySelector('.ball') as HTMLButtonElement;
@@ -108,7 +113,7 @@ describe('FloatingBubble', () => {
   it('invokes onRestore when the primary button is clicked while translated', () => {
     const onRestore = vi.fn();
     const { el } = mount({
-      state: { pageState: 'translated', busy: false, errorMessage: null, errorKind: null },
+      state: { pageState: 'translated', busy: false, errorMessage: null, errorKind: null, progress: null },
       onRestore,
     });
     (el.querySelector('.primary') as HTMLButtonElement).dispatchEvent(
@@ -128,7 +133,7 @@ describe('FloatingBubble', () => {
 
   it('shows a real error instead of the normal "Translated" success, even in the translated state', () => {
     const { el } = mount({
-      state: { pageState: 'translated', busy: false, errorMessage: 'HTTP 429', errorKind: 'provider' },
+      state: { pageState: 'translated', busy: false, errorMessage: 'HTTP 429', errorKind: 'provider', progress: null },
     });
     expect(el.querySelector('.htitle')?.textContent).toBe('Translation failed');
     expect(el.querySelector('.errorText')?.textContent).toBe('HTTP 429');
@@ -139,7 +144,7 @@ describe('FloatingBubble', () => {
     const onTranslate = vi.fn();
     const onRestore = vi.fn();
     const { el } = mount({
-      state: { pageState: 'translated', busy: false, errorMessage: 'HTTP 429', errorKind: 'provider' },
+      state: { pageState: 'translated', busy: false, errorMessage: 'HTTP 429', errorKind: 'provider', progress: null },
       onTranslate,
       onRestore,
     });
@@ -158,6 +163,7 @@ describe('FloatingBubble', () => {
         busy: false,
         errorMessage: 'Offline — translation will resume automatically once your connection is back.',
         errorKind: 'offline',
+        progress: null,
       },
     });
     expect(el.querySelector('.htitle')?.textContent).toBe('Offline');
@@ -176,7 +182,7 @@ describe('FloatingBubble', () => {
     const onTranslate = vi.fn();
     const onRestore = vi.fn();
     const { el } = mount({
-      state: { pageState: 'translated', busy: false, errorMessage: 'offline', errorKind: 'offline' },
+      state: { pageState: 'translated', busy: false, errorMessage: 'offline', errorKind: 'offline', progress: null },
       onTranslate,
       onRestore,
     });

@@ -32,6 +32,30 @@ export const SELECTION_POPUP_STYLES = `
   }
   .status {
     color: #cbd5e1;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4em;
+  }
+  /* Perceived-speed fix: this used to be text-only while busy — see
+     FloatingBubble.tsx's .spinner (components/bubble/bubbleStyles.ts) for
+     the same pattern reused here. */
+  .status .spinner {
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    border-top-color: #fff;
+    animation: selectionSpin 0.7s linear infinite;
+  }
+  @keyframes selectionSpin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .status .spinner {
+      animation-duration: 1.2s;
+    }
   }
   .result {
     margin: 0;

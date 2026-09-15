@@ -1,5 +1,11 @@
 # prism-gen3
 
+## 0.3.0-beta.55
+
+### Patch Changes
+
+- Perceived-speed pass: translation should feel fast, not just be fast, in both the delayed and the normal case. Two gaps found by reading the actual translate-time path end to end: (1) viewport-priority reordering (translate what's on screen first) was gated behind a 300-piece threshold that most real pages never cross, so it never ran on a typical page — dispatch order still determines resolution order even within one tick, so this mattered at every page size, not just huge ones; the gate is now just `queue.length > 1`. (2) The popup and selection popup showed nothing but a frozen `'Translating…'` label while busy (only the bubble had a spinner) — added real `(done, total)` progress from `translateLoop.ts` (a new `onProgressChange` listener, counted once per node, coalesced to avoid introducing jank), a slim progress bar in the bubble, and a spinner in the popup and selection popup reusing the bubble's existing animation. `done` can legitimately settle short of `total`; every progress UI hides on `busy` going false, not on `done === total`.
+
 ## 0.3.0-beta.54
 
 ### Patch Changes

@@ -47,7 +47,10 @@ export function SelectionPopup(props: SelectionPopupProps) {
       <Show when={props.panelOpen}>
         <div class="panel" style={{ top: `${props.buttonTop}px`, left: `${props.buttonLeft}px` }}>
           <Show when={props.busy}>
-            <span class="status">Translating…</span>
+            <span class="status">
+              <span class="spinner" />
+              Translating…
+            </span>
           </Show>
           <Show when={!props.busy && props.translatedText}>
             <p class="result">{props.translatedText}</p>

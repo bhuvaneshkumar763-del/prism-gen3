@@ -469,6 +469,13 @@ export function FloatingBubble(props: FloatingBubbleProps) {
     if (translated()) return props.state.busy ? 'Restoring…' : 'Show original';
     return props.state.busy ? 'Translating…' : 'Translate page';
   };
+  // Perceived-speed fix: shown only while genuinely busy AND there's a real
+  // fraction to show — `progress` is `null` before the current cycle knows
+  // its total yet (the brief gap the existing spinner already covers), and
+  // this hides on `busy` going `false`, not on `progress` reaching `1` (see
+  // `onProgressChange`'s doc comment, translateLoop.ts, for why `progress`
+  // can legitimately settle short of `1` even on a fully finished translate).
+  const showProgress = () => props.state.busy && props.state.progress !== null && props.state.progress < 1;
 
   return (
     <div class="wrap" classList={{ translated: translated(), error: errored(), offline: offline() }} ref={wrap}>
@@ -510,6 +517,11 @@ export function FloatingBubble(props: FloatingBubbleProps) {
             <div class="hsub">Prism</div>
           </div>
         </div>
+        <Show when={showProgress()}>
+          <div class="progressTrack" aria-hidden="true">
+            <div class="progressFill" style={{ width: `${Math.round((props.state.progress ?? 0) * 100)}%` }} />
+          </div>
+        </Show>
         <div class="body">
           <button type="button" class="primary" disabled={props.state.busy || offline()} on:click={onPrimaryClick}>
             {primaryLabel()}

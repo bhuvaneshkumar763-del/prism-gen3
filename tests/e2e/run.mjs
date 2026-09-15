@@ -279,13 +279,23 @@ try {
       const message = { id: 2, type: 'pageTranslate', data: { targetLanguage: 'es' }, timestamp: Date.now() };
       await chrome.tabs.sendMessage(tab.id, message);
     });
+    // Perceived-speed fix: the SAME real translate triggered above is also
+    // the structural regression check for the busy-state UI wiring this
+    // round changed — `pageTranslator.onWorkingChange` -> `bubble.update`
+    // -> the `.ball`'s `classList={{ busy: ... }}` binding. Polled in the
+    // same loop as the keepalive check (not a separate window) so both
+    // assertions observe the SAME in-flight translate, deterministically,
+    // rather than racing two independent windows against one real network
+    // call. Playwright's own locator engine pierces shadow DOM (including
+    // the bubble's `mode: 'closed'` root, per round-4 audit item 1)
+    // automatically — no shadow-DOM-specific selector needed.
     let hasKeepaliveDuringTranslate = false;
+    let sawBubbleBusy = false;
     for (let i = 0; i < 20; i++) {
       const alarms = await worker.evaluate(() => chrome.alarms.getAll());
-      if (alarms.some((a) => a.name === 'prism-keepalive')) {
-        hasKeepaliveDuringTranslate = true;
-        break;
-      }
+      if (alarms.some((a) => a.name === 'prism-keepalive')) hasKeepaliveDuringTranslate = true;
+      if ((await page.locator('.ball.busy').count()) > 0) sawBubbleBusy = true;
+      if (hasKeepaliveDuringTranslate && sawBubbleBusy) break;
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
     if (!hasKeepaliveDuringTranslate) {
@@ -295,6 +305,14 @@ try {
       failures++;
     } else {
       console.log('pass keepalive alarm registered during a real translate');
+    }
+    if (!sawBubbleBusy) {
+      console.error(
+        'FAIL bubble busy state: expected .ball.busy to appear at some point during a real in-flight translate, never saw it',
+      );
+      failures++;
+    } else {
+      console.log('pass bubble shows its busy state during a real translate');
     }
 
     await page.close();
