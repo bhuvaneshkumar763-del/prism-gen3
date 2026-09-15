@@ -6,7 +6,7 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["**", "!**/.output", "!**/.wxt", "!**/public/_locales", "!**/coverage"]
+    "includes": ["**", "!**/.output", "!**/.wxt", "!**/public/_locales", "!**/coverage", "!**/safari/Prism"]
   },
   "formatter": {
     "enabled": true,

@@ -22,7 +22,12 @@ const manifestVersion = betaMatch ? `${betaMatch[1]}.${betaMatch[2]}` : pkg.vers
 // works via the build:firefox/zip:firefox npm scripts) rather than
 // hardcoded, so re-adding Firefox later is a config change, not a second
 // migration. See docs/decisions/0001-framework.md for why WXT itself was
-// chosen (partly for this dual-target story).
+// chosen (partly for this dual-target story). Safari (macOS + iOS/iPadOS)
+// added later the same way (`wxt build -b safari`, `build:safari`/
+// `safari:sync` npm scripts) — see `safari/README.md`; unlike Chrome/
+// Firefox, Safari can't load this manifest directly, so it's wrapped in a
+// real Xcode project at `safari/Prism/`, kept in sync via
+// `scripts/sync-safari.mjs` rather than committed as generated output.
 export default defineConfig({
   modules: ['@wxt-dev/module-solid'],
   manifest: {

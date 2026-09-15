@@ -42,6 +42,7 @@
     "remove-zod-dependency",
     "restore-vs-cooldown-timer-race",
     "revert-hover-fix",
+    "safari-extension",
     "selection-popup-language-awareness",
     "sender-validation-and-reflow-fix",
     "settings-full-parity",

@@ -25,3 +25,11 @@ coverage
 *.njsproj
 *.sln
 *.sw?
+
+# Xcode (safari/) — per-user IDE state, not part of the project itself.
+# DerivedData lives outside the repo (~/Library/Developer/Xcode/DerivedData)
+# by default and is listed here only as a guard against a misconfigured
+# custom build location.
+xcuserdata/
+DerivedData/
+*.xcuserstate
