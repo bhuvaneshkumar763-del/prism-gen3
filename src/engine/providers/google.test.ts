@@ -571,6 +571,56 @@ describe('createGoogleProvider', () => {
     });
   });
 
+  describe("auth-scrape backstop — real bug this closed: findAuth()'s fetch() had no timeout at all, and memoized its in-flight promise into module scope, only clearing it in a finally that runs after that promise SETTLES — so a fetch that never settles (the same real WebKit gap batchedHttpProvider.ts's sendOnce() backstop was built for) permanently blocked every future translateBatch() call, for the rest of this background context's life, not just the first one", () => {
+    it("doesn't permanently hang translateBatch() when the auth-scrape fetch never settles — and a later, unrelated translateBatch() call still completes, proving authPromise wasn't left poisoned", async () => {
+      const fetchMock = vi.fn(async (url: string) => {
+        if (String(url).includes('translate_http')) {
+          // Simulates the real gap this closed: the scrape request never
+          // resolves or rejects at all, regardless of any abort signal —
+          // exactly like sendOnce()'s own regression test simulates for
+          // the translate request itself.
+          return new Promise<Response>(() => {});
+        }
+        return jsonResponse([['hola'], ['en']]);
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      vi.useFakeTimers();
+      try {
+        const { createGoogleProvider } = await import('./google');
+        const provider = createGoogleProvider();
+
+        const firstResultPromise = provider.translateBatch({
+          sourceLanguage: 'en',
+          targetLanguage: 'es',
+          pieces: [['hello']],
+        });
+        // Comfortably past AUTH_SCRAPE_TIMEOUT_MS(10s) + the backstop's own
+        // 500ms margin — this call must settle on its own.
+        await vi.advanceTimersByTimeAsync(15000);
+        const firstResults = await firstResultPromise;
+        // The scrape timing out falls back to the hardcoded key (the same
+        // existing fallback path a real scrape failure already takes), so
+        // the actual translate request still goes out and succeeds.
+        expect(firstResults[0]?.ok).toBe(true);
+
+        // The real assertion: a second, later call doesn't inherit a
+        // permanently-hung authPromise — it completes too, instead of
+        // awaiting the same dead scrape forever.
+        const secondResultPromise = provider.translateBatch({
+          sourceLanguage: 'en',
+          targetLanguage: 'es',
+          pieces: [['hi']],
+        });
+        await vi.advanceTimersByTimeAsync(1000);
+        const secondResults = await secondResultPromise;
+        expect(secondResults[0]?.ok).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
   describe('auth-key persistence seam (hydrateAuthKey/getAuthKeySnapshot/ensureAuthReady)', () => {
     // Real gap this closes, found via a speed audit: the scraped auth key
     // used to live in module memory only, lost on every MV3 service-worker

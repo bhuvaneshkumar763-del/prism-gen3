@@ -24,6 +24,28 @@ let translateAuth: string | null = null;
 let authNotFound = false;
 let authPromise: Promise<void> | null = null;
 
+// Reliability fix, found via a live user report (Orion/iOS,
+// sangtacviet.vip chapters) and confirmed by direct code reading — the
+// most severe hang in this codebase, worse than the concurrency-gate leak
+// `batchedHttpProvider.ts` was fixed for: `findAuth`'s `fetch()` below used
+// to have NO timeout at all (not even a flawed AbortController-based one).
+// `translateBatch` calls `await findAuth()` at the top of EVERY request,
+// and `findAuth` memoizes its in-flight work into the module-scope
+// `authPromise`, cleared only in a `finally` after that promise SETTLES —
+// so if the fetch never settles (the same real WebKit gap `sendOnce`'s own
+// backstop was built for; here plausibly worse, since this endpoint
+// (`translate.googleapis.com`) is the EXACT SAME HOST this site's own
+// heavy client-side translate calls hit repeatedly, per its own shipped
+// JS, making connection contention specifically likely there),
+// `authPromise` never gets cleared and every future `translateBatch()`
+// call — on ANY site, for the rest of this background context's life —
+// awaits that same permanently-pending promise. This can trigger on the
+// very FIRST translate of a session (no prior success needed to "leak"
+// anything), matching a live re-test that hung for minutes on a fresh app
+// launch's first attempt. 10s is generous for what's just a small HTML
+// page fetch, not a translation request.
+const AUTH_SCRAPE_TIMEOUT_MS = 10000;
+
 /** Plain data shape for persisting/restoring the scraped auth key — see `hydrateAuthKey`'s doc comment for why this exists. */
 export interface AuthKeySnapshot {
   key: string;
@@ -127,10 +149,31 @@ async function findAuth(): Promise<void> {
     const fallbackKey = new TextDecoder().decode(new Uint8Array(FALLBACK_KEY_BYTES));
 
     try {
-      const response = await fetch(
-        'https://translate.googleapis.com/_/translate_http/_/js/k=translate_http.tr.en_US.YusFYy3P_ro.O/am=AAg/d=1/exm=el_conf/ed=1/rs=AN8SPfq1Hb8iJRleQqQc8zhdzXmF9E56eQ/m=el_main',
-      );
-      const text = await response.text();
+      // See `AUTH_SCRAPE_TIMEOUT_MS`'s own doc comment above for why this
+      // is raced against a plain `setTimeout`-based rejection rather than
+      // just awaited directly — this fetch has no other caller-side bound,
+      // unlike `batchedHttpProvider.ts`'s requests. Covers `response.text()`
+      // too, not just `fetch()` itself — a stalled body read is the same
+      // class of never-settles risk as a stalled `fetch()` call.
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), AUTH_SCRAPE_TIMEOUT_MS);
+      let text: string;
+      try {
+        text = await Promise.race([
+          (async () => {
+            const response = await fetch(
+              'https://translate.googleapis.com/_/translate_http/_/js/k=translate_http.tr.en_US.YusFYy3P_ro.O/am=AAg/d=1/exm=el_conf/ed=1/rs=AN8SPfq1Hb8iJRleQqQc8zhdzXmF9E56eQ/m=el_main',
+              { signal: controller.signal },
+            );
+            return await response.text();
+          })(),
+          new Promise<never>((_, reject) => {
+            setTimeout(() => reject(new Error('Auth scrape timed out (backstop)')), AUTH_SCRAPE_TIMEOUT_MS + 500);
+          }),
+        ]);
+      } finally {
+        clearTimeout(timeout);
+      }
       const match = text.length > 1 ? text.match(/['"]x-goog-api-key['"]\s*:\s*['"](\w{39})['"]/i) : null;
       if (match?.[1]) {
         translateAuth = match[1];

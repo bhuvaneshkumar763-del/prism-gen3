@@ -60,6 +60,7 @@
     "tag-anchor-isolation",
     "three-bugfixes",
     "twitter-non-latin-source-language-echo",
+    "unbounded-auth-scrape-fetch",
     "unleakable-concurrency-gate",
     "use-detected-source-language",
     "verify-amo-signing-again",
