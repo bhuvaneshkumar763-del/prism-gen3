@@ -42,6 +42,7 @@
     "remove-zod-dependency",
     "restore-vs-cooldown-timer-race",
     "revert-hover-fix",
+    "revert-orion-nonpersistent-background",
     "safari-extension",
     "safari-webextension-syntax-error",
     "selection-popup-language-awareness",
