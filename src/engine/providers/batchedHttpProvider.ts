@@ -312,27 +312,60 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const response = await fetch(options.baseUrl + query, {
-        method: options.method,
-        headers: Object.fromEntries((options.callbacks.getExtraHeaders?.() ?? []).map((h) => [h.name, h.value])),
-        body:
-          options.method === 'GET'
-            ? undefined
-            : options.callbacks.getRequestBody?.(sourceLanguage, targetLanguage, pieceWireTexts),
-        signal: controller.signal,
-      });
+      // Reliability fix, found via a live user report (spinning forever,
+      // permanently, after exactly one successful translate — reproduced
+      // on sangtacviet.vip in Orion/iOS): this used to just `await
+      // fetch(...)`/`response.json()` directly, trusting `controller.abort()`
+      // to make that reject once `timeoutMs` elapsed. WebKit (Orion's and
+      // iOS Safari's engine) has real-world cases where aborting a fetch
+      // doesn't reliably reject it once response headers have already
+      // arrived and the body is still being read — exactly the shape of a
+      // large JSON response from a text-dense page. If that happens, this
+      // function never settles, which means `handleBatch`'s wrapping
+      // `concurrencyGate.run(...)` call never settles either, which means
+      // that permit is never returned to the gate (see
+      // `createConcurrencyGate`'s doc comment: `inFlight` only decrements
+      // inside `worker().then(...)`) — and since the gate is a shared
+      // singleton living for the whole background-context lifetime, that
+      // permit is gone forever, eventually exhausting all of
+      // `DEFAULT_MAX_CONCURRENT` and making every future translate hang.
+      // Racing against a plain `setTimeout`-based rejection that doesn't
+      // depend on `AbortController`/`fetch` cooperating at all guarantees
+      // this function — and therefore the gate permit it holds — always
+      // settles by `timeoutMs`, regardless of what the platform's
+      // fetch/abort implementation actually does. The `+500` gives the
+      // normal abort path (which already produces a real HTTP/network
+      // error, more informative than this generic one) a head start, so
+      // this backstop only fires when that path has genuinely failed to
+      // settle at all.
+      return await Promise.race([
+        (async () => {
+          const response = await fetch(options.baseUrl + query, {
+            method: options.method,
+            headers: Object.fromEntries((options.callbacks.getExtraHeaders?.() ?? []).map((h) => [h.name, h.value])),
+            body:
+              options.method === 'GET'
+                ? undefined
+                : options.callbacks.getRequestBody?.(sourceLanguage, targetLanguage, pieceWireTexts),
+            signal: controller.signal,
+          });
 
-      if (response.status === 429 || response.status >= 500) {
-        const retryableError: RetryableError = new Error(`HTTP ${response.status}`);
-        const retryAfter = Number.parseFloat(response.headers.get('retry-after') ?? '');
-        if (retryAfter > 0) retryableError.retryAfterMs = Math.min(6000, retryAfter * 1000);
-        throw retryableError;
-      }
-      if (!response.ok) {
-        options.onNonRetryableStatus?.(response.status);
-        throw new NonRetryableHttpError(`HTTP ${response.status}`);
-      }
-      return await response.json();
+          if (response.status === 429 || response.status >= 500) {
+            const retryableError: RetryableError = new Error(`HTTP ${response.status}`);
+            const retryAfter = Number.parseFloat(response.headers.get('retry-after') ?? '');
+            if (retryAfter > 0) retryableError.retryAfterMs = Math.min(6000, retryAfter * 1000);
+            throw retryableError;
+          }
+          if (!response.ok) {
+            options.onNonRetryableStatus?.(response.status);
+            throw new NonRetryableHttpError(`HTTP ${response.status}`);
+          }
+          return await response.json();
+        })(),
+        new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error('Request timed out (backstop)')), timeoutMs + 500);
+        }),
+      ]);
     } finally {
       clearTimeout(timeout);
     }

@@ -314,6 +314,65 @@ describe('createBatchedHttpProvider — lifecycle hooks and concurrency', () => 
     expect(maxObservedInFlight).toBeLessThanOrEqual(2);
   });
 
+  it("doesn't permanently leak a concurrency-gate permit when fetch never settles even after its AbortController fires (a real gap found live on WebKit/Orion) — a later, unrelated translateBatch() still gets a free slot", async () => {
+    vi.spyOn(connectivity, 'isOnline').mockReturnValue(true);
+    vi.useFakeTimers();
+    // Simulates the real WebKit/Orion gap this closed: unlike a normal
+    // fetch() (see the overall-deadline test above, which DOES honor the
+    // abort signal), this mock never resolves or rejects no matter what —
+    // reproducing engines where aborting a fetch doesn't reliably reject
+    // it once the response body is already streaming. Without the
+    // sendOnce() backstop, this leaves `worker()` inside
+    // `concurrencyGate.run()` permanently unsettled, which — since the
+    // gate is a shared singleton for this provider instance's whole
+    // lifetime, same as the real background-context singleton in
+    // entrypoints/background.ts — leaks one of `maxConcurrent`'s slots
+    // forever. maxConcurrent: 1 makes that leak immediately fatal for
+    // every future call, so a second, independent translateBatch() completing
+    // at all is direct proof the permit was reclaimed, not leaked.
+    const stuckFetch = vi.fn(() => new Promise<Response>(() => {}));
+    vi.stubGlobal('fetch', stuckFetch);
+
+    const provider = createBatchedHttpProvider({
+      name: 'stuck-fetch',
+      baseUrl: 'https://example.com',
+      method: 'POST',
+      maxConcurrent: 1,
+      callbacks: { ...plainCallbacks(), getRequestBody: () => '{}' },
+    });
+
+    const firstResultPromise = provider.translateBatch({
+      sourceLanguage: 'en',
+      targetLanguage: 'es',
+      pieces: [['hello']],
+    });
+    // Comfortably past REQUEST_TIMEOUT_MS(20s) + the backstop's own 500ms
+    // margin, and past OVERALL_DEADLINE_MS(30s) x however many attempts
+    // that leaves room for — this call must settle on its own; nothing
+    // else advances it forward.
+    await vi.advanceTimersByTimeAsync(90000);
+    const firstResults = await firstResultPromise;
+    expect(firstResults[0]?.ok).toBe(false);
+
+    // The real assertion: with the gate permit reclaimed, an unrelated
+    // second call (against a normal, instantly-resolving fetch) completes
+    // instead of queueing forever behind the first call's dead waiter.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => jsonResponse({ texts: ['world'] })),
+    );
+    const secondResultPromise = provider.translateBatch({
+      sourceLanguage: 'en',
+      targetLanguage: 'es',
+      pieces: [['hi']],
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    const secondResults = await secondResultPromise;
+    expect(secondResults[0]?.ok).toBe(true);
+
+    vi.useRealTimers();
+  });
+
   it('individual-piece repair retries respect the SAME concurrency limit as top-level batches, real bug this closed: the repair fan-out used to fire one HTTP request per missing/suspicious piece via a bare Promise.all, completely invisible to the concurrency limiter — a batch-wide echo/truncation failure could put dozens of simultaneous requests on the wire despite maxConcurrent', async () => {
     let inFlight = 0;
     let maxObservedInFlight = 0;
@@ -950,10 +1009,13 @@ describe('createBatchedHttpProvider — connectivity awareness', () => {
 
     await provider.translateBatch({ sourceLanguage: 'en', targetLanguage: 'es', pieces: [['hello']] });
 
-    // Two retry sleeps for MAX_ATTEMPTS=3 (attempt 1 and attempt 2), the
-    // AbortController's 20s timeout also uses setTimeout but with a fixed
-    // 20000ms delay that's easy to filter out.
-    const retryDelays = delays.filter((d) => d !== 20000);
+    // Two retry sleeps for MAX_ATTEMPTS=3 (attempt 1 and attempt 2). Each
+    // attempt's sendOnce() also schedules two much-longer setTimeouts of
+    // its own — the AbortController's 20000ms timeout, and (since the
+    // sendOnce un-leakable-gate fix) a 20500ms backstop rejection — both
+    // easy to filter out by being an order of magnitude longer than any
+    // real jitter delay.
+    const retryDelays = delays.filter((d) => d < 10000);
     expect(retryDelays).toHaveLength(2);
     expect(retryDelays[0]).toBeGreaterThanOrEqual(300);
     expect(retryDelays[0]).toBeLessThanOrEqual(500);

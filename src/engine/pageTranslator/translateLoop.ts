@@ -44,6 +44,21 @@ import { prioritizeByViewport } from './viewportPriority';
 // tick still fits comfortably inside a handful of concurrent HTTP batches
 // rather than queueing hundreds of them at once.
 const MAX_PIECES_PER_TICK = 300;
+// Speed fix, found via a live-page audit (a text-dense, continuously-
+// churning page — a chapter reader whose own translate widget periodically
+// replaces its whole content subtree): once `queue.length` exceeds
+// `MAX_PIECES_PER_TICK`, `prioritizeByViewport`'s reorder (see the tick's
+// own comment on `viewportDirty` below) is throttled to at most once per
+// this many ms instead of running every single tick. Below that size
+// (the common case beta.55's "always reorder" fix targeted) it still
+// always reorders, unthrottled — this only bounds the uncommon
+// large/churning case that fix didn't anticipate: if new/changed nodes
+// keep arriving faster than the tick drains, `viewportDirty` stays true
+// on essentially every tick, and without this throttle each tick would
+// re-measure (forced `getBoundingClientRect()` layout reads for) the
+// ENTIRE, still-growing queue — real, compounding main-thread cost,
+// worse on constrained mobile hardware.
+const LARGE_QUEUE_REORDER_THROTTLE_MS = 500;
 const HAS_LETTER = /\p{L}/u;
 /** See `originalWhitespace`'s declaration comment (inside `runTranslationTick`) for why this is punctuation-aware, not whitespace-only. */
 const LEADING_NON_LETTER_OR_DIGIT = /^[^\p{L}\p{N}]+/u;
@@ -95,6 +110,26 @@ export function createPageTranslator(options: PageTranslatorOptions) {
   let pageLanguageState: PageLanguageState = 'original';
   let queue: Text[] = [];
   /**
+   * O(1) membership check mirroring `queue`'s own contents — kept in exact
+   * sync with every push/splice/unshift on `queue` below (added when a
+   * node enters `queue`, removed the instant it's spliced out into an
+   * in-flight `batch`, re-added if that batch gets unshifted back in after
+   * a failure). Speed fix, found via a live-page audit (a text-dense,
+   * continuously-churning page — a chapter reader with a third-party
+   * translate widget that periodically replaces its whole content
+   * subtree): `requeueChangedTextNode` used a plain `queue.includes(node)`
+   * scan, an `O(n)` cost paid on EVERY characterData mutation
+   * (unthrottled, straight from `mutationWatcher.onChangedTextNode`) — the
+   * exact anti-pattern `dedupe.ts`'s own header comment already warns
+   * against ("a naive... linear scan of every tracked node for every
+   * candidate becomes the hottest loop on a long page"), just not yet
+   * applied to this later-added duplicate-check. Reassigned to a fresh
+   * `WeakSet` everywhere `queue` itself gets reset to reflect a new
+   * cycle (mirroring `dedupe.reset()`, right next to it in both places)
+   * rather than mutated, since `WeakSet` has no `clear()`.
+   */
+  let queuedSet = new WeakSet<Text>();
+  /**
    * `null` = use `options.getSourceLanguage()` (always `'auto'` in this
    * extension's real wiring, see `entrypoints/content.ts`) for every
    * translate request. Set by `translatePage()`'s optional second
@@ -128,6 +163,12 @@ export function createPageTranslator(options: PageTranslatorOptions) {
    * `getBoundingClientRect()` layout reads per tick, repeated every ~150ms).
    */
   let viewportDirty = true;
+  /**
+   * Last time `prioritizeByViewport` actually ran, for the large-queue
+   * throttle below (`LARGE_QUEUE_REORDER_THROTTLE_MS`). `0` so the very
+   * first reorder of a translate cycle is never throttled.
+   */
+  let lastReorderTime = 0;
   /**
    * Bumped by every translatePage()/restorePage(). A `translateBatch()` call
    * already awaiting when the cycle ends cannot be cancelled, so its results
@@ -298,6 +339,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     dedupe.track([node]);
     lastSeenText.set(node, node.data);
     queue.push(node);
+    queuedSet.add(node);
     // Nodes discovered after the initial translatePage() sweep (new DOM from
     // the mutation watcher/resweep) need their pre-translation text recorded
     // too, or restorePage() silently leaves them translated forever — the
@@ -352,7 +394,10 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     // per change. A duplicate entry means the same node can land in the
     // SAME batch/group twice, wasting a translate request and racing two
     // outcomes' write-backs against each other for one node.
-    if (!queue.includes(node)) queue.push(node);
+    if (!queuedSet.has(node)) {
+      queue.push(node);
+      queuedSet.add(node);
+    }
     recomputeWorking();
     wakeRoutine();
   }
@@ -540,11 +585,26 @@ export function createPageTranslator(options: PageTranslatorOptions) {
       // pointless call when there's nothing to reorder. This only changes
       // which nodes land in `batch` below; grouping still runs on
       // whatever comes out, unmodified.
-      if (queue.length > 1 && viewportDirty) {
+      //
+      // Follow-up fix, found via a live-page audit (a text-dense,
+      // continuously-churning page): the reasoning above holds for a
+      // typical page, but a page where content keeps arriving faster than
+      // the tick can drain it (see `LARGE_QUEUE_REORDER_THROTTLE_MS`'s own
+      // comment) keeps `viewportDirty` true on essentially every tick,
+      // which without a bound would re-measure the entire, still-growing
+      // `queue` every single tick — real, compounding main-thread cost.
+      // Below `MAX_PIECES_PER_TICK` (the common case this section's fix
+      // above targeted) always reorders, unthrottled, same as before;
+      // past it, reorder at most once per `LARGE_QUEUE_REORDER_THROTTLE_MS`.
+      const isLargeQueue = queue.length > MAX_PIECES_PER_TICK;
+      const reorderThrottled = isLargeQueue && Date.now() - lastReorderTime < LARGE_QUEUE_REORDER_THROTTLE_MS;
+      if (queue.length > 1 && viewportDirty && !reorderThrottled) {
         queue = prioritizeByViewport(queue, { top: 0, bottom: window.innerHeight });
         viewportDirty = false;
+        lastReorderTime = Date.now();
       }
       const batch = queue.splice(0, MAX_PIECES_PER_TICK);
+      for (const node of batch) queuedSet.delete(node);
       const groups = groupNodesForBatching(batch, options.getBatchingHint());
       const requestedUnderGeneration = cycleGeneration;
       batchInFlight = true;
@@ -783,7 +843,11 @@ export function createPageTranslator(options: PageTranslatorOptions) {
           batch.forEach((n) => {
             if (!n.isConnected) lastSeenText.delete(n);
           });
-          queue.unshift(...batch.filter((n) => n.isConnected));
+          {
+            const requeued = batch.filter((n) => n.isConnected);
+            for (const node of requeued) queuedSet.add(node);
+            queue.unshift(...requeued);
+          }
         } else {
           // Reliability fix, found via audit: this used to reset both
           // failure counters and clear any surfaced error unconditionally
@@ -864,7 +928,11 @@ export function createPageTranslator(options: PageTranslatorOptions) {
         batch.forEach((n) => {
           if (!n.isConnected) lastSeenText.delete(n);
         });
-        queue.unshift(...batch.filter((n) => n.isConnected));
+        {
+          const requeued = batch.filter((n) => n.isConnected);
+          for (const node of requeued) queuedSet.add(node);
+          queue.unshift(...requeued);
+        }
         consecutiveBatchFailures++;
         if (consecutiveBatchFailures >= CONSECUTIVE_FAILURES_BEFORE_SURFACING) {
           setError(toUserFacingErrorMessage(e instanceof Error ? e.message : String(e)));
@@ -1085,6 +1153,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
       lastSeenText.set(node, node.data);
     });
     queue = [...nodes];
+    queuedSet = new WeakSet<Text>(nodes);
     // A fresh cycle's queue is entirely new — the previous cycle's
     // measurements (if any) don't apply to it. Bypasses queueNode()'s own
     // viewportDirty=true (this populates `queue` directly, not through it).
@@ -1118,6 +1187,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     });
     nodesToRestore = new Map();
     queue = [];
+    queuedSet = new WeakSet<Text>();
     resetProgress();
     cycleGeneration++;
     if (translationRoutineHandle) clearTimeout(translationRoutineHandle);

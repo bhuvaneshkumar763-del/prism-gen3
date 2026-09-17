@@ -1476,6 +1476,58 @@ describe('viewport-priority reordering — dirty-flag gating', () => {
 
     pageTranslator.restorePage();
   });
+
+  it('throttles re-measurement on a large, continuously-churning queue instead of re-measuring the whole queue on every tick — real regression this closed, found via a live-page audit (a text-dense chapter reader whose own translate widget periodically replaces its whole content subtree, keeping the queue both large and dirty on essentially every tick)', async () => {
+    // 700 paragraphs: comfortably over MAX_PIECES_PER_TICK(300), so the
+    // large-queue throttle branch applies throughout this test.
+    for (let i = 0; i < 700; i++) {
+      const p = document.createElement('p');
+      p.textContent = `hello ${i}`;
+      document.body.appendChild(p);
+    }
+    stubAllRectsVisible();
+    const rectSpy = vi.spyOn(Element.prototype, 'getBoundingClientRect');
+
+    const pageTranslator = createPageTranslator({
+      translator: uppercaseTranslator(),
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+
+    vi.useFakeTimers();
+    try {
+      void pageTranslator.translatePage('es');
+      await vi.advanceTimersByTimeAsync(0); // tick 1: reorders (queue > 300) and translates the first batch
+      const callsAfterTick1 = rectSpy.mock.calls.length;
+      expect(callsAfterTick1).toBeGreaterThan(0);
+
+      // Simulate continuous churn: a new node arriving via the mutation
+      // watcher's childList path (translateLoop.ts's onNewRoot ->
+      // queueNode) re-dirties viewportDirty, same as a real page's own
+      // content swap would. Still well within the queue's remaining 400+
+      // nodes, so the large-queue branch stays active.
+      const churnNode = document.createElement('p');
+      churnNode.textContent = 'churned in';
+      document.body.appendChild(churnNode);
+      await Promise.resolve(); // flush the MutationObserver microtask callback
+
+      await vi.advanceTimersByTimeAsync(0); // tick 2: dirty again, but within the throttle window
+      // No NEW measurement calls — a naive "always reorder when dirty"
+      // would have re-measured the entire (still large) queue here; the
+      // throttle correctly skips it since LARGE_QUEUE_REORDER_THROTTLE_MS
+      // hasn't elapsed since tick 1's reorder.
+      expect(rectSpy.mock.calls.length).toBe(callsAfterTick1);
+
+      // Past the throttle window: the next dirty, eligible tick reorders
+      // again — this is a throttle, not a permanent disable.
+      await vi.advanceTimersByTimeAsync(600);
+      expect(rectSpy.mock.calls.length).toBeGreaterThan(callsAfterTick1);
+
+      pageTranslator.restorePage();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe('original whitespace restoration', () => {

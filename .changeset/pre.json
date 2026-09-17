@@ -59,8 +59,9 @@
     "tag-anchor-isolation",
     "three-bugfixes",
     "twitter-non-latin-source-language-echo",
+    "unleakable-concurrency-gate",
     "use-detected-source-language",
-    "verify-amo-signing",
-    "verify-amo-signing-again"
+    "verify-amo-signing-again",
+    "verify-amo-signing"
   ]
 }

@@ -254,252 +254,277 @@ async function prefetchGoogleAuthKey(): Promise<void> {
   }
 }
 
-export default defineBackground(() => {
-  registerKeepaliveListener();
-  void prefetchGoogleAuthKey();
+export default defineBackground({
+  // Reliability fix, found via a live user report (Orion/iOS, sangtacviet.vip):
+  // WXT's MV2 manifest (Firefox, and any other MV2-loading browser like
+  // Orion when it loads this raw web-extension package rather than the
+  // Safari-wrapped app under safari/) defaults `background.persistent` to
+  // `true` per the MV2 spec. This codebase's background entrypoint already
+  // assumes a rebuildable-on-wake lifecycle — the same model Chrome's MV3
+  // service worker already forces on it (see `registerKeepaliveListener`
+  // below) — so a genuinely persistent background page just means any
+  // future in-memory leak (a stuck promise, an exhausted semaphore — see
+  // `batchedHttpProvider.ts`'s `createConcurrencyGate` doc comment for a
+  // real one this same investigation found and fixed) survives for the
+  // ENTIRE browser session instead of being cleared out the next time this
+  // context gets torn down and rebuilt. `scripts/sync-safari.mjs` already
+  // forces this for the Safari-wrapped build in a post-build step; this is
+  // the same fix applied at the actual source of truth, for every MV2
+  // target, not just Safari. A no-op for Chrome's MV3 `service_worker`-based
+  // background, which has no `persistent` key at all.
+  persistent: false,
+  main() {
+    registerKeepaliveListener();
+    void prefetchGoogleAuthKey();
 
-  onMessage('translateText', async (message) => {
-    if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');
-    beginTranslateActivity();
-    try {
-      const { providerId, provider } = await resolveActiveProvider();
-      if (!provider) {
-        return { ok: false, error: { kind: 'network', message: unavailableMessage(providerId) } };
-      }
-      return await translateOne(provider, message.data.text, message.data.sourceLanguage, message.data.targetLanguage);
-    } finally {
-      endTranslateActivity();
-    }
-  });
-
-  onMessage('translatePieces', async (message) => {
-    if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');
-    beginTranslateActivity();
-    try {
-      return await translatePiecesWithCache(message.data, message.sender);
-    } finally {
-      endTranslateActivity();
-    }
-  });
-
-  async function translatePiecesWithCache(
-    data: TranslateBatchRequest & { requestId: number },
-    sender: Browser.runtime.MessageSender,
-  ): Promise<PieceOutcome[]> {
-    const { providerId, provider } = await resolveActiveProvider();
-    const { sourceLanguage, targetLanguage, pieces, dontSortResults, requestId } = data;
-
-    if (!provider) {
-      const error = { kind: 'network' as const, message: unavailableMessage(providerId) };
-      return pieces.map(() => ({ ok: false, error }));
-    }
-
-    // Security/privacy fix, found via a round-4 audit: extensions run in
-    // "spanning" mode by default (one shared service worker across normal
-    // AND incognito windows), so this handler runs the same regardless of
-    // which kind of window the request came from — `translationCacheEnabled`
-    // alone said nothing about that. A manual translate in an incognito
-    // window used to write the page's source text (the cache key literally
-    // contains it) into the NORMAL profile's IndexedDB, persisting past
-    // the incognito session ending, with no way for the user to know it
-    // happened. `sender.tab.incognito` is the standard WebExtensions field
-    // for exactly this; skips BOTH the read and the write below, so an
-    // incognito translate neither leaks into nor benefits from the normal
-    // profile's cache.
-    const cacheEnabled = configStore.get('translationCacheEnabled') && !sender.tab?.incognito;
-    const pieceKeys = pieces.map((piece) =>
-      cacheKeyFor(providerId, sourceLanguage, targetLanguage, JSON.stringify(piece)),
-    );
-    // Caching is purely an optimization — a cache-layer failure (a closed
-    // IndexedDB connection, a quota/permission issue, or a corrupt/truncated
-    // stored entry) must never break an otherwise-successful translation.
-    // Treat a failed read OR a value that fails to parse as a cache miss
-    // (falls through to a live provider call below) and a failed write as a
-    // no-op, all logged but not propagated. getMany() reads every piece
-    // key in ONE IndexedDB transaction instead of one per key — a tick with
-    // ~40 pieces used to open ~40 separate transactions just to check the
-    // cache.
-    const rawCachedValues = cacheEnabled
-      ? await translationCache.getMany(pieceKeys).catch((e) => {
-          console.warn('[prism] translation cache read failed, treating every piece as a cache miss', e);
-          return pieces.map(() => null);
-        })
-      : pieces.map(() => null);
-    const cachedValues: Array<string[] | null> = rawCachedValues.map((raw) => {
-      if (raw === null) return null;
+    onMessage('translateText', async (message) => {
+      if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');
+      beginTranslateActivity();
       try {
-        return JSON.parse(raw) as string[];
-      } catch (e) {
-        console.warn('[prism] cached entry failed to parse, treating as a cache miss', e);
-        return null;
+        const { providerId, provider } = await resolveActiveProvider();
+        if (!provider) {
+          return { ok: false, error: { kind: 'network', message: unavailableMessage(providerId) } };
+        }
+        return await translateOne(
+          provider,
+          message.data.text,
+          message.data.sourceLanguage,
+          message.data.targetLanguage,
+        );
+      } finally {
+        endTranslateActivity();
       }
     });
 
-    const missingIndices: number[] = [];
-    pieces.forEach((_, i) => {
-      if (cachedValues[i] === null) missingIndices.push(i);
+    onMessage('translatePieces', async (message) => {
+      if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');
+      beginTranslateActivity();
+      try {
+        return await translatePiecesWithCache(message.data, message.sender);
+      } finally {
+        endTranslateActivity();
+      }
     });
 
-    let freshOutcomes: PieceOutcome[] = [];
-    if (missingIndices.length > 0) {
-      const missingPieces = missingIndices
-        .map((i) => pieces[i])
-        .filter((p): p is (typeof pieces)[number] => p !== undefined);
-      // Reliability/speed fix, found via audit: relays each fresh piece's
-      // own completion back to the requesting frame the instant the
-      // provider resolves it — see remoteTranslator.ts's header comment
-      // for why this exists (a function property can't survive the
-      // messaging boundary on its own) and what it makes work again
-      // (beta.34's incremental write-back, previously inert outside a
-      // unit test's in-process translator). `missingIdx` is relative to
-      // `missingPieces`/`pieces` above; `missingIndices[missingIdx]` maps
-      // it back to the index in the ORIGINAL request the content script
-      // is keeping track of. Best-effort: a tab/frame that's navigated or
-      // closed between the request and this piece resolving just drops
-      // the notification — the final `outcomes` this function returns
-      // still carries every piece via the unchanged path below, so
-      // nothing is actually lost, only the early write-back for that one
-      // piece.
-      const tabId = sender.tab?.id;
-      freshOutcomes = await provider.translateBatch({
-        sourceLanguage,
-        targetLanguage,
-        pieces: missingPieces,
-        dontSortResults,
-        onPieceComplete:
-          tabId === undefined
-            ? undefined
-            : (missingIdx, outcome) => {
-                const index = missingIndices[missingIdx];
-                if (index === undefined) return;
-                void sendMessage(
-                  'translatePiecesProgress',
-                  { requestId, index, outcome },
-                  { tabId, frameId: sender.frameId },
-                ).catch(() => {
-                  // Tab/frame gone — see this block's own comment above.
-                });
-              },
+    async function translatePiecesWithCache(
+      data: TranslateBatchRequest & { requestId: number },
+      sender: Browser.runtime.MessageSender,
+    ): Promise<PieceOutcome[]> {
+      const { providerId, provider } = await resolveActiveProvider();
+      const { sourceLanguage, targetLanguage, pieces, dontSortResults, requestId } = data;
+
+      if (!provider) {
+        const error = { kind: 'network' as const, message: unavailableMessage(providerId) };
+        return pieces.map(() => ({ ok: false, error }));
+      }
+
+      // Security/privacy fix, found via a round-4 audit: extensions run in
+      // "spanning" mode by default (one shared service worker across normal
+      // AND incognito windows), so this handler runs the same regardless of
+      // which kind of window the request came from — `translationCacheEnabled`
+      // alone said nothing about that. A manual translate in an incognito
+      // window used to write the page's source text (the cache key literally
+      // contains it) into the NORMAL profile's IndexedDB, persisting past
+      // the incognito session ending, with no way for the user to know it
+      // happened. `sender.tab.incognito` is the standard WebExtensions field
+      // for exactly this; skips BOTH the read and the write below, so an
+      // incognito translate neither leaks into nor benefits from the normal
+      // profile's cache.
+      const cacheEnabled = configStore.get('translationCacheEnabled') && !sender.tab?.incognito;
+      const pieceKeys = pieces.map((piece) =>
+        cacheKeyFor(providerId, sourceLanguage, targetLanguage, JSON.stringify(piece)),
+      );
+      // Caching is purely an optimization — a cache-layer failure (a closed
+      // IndexedDB connection, a quota/permission issue, or a corrupt/truncated
+      // stored entry) must never break an otherwise-successful translation.
+      // Treat a failed read OR a value that fails to parse as a cache miss
+      // (falls through to a live provider call below) and a failed write as a
+      // no-op, all logged but not propagated. getMany() reads every piece
+      // key in ONE IndexedDB transaction instead of one per key — a tick with
+      // ~40 pieces used to open ~40 separate transactions just to check the
+      // cache.
+      const rawCachedValues = cacheEnabled
+        ? await translationCache.getMany(pieceKeys).catch((e) => {
+            console.warn('[prism] translation cache read failed, treating every piece as a cache miss', e);
+            return pieces.map(() => null);
+          })
+        : pieces.map(() => null);
+      const cachedValues: Array<string[] | null> = rawCachedValues.map((raw) => {
+        if (raw === null) return null;
+        try {
+          return JSON.parse(raw) as string[];
+        } catch (e) {
+          console.warn('[prism] cached entry failed to parse, treating as a cache miss', e);
+          return null;
+        }
       });
-    }
 
-    // Built once so the reconstruction below is O(1) per piece instead of
-    // an indexOf() scan (O(n) per piece, O(n^2) overall — real cost on a
-    // cold/disabled cache, where every piece is "missing").
-    const missingIdxByPiece = new Map(missingIndices.map((i, idx) => [i, idx]));
-
-    const outcomes: PieceOutcome[] = pieces.map((_, i) => {
-      const cached = cachedValues[i];
-      if (cached !== null && cached !== undefined) return { ok: true, value: cached };
-      const missingIdx = missingIdxByPiece.get(i);
-      const fresh = missingIdx !== undefined ? freshOutcomes[missingIdx] : undefined;
-      return fresh ?? { ok: false, error: { kind: 'parse', message: 'no result for this piece' } };
-    });
-
-    if (cacheEnabled) {
-      // setMany() writes every fresh piece in ONE IndexedDB transaction and
-      // runs ONE eviction pass, instead of set()'s old per-piece path (two
-      // transactions each — up to 2N for N fresh pieces in a tick).
-      const freshEntries = missingIndices
-        .map((i, idx) => {
-          const outcome = freshOutcomes[idx];
-          const key = pieceKeys[i];
-          return outcome?.ok && key ? { key, value: JSON.stringify(outcome.value) } : null;
-        })
-        .filter((e): e is { key: string; value: string } => e !== null);
-      // Speed fix, found via audit: this used to be awaited, so the reply
-      // carrying the freshly-translated outcomes — the thing the content
-      // script is actually waiting on to write text to the page — sat
-      // behind an IndexedDB commit AND, on a cold service worker, its
-      // first-call full-store cursor scan (`ensureRunningTotal`) plus a
-      // full eviction pass. Caching is purely an optimization (see the
-      // comment above the read path); a future request benefiting from
-      // this write a few milliseconds later than the reply already went
-      // out is the correct trade, not a regression.
-      void translationCache.setMany(freshEntries).catch((e) => {
-        console.warn('[prism] translation cache write failed, continuing without caching these pieces', e);
+      const missingIndices: number[] = [];
+      pieces.forEach((_, i) => {
+        if (cachedValues[i] === null) missingIndices.push(i);
       });
+
+      let freshOutcomes: PieceOutcome[] = [];
+      if (missingIndices.length > 0) {
+        const missingPieces = missingIndices
+          .map((i) => pieces[i])
+          .filter((p): p is (typeof pieces)[number] => p !== undefined);
+        // Reliability/speed fix, found via audit: relays each fresh piece's
+        // own completion back to the requesting frame the instant the
+        // provider resolves it — see remoteTranslator.ts's header comment
+        // for why this exists (a function property can't survive the
+        // messaging boundary on its own) and what it makes work again
+        // (beta.34's incremental write-back, previously inert outside a
+        // unit test's in-process translator). `missingIdx` is relative to
+        // `missingPieces`/`pieces` above; `missingIndices[missingIdx]` maps
+        // it back to the index in the ORIGINAL request the content script
+        // is keeping track of. Best-effort: a tab/frame that's navigated or
+        // closed between the request and this piece resolving just drops
+        // the notification — the final `outcomes` this function returns
+        // still carries every piece via the unchanged path below, so
+        // nothing is actually lost, only the early write-back for that one
+        // piece.
+        const tabId = sender.tab?.id;
+        freshOutcomes = await provider.translateBatch({
+          sourceLanguage,
+          targetLanguage,
+          pieces: missingPieces,
+          dontSortResults,
+          onPieceComplete:
+            tabId === undefined
+              ? undefined
+              : (missingIdx, outcome) => {
+                  const index = missingIndices[missingIdx];
+                  if (index === undefined) return;
+                  void sendMessage(
+                    'translatePiecesProgress',
+                    { requestId, index, outcome },
+                    { tabId, frameId: sender.frameId },
+                  ).catch(() => {
+                    // Tab/frame gone — see this block's own comment above.
+                  });
+                },
+        });
+      }
+
+      // Built once so the reconstruction below is O(1) per piece instead of
+      // an indexOf() scan (O(n) per piece, O(n^2) overall — real cost on a
+      // cold/disabled cache, where every piece is "missing").
+      const missingIdxByPiece = new Map(missingIndices.map((i, idx) => [i, idx]));
+
+      const outcomes: PieceOutcome[] = pieces.map((_, i) => {
+        const cached = cachedValues[i];
+        if (cached !== null && cached !== undefined) return { ok: true, value: cached };
+        const missingIdx = missingIdxByPiece.get(i);
+        const fresh = missingIdx !== undefined ? freshOutcomes[missingIdx] : undefined;
+        return fresh ?? { ok: false, error: { kind: 'parse', message: 'no result for this piece' } };
+      });
+
+      if (cacheEnabled) {
+        // setMany() writes every fresh piece in ONE IndexedDB transaction and
+        // runs ONE eviction pass, instead of set()'s old per-piece path (two
+        // transactions each — up to 2N for N fresh pieces in a tick).
+        const freshEntries = missingIndices
+          .map((i, idx) => {
+            const outcome = freshOutcomes[idx];
+            const key = pieceKeys[i];
+            return outcome?.ok && key ? { key, value: JSON.stringify(outcome.value) } : null;
+          })
+          .filter((e): e is { key: string; value: string } => e !== null);
+        // Speed fix, found via audit: this used to be awaited, so the reply
+        // carrying the freshly-translated outcomes — the thing the content
+        // script is actually waiting on to write text to the page — sat
+        // behind an IndexedDB commit AND, on a cold service worker, its
+        // first-call full-store cursor scan (`ensureRunningTotal`) plus a
+        // full eviction pass. Caching is purely an optimization (see the
+        // comment above the read path); a future request benefiting from
+        // this write a few milliseconds later than the reply already went
+        // out is the correct trade, not a regression.
+        void translationCache.setMany(freshEntries).catch((e) => {
+          console.warn('[prism] translation cache write failed, continuing without caching these pieces', e);
+        });
+      }
+
+      return outcomes;
     }
 
-    return outcomes;
-  }
-
-  // Registered inside onInstalled (fires on install/update/browser-update),
-  // NOT unconditionally at the top of main() — an MV3 service worker is
-  // fully re-executed on every wake from suspension (unlike a persistent
-  // background page), but context-menu items persist in the browser
-  // independently of the worker's own lifetime. Creating them unconditionally
-  // meant every wake after the first successful install called create() with
-  // an already-existing id, which the browser reports via
-  // runtime.lastError — unread here, so it printed as an unchecked-error
-  // warning on every single wake (which happens constantly: the keepalive
-  // alarm alone fires every ~24s while a page is translating). The callback
-  // reading lastError is a belt-and-braces guard, not the primary fix — a
-  // genuine extension update can still legitimately re-create an id that
-  // survived from the prior version.
-  browser.runtime.onInstalled.addListener(() => {
-    browser.contextMenus.create({ id: TRANSLATE_MENU_ID, title: 'Translate this page', contexts: ['page'] }, () => {
-      void browser.runtime.lastError;
+    // Registered inside onInstalled (fires on install/update/browser-update),
+    // NOT unconditionally at the top of main() — an MV3 service worker is
+    // fully re-executed on every wake from suspension (unlike a persistent
+    // background page), but context-menu items persist in the browser
+    // independently of the worker's own lifetime. Creating them unconditionally
+    // meant every wake after the first successful install called create() with
+    // an already-existing id, which the browser reports via
+    // runtime.lastError — unread here, so it printed as an unchecked-error
+    // warning on every single wake (which happens constantly: the keepalive
+    // alarm alone fires every ~24s while a page is translating). The callback
+    // reading lastError is a belt-and-braces guard, not the primary fix — a
+    // genuine extension update can still legitimately re-create an id that
+    // survived from the prior version.
+    browser.runtime.onInstalled.addListener(() => {
+      browser.contextMenus.create({ id: TRANSLATE_MENU_ID, title: 'Translate this page', contexts: ['page'] }, () => {
+        void browser.runtime.lastError;
+      });
+      browser.contextMenus.create({ id: RESTORE_MENU_ID, title: 'Show original text', contexts: ['page'] }, () => {
+        void browser.runtime.lastError;
+      });
     });
-    browser.contextMenus.create({ id: RESTORE_MENU_ID, title: 'Show original text', contexts: ['page'] }, () => {
-      void browser.runtime.lastError;
+    browser.contextMenus.onClicked.addListener((info) => {
+      if (info.menuItemId === TRANSLATE_MENU_ID) translateActiveTab().catch(showFailureBadge);
+      if (info.menuItemId === RESTORE_MENU_ID) restoreActiveTab().catch(showFailureBadge);
     });
-  });
-  browser.contextMenus.onClicked.addListener((info) => {
-    if (info.menuItemId === TRANSLATE_MENU_ID) translateActiveTab().catch(showFailureBadge);
-    if (info.menuItemId === RESTORE_MENU_ID) restoreActiveTab().catch(showFailureBadge);
-  });
 
-  browser.commands.onCommand.addListener((command) => {
-    if (command === 'toggle-translate-page') toggleActiveTab().catch(showFailureBadge);
-  });
+    browser.commands.onCommand.addListener((command) => {
+      if (command === 'toggle-translate-page') toggleActiveTab().catch(showFailureBadge);
+    });
 
-  onMessage('openOptionsPage', (message) => {
-    if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');
-    void browser.runtime.openOptionsPage();
-  });
+    onMessage('openOptionsPage', (message) => {
+      if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');
+      void browser.runtime.openOptionsPage();
+    });
 
-  browser.tabs.onRemoved.addListener((tabId) => {
-    frameLanguageDecisions.delete(tabId);
-  });
+    browser.tabs.onRemoved.addListener((tabId) => {
+      frameLanguageDecisions.delete(tabId);
+    });
 
-  // Reliability/privacy fix, found via a round-4 audit: proactively drop a
-  // tab's entry the instant a new top-level navigation starts, rather than
-  // only ever overwriting it once the new main frame's content script gets
-  // around to reporting its own fresh decision. Needs no extra permission
-  // — `changeInfo.status` alone is enough, no permission-gated field (url/
-  // title) is read. Belt-and-suspenders alongside the `mainFrameOrigin`
-  // check in content.ts's poll loop (the actual correctness fix, since
-  // this alone can't close a race where a sub-frame's poll still fires
-  // between this delete and the new main frame's report) — see
-  // `FrameLanguageDecision`'s doc comment for the full reasoning.
-  browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
-    if (changeInfo.status === 'loading') frameLanguageDecisions.delete(tabId);
-  });
+    // Reliability/privacy fix, found via a round-4 audit: proactively drop a
+    // tab's entry the instant a new top-level navigation starts, rather than
+    // only ever overwriting it once the new main frame's content script gets
+    // around to reporting its own fresh decision. Needs no extra permission
+    // — `changeInfo.status` alone is enough, no permission-gated field (url/
+    // title) is read. Belt-and-suspenders alongside the `mainFrameOrigin`
+    // check in content.ts's poll loop (the actual correctness fix, since
+    // this alone can't close a race where a sub-frame's poll still fires
+    // between this delete and the new main frame's report) — see
+    // `FrameLanguageDecision`'s doc comment for the full reasoning.
+    browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
+      if (changeInfo.status === 'loading') frameLanguageDecisions.delete(tabId);
+    });
 
-  onMessage('reportFrameLanguageDecision', (message) => {
-    if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');
-    const tabId = message.sender.tab?.id;
-    if (tabId === undefined) return;
-    frameLanguageDecisions.set(tabId, message.data);
-  });
+    onMessage('reportFrameLanguageDecision', (message) => {
+      if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');
+      const tabId = message.sender.tab?.id;
+      if (tabId === undefined) return;
+      frameLanguageDecisions.set(tabId, message.data);
+    });
 
-  onMessage('getFrameLanguageDecision', (message) => {
-    if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');
-    const tabId = message.sender.tab?.id;
-    if (tabId === undefined) return null;
-    return frameLanguageDecisions.get(tabId) ?? null;
-  });
+    onMessage('getFrameLanguageDecision', (message) => {
+      if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');
+      const tabId = message.sender.tab?.id;
+      if (tabId === undefined) return null;
+      return frameLanguageDecisions.get(tabId) ?? null;
+    });
 
-  onMessage('detectTabLanguage', async (message) => {
-    if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');
-    const tabId = message.sender.tab?.id;
-    if (tabId === undefined) return 'und';
-    try {
-      return (await browser.tabs.detectLanguage(tabId)) || 'und';
-    } catch (e) {
-      console.warn('[prism] tabs.detectLanguage failed', e);
-      return 'und';
-    }
-  });
+    onMessage('detectTabLanguage', async (message) => {
+      if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');
+      const tabId = message.sender.tab?.id;
+      if (tabId === undefined) return 'und';
+      try {
+        return (await browser.tabs.detectLanguage(tabId)) || 'und';
+      } catch (e) {
+        console.warn('[prism] tabs.detectLanguage failed', e);
+        return 'und';
+      }
+    });
+  },
 });
