@@ -30,6 +30,7 @@
     "mobile-translatepieces-timeout",
     "new-icon",
     "options-per-host-reconcile",
+    "parallelize-repair-reconciliation",
     "partial-batch-failure-reports-success",
     "perceived-speed-audit",
     "popup-full-parity",

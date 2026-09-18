@@ -509,12 +509,25 @@ export function createGoogleProvider(): Translator {
         },
       });
 
+      // Speed fix, found via a live-page audit (a chapter reader with many
+      // short dialogue pieces plus inline name-highlighting tags — exactly
+      // the shape that produces lots of grouped, reflow-prone pieces in
+      // one tick): this used to `await repair(index)` one index at a time
+      // in the loop below. Most repairs are already dispatched concurrently
+      // via `onPieceComplete` above (fired the instant a grouped piece's
+      // raw outcome is known, not held until the whole batch settles), so
+      // a sequential await here still needlessly pays each one's latency
+      // serially for any repair `onPieceComplete` didn't already kick off
+      // early. Collecting every needed repair first and awaiting them all
+      // together means total wait time is bounded by the SLOWEST repair,
+      // not their sum.
       const final: PieceOutcome[] = new Array(outcomes.length);
+      const repairIndices: number[] = [];
       for (let index = 0; index < outcomes.length; index++) {
         const outcome = outcomes[index];
         if (!outcome) continue;
         if (repairs.has(index) || needsRepair(index, outcome)) {
-          final[index] = await repair(index);
+          repairIndices.push(index);
           continue;
         }
         if (paddedIndices.has(index) && outcome.ok) {
@@ -554,6 +567,14 @@ export function createGoogleProvider(): Translator {
           continue;
         }
         final[index] = outcome;
+      }
+      if (repairIndices.length > 0) {
+        const repaired = await Promise.all(
+          repairIndices.map(async (index) => ({ index, outcome: await repair(index) })),
+        );
+        repaired.forEach(({ index, outcome }) => {
+          final[index] = outcome;
+        });
       }
       return final;
     },

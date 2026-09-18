@@ -369,6 +369,53 @@ describe('createGoogleProvider', () => {
       expect(results).toEqual([{ ok: true, value: ['Apple iPhone 15 Pro Max'] }]);
       expect(fetchMock).toHaveBeenCalledTimes(2); // no repair request — handled by the existing padding-unwrap path
     });
+
+    it("resolves several simultaneous repairs correctly, all routed through one shared Promise.all instead of one-at-a-time — real finding while testing this: onPieceComplete already dispatches every repair concurrently the instant its raw outcome is known (before the final reconciliation loop even runs), so a sequential vs. parallel await here makes NO measurable timing difference in this exact scenario — a delayed-response variant of this same setup passed identically before AND after switching the loop to Promise.all. This test therefore checks correctness (every simultaneously-needed repair still resolves to the right value, not just the first/last one), not a timing claim this codebase's own dispatch order doesn't actually let it prove", async () => {
+      let translateCalls = 0;
+      const fetchMock = vi.fn(async (url: string) => {
+        if (String(url).includes('translate_http')) return authScrapeResponse();
+        translateCalls++;
+        if (translateCalls === 1) {
+          // The main grouped attempt: 3 two-node pieces, each reflowed
+          // down to a single decoded entry — all 3 need repair.
+          return jsonResponse([
+            ['<a i=0>ReflowedA</a>', '<a i=0>ReflowedB</a>', '<a i=0>ReflowedC</a>'],
+            ['en', 'en', 'en'],
+          ]);
+        }
+        // A repair() call for a 2-string original piece re-sends it as TWO
+        // single-item pieces (see repair()'s own doc comment), each of
+        // which this file's own single-item padding then wraps again — so
+        // the wire request has 2 padded pieces, needing 2 response entries
+        // here, not 1. Each repair gets a DIFFERENT result so a mixed-up
+        // index assignment (e.g. Promise.all results applied to the wrong
+        // original index) would be caught.
+        const label = ['A', 'B', 'C'][translateCalls - 2] ?? '?';
+        return jsonResponse([
+          [`<a i=0>Repaired${label}1</a><a i=1> </a>`, `<a i=0>Repaired${label}2</a><a i=1> </a>`],
+          ['en', 'en'],
+        ]);
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      const provider = await freshCreateGoogleProvider();
+      const results = await provider.translateBatch({
+        sourceLanguage: 'en',
+        targetLanguage: 'ja',
+        pieces: [
+          ['a1', 'a2'],
+          ['b1', 'b2'],
+          ['c1', 'c2'],
+        ],
+      });
+
+      expect(results).toEqual([
+        { ok: true, value: ['RepairedA1', 'RepairedA2'] },
+        { ok: true, value: ['RepairedB1', 'RepairedB2'] },
+        { ok: true, value: ['RepairedC1', 'RepairedC2'] },
+      ]);
+      expect(fetchMock).toHaveBeenCalledTimes(5); // auth scrape + main attempt + 3 repairs
+    });
   });
 
   it('falls back to returning the raw (unescaped) text when the response has no <a i=N> tags at all', async () => {
