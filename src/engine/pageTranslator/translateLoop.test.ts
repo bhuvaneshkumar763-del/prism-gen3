@@ -2212,3 +2212,118 @@ describe('pruneDisconnectedRestoreEntries', () => {
     document.body.innerHTML = '';
   });
 });
+
+describe('rapid navigation — overlapping translate cycles must always converge (real bug, found via a live user report: rapidly skipping chapters worked two or three times, then the next one spun forever, recovering only on a reload or on skipping to the page after it)', () => {
+  afterEach(() => {
+    document.body.innerHTML = '';
+    vi.restoreAllMocks();
+  });
+
+  /** A translator whose batches settle only when the test releases them, so overlapping cycles can be resolved OUT OF ORDER. */
+  function deferredTranslator() {
+    const pending: Array<() => void> = [];
+    const translator: Translator = {
+      translateBatch(request) {
+        return new Promise((resolve) => {
+          pending.push(() =>
+            resolve(request.pieces.map((piece): PieceOutcome => ok(piece.map((s) => s.toUpperCase())))),
+          );
+        });
+      },
+    };
+    return {
+      translator,
+      inFlight: () => pending.length,
+      /** An earlier cycle's batch arriving late. */
+      releaseOldest: () => pending.shift()?.(),
+      /** The newest cycle answering first — the out-of-order arrival rapid navigation actually produces. */
+      releaseNewest: () => pending.pop()?.(),
+      releaseAll: () => {
+        for (const fn of pending.splice(0)) fn();
+      },
+    };
+  }
+
+  function fillChapter(marker: string, count: number): void {
+    document.body.innerHTML = '';
+    for (let i = 0; i < count; i++) {
+      const p = document.createElement('p');
+      p.textContent = `${marker} paragraph ${i}`;
+      document.body.appendChild(p);
+    }
+  }
+
+  it('drains the queue and stops working after several rapid chapter switches whose batches resolve out of order', async () => {
+    const deferred = deferredTranslator();
+    const pageTranslator = createPageTranslator({
+      translator: deferred.translator,
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+
+    // 400 nodes is deliberately over MAX_PIECES_PER_TICK (300), so one tick
+    // can never drain a chapter — leftover work is always still queued when
+    // the next cycle starts on top of it, which is the state a wedged loop
+    // strands forever.
+    fillChapter('chapter-1', 400);
+    await pageTranslator.translatePage('es');
+    await waitFor(() => deferred.inFlight() > 0, 3000);
+
+    for (const marker of ['chapter-2', 'chapter-3', 'chapter-4']) {
+      fillChapter(marker, 400);
+      await pageTranslator.translatePage('es');
+      await waitFor(() => deferred.inFlight() > 0, 3000);
+      deferred.releaseNewest();
+      await Promise.resolve();
+      deferred.releaseOldest();
+      await Promise.resolve();
+    }
+
+    for (let i = 0; i < 25; i++) {
+      deferred.releaseAll();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    // The invariant that has to hold once everything settles: nothing left
+    // queued, spinner off. A wedged loop leaves isWorking() true forever
+    // with queued nodes that nothing will ever come back to drain.
+    await waitFor(() => !pageTranslator.isWorking(), 5000);
+    expect(pageTranslator.isWorking()).toBe(false);
+
+    pageTranslator.restorePage();
+  }, 30000);
+
+  it("does not report idle while a newer cycle's batch is still outstanding — real bug: batchInFlight is a bare boolean, so an OLD cycle's batch resolving (and bailing out on the generation check) still ran the finally that clears it, wiping the flag a newer, still-running tick had just set", async () => {
+    const deferred = deferredTranslator();
+    const pageTranslator = createPageTranslator({
+      translator: deferred.translator,
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+
+    // Under MAX_PIECES_PER_TICK so each cycle's tick drains the whole queue
+    // into ONE batch — with queue.length back to 0, `batchInFlight` is the
+    // only thing keeping `working` true, so a wrongly-cleared flag shows up
+    // directly instead of being masked by leftover queued work.
+    fillChapter('chapter-1', 50);
+    await pageTranslator.translatePage('es');
+    await waitFor(() => deferred.inFlight() === 1, 3000);
+
+    // Rapid skip: a second cycle starts while chapter 1's batch is still out.
+    fillChapter('chapter-2', 50);
+    await pageTranslator.translatePage('es');
+    await waitFor(() => deferred.inFlight() === 2, 3000);
+    expect(pageTranslator.isWorking()).toBe(true);
+
+    // Chapter 1's stale batch lands. It is correctly discarded on the
+    // generation check — but chapter 2's batch is STILL in flight, so the
+    // spinner must stay on.
+    deferred.releaseOldest();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(pageTranslator.isWorking()).toBe(true);
+
+    deferred.releaseAll();
+    await waitFor(() => !pageTranslator.isWorking(), 5000);
+    pageTranslator.restorePage();
+  }, 30000);
+});

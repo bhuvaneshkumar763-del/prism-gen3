@@ -218,7 +218,23 @@ export function createPageTranslator(options: PageTranslatorOptions) {
    * fundamentally a UI-feedback gap.
    */
   let working = false;
-  let batchInFlight = false;
+  /**
+   * The cycle generation whose batch is currently in flight, or `null`.
+   *
+   * Reliability fix, found via a live user report (rapidly skipping
+   * chapters: two or three worked, then one spun forever): this used to be
+   * a bare `batchInFlight` boolean. `batchInFlight = false` lives in the
+   * tick's `finally`, and a `return` inside `try` still runs `finally` — so
+   * when an OLD cycle's batch finally resolved and correctly bailed out on
+   * the `requestedUnderGeneration !== cycleGeneration` check, it still
+   * cleared the flag that a NEWER, still-running tick had just set. The
+   * result was `recomputeWorking()` reporting idle while a batch was
+   * genuinely outstanding. Keying on the generation — the same
+   * `if (x === mine)` discipline `translationRoutine`'s own `finally`
+   * already uses for `runningForGeneration` — means only the cycle that
+   * set it can clear it.
+   */
+  let inFlightGeneration: number | null = null;
 
   function setWorking(next: boolean): void {
     if (next === working) return;
@@ -292,7 +308,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
    * true once red has taken over).
    */
   function recomputeWorking(): void {
-    setWorking((queue.length > 0 || batchInFlight) && lastErrorMessage === null);
+    setWorking((queue.length > 0 || inFlightGeneration !== null) && lastErrorMessage === null);
   }
 
   // Silent-failure guard: a translateBatch() call that throws (network
@@ -526,17 +542,38 @@ export function createPageTranslator(options: PageTranslatorOptions) {
   let runningForGeneration: number | null = null;
 
   async function translationRoutine(): Promise<void> {
+    // Declining a redundant tick DROPS this wake — it schedules nothing.
+    // That is only safe because the `finally` below now guarantees that
+    // whichever tick is already running leaves a successor scheduled
+    // whenever real work remains; see that block's own comment.
     if (runningForGeneration === cycleGeneration) return;
     const myGeneration = cycleGeneration;
     runningForGeneration = myGeneration;
+    let scheduledSuccessor = false;
     try {
-      await runTranslationTick();
+      scheduledSuccessor = await runTranslationTick();
     } finally {
       if (runningForGeneration === myGeneration) runningForGeneration = null;
+      // Reliability fix, found via a live user report (rapidly skipping
+      // chapters: two or three worked, then the next spun forever,
+      // recovering only on a reload or on skipping to the page after it).
+      // `runTranslationTick`'s tail scheduling is the ONLY thing keeping
+      // this loop alive, and its `requestedUnderGeneration !== cycleGeneration`
+      // bail-outs return before ever reaching it. Combined with the dropped
+      // wake above, that could strand a non-empty `queue` with no tick
+      // pending and nothing to restart it — `working` stuck true until some
+      // external event (a reload, or the NEXT page's own `translatePage()`)
+      // happened to kick it. Making "a tick always schedules its successor
+      // while work remains" structural here closes the whole class, instead
+      // of relying on every future early-return to remember to reschedule.
+      if (!scheduledSuccessor && pageLanguageState === 'translated' && queue.length > 0) {
+        translationRoutineHandle = setTimeout(translationRoutine, 0);
+      }
     }
   }
 
-  async function runTranslationTick(): Promise<void> {
+  /** Resolves `true` if it scheduled the next tick itself, `false` if it bailed out early — see `translationRoutine`'s `finally`. */
+  async function runTranslationTick(): Promise<boolean> {
     if (translationRoutineHandle) clearTimeout(translationRoutineHandle);
 
     // Offline: don't even attempt a batch — every provider request is
@@ -552,7 +589,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
       setError('Offline — translation will resume automatically once your connection is back.', 'offline');
       surfacedErrorStreak++;
       translationRoutineHandle = setTimeout(translationRoutine, 2000);
-      return;
+      return true;
     }
 
     if (pageLanguageState === 'translated' && queue.length > 0) {
@@ -607,7 +644,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
       for (const node of batch) queuedSet.delete(node);
       const groups = groupNodesForBatching(batch, options.getBatchingHint());
       const requestedUnderGeneration = cycleGeneration;
-      batchInFlight = true;
+      inFlightGeneration = requestedUnderGeneration;
       recomputeWorking();
       // Real gap this closed, found via a real-page audit (Google strips
       // TRAILING whitespace from a piece's own translated content but
@@ -767,7 +804,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
         // flight — these results belong to an abandoned cycle. Dropping them
         // is correct: whatever replaced this cycle has its own queue and
         // will translate the current content itself.
-        if (requestedUnderGeneration !== cycleGeneration) return;
+        if (requestedUnderGeneration !== cycleGeneration) return false;
 
         // The common real-world failure mode (a provider HTTP call that's
         // rate-limited, unauthenticated, or otherwise fails outright) does
@@ -920,7 +957,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
       } catch (e) {
         // Same abandoned-cycle check as the success path — don't requeue an
         // old cycle's nodes into a queue that now belongs to a new one.
-        if (requestedUnderGeneration !== cycleGeneration) return;
+        if (requestedUnderGeneration !== cycleGeneration) return false;
         console.error('[prism] translation batch failed', e);
         // Transient failure (network blip, background restart) — retry
         // next tick. Same `lastSeenText` cleanup for disconnected nodes as
@@ -939,7 +976,9 @@ export function createPageTranslator(options: PageTranslatorOptions) {
           surfacedErrorStreak++;
         }
       } finally {
-        batchInFlight = false;
+        // Only the cycle that set this may clear it — see
+        // `inFlightGeneration`'s declaration comment.
+        if (inFlightGeneration === requestedUnderGeneration) inFlightGeneration = null;
         recomputeWorking();
       }
     }
@@ -988,6 +1027,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
       nextDelay = pageLanguageState === 'translated' && queue.length > 0 ? 0 : 2000;
     }
     translationRoutineHandle = setTimeout(translationRoutine, nextDelay);
+    return true;
   }
 
   /**
