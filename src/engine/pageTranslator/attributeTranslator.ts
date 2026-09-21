@@ -1,5 +1,10 @@
 import type { Translator } from '../translator';
-import { type AttributeTarget, collectAttributeTargets, isNoTranslateNode } from './collectTextNodes';
+import {
+  type AttributeTarget,
+  collectAttributeTargets,
+  hasNoTranslateAncestor,
+  isNoTranslateNode,
+} from './collectTextNodes';
 
 /**
  * Drops an `originals` entry once its element has been disconnected for two
@@ -134,12 +139,27 @@ export function createAttributeTranslator(options: AttributeTranslatorOptions) {
 
   async function translateTargets(targets: AttributeTarget[]): Promise<void> {
     if (targets.length === 0) return;
+    // Round-6 audit fix: `start()` already guards whether to install the
+    // observer against a `restore()`/newer `start()` landing during its
+    // own initial await — but that check never covered THIS function's own
+    // write-back, and this is also called from `drainPending()` for every
+    // later mutation-driven batch, which had no such guard at all. A
+    // `restore()` landing while ANY in-flight batch was still awaiting its
+    // network round trip used to write straight through anyway: tooltips/
+    // placeholders/alt text got (re-)translated onto a page the UI already
+    // reports as restored, AND `noteOriginal` below re-populated `originals`
+    // with the TRANSLATED value as if it were the real original — corrupting
+    // the next restore's baseline too. `titleTranslator.ts` already has the
+    // equivalent of this guard (`if (!active) return;` after its own
+    // await); this ports the same discipline here.
+    const myGeneration = generation;
     const outcomes = await options.translator.translateBatch({
       sourceLanguage: options.getSourceLanguage(),
       targetLanguage: currentTargetLanguage,
       pieces: targets.map((t) => [t.element.getAttribute(t.attribute) ?? '']),
       dontSortResults: false,
     });
+    if (myGeneration !== generation) return;
     targets.forEach((target, index) => {
       const outcome = outcomes[index];
       if (!outcome?.ok) return;
@@ -167,7 +187,32 @@ export function createAttributeTranslator(options: AttributeTranslatorOptions) {
         } else {
           mutation.addedNodes.forEach((node) => {
             if (node.nodeType !== Node.ELEMENT_NODE) return;
-            newTargets.push(...collectAttributeTargets(node));
+            // Round-6 audit fix (two real gaps, both closed here):
+            //
+            // 1. No ancestor check. `collectAttributeTargets(node)` already
+            // checks `isNoTranslateNode` on every node IT visits while
+            // walking DOWN from `node` — but `node` itself can be inserted
+            // arbitrarily deep inside a `translate="no"`/`.notranslate`/
+            // skip-tag subtree that already existed above it; nothing
+            // downward-only can see that. Exactly the bug
+            // `mutationWatcher.ts` was fixed for (the text-node path) —
+            // this subsystem shipped later and never got the same fix.
+            //
+            // 2. No own-write guard. The sibling `attributes` branch below
+            // compares against `lastWritten` before re-queueing; this
+            // branch pushed every target unconditionally. A recycled
+            // virtualized-list row that detaches and re-attaches carries
+            // its OWN already-translated attribute values back in as
+            // "new" — re-sending them as a fresh translate request (and,
+            // since translated-to-same-language echoes, burning a repair
+            // retry on top).
+            if (hasNoTranslateAncestor(node, isNoTranslateNode)) return;
+            for (const target of collectAttributeTargets(node)) {
+              const written = lastWritten.get(target.element)?.get(target.attribute);
+              const current = target.element.getAttribute(target.attribute);
+              if (written === current) continue; // our own write
+              newTargets.push(target);
+            }
           });
         }
       }

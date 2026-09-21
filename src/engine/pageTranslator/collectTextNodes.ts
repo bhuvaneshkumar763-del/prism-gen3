@@ -205,6 +205,36 @@ export function isNoTranslateNode(node: Node, options: NoTranslateOptions = {}):
 }
 
 /**
+ * Round-6 audit fix: extracted from `mutationWatcher.ts`, which had this as
+ * a private closure function — pulled out here (it's pure, no closure state
+ * needed beyond the predicate itself) so `attributeTranslator.ts` can reuse
+ * it instead of shipping without an ancestor walk at all, which it did
+ * until now.
+ *
+ * `isNoTranslateNode` only ever inspects ONE node — by design, it's the
+ * same check this file's own top-down `collectTextNodes`/
+ * `collectAttributeTargets` walks use, which never need to look further
+ * because they stop descending the instant a skip node is found, so every
+ * descendant is implicitly covered. A MutationObserver callback has no such
+ * guarantee: the node it's handed can be reinserted or rewritten
+ * arbitrarily deep inside a subtree the initial walk already decided to
+ * skip (a syntax highlighter rewriting `<code>`'s innerHTML with plain
+ * `<span>`s, a charting library appending `<text>` labels into an existing
+ * `<svg>`), and neither the added node nor its immediate parent is itself a
+ * skip tag/class — only some ANCESTOR further up is. Without walking up,
+ * that content gets translated even though the very same content would
+ * have been correctly skipped had it been present at initial-walk time.
+ */
+export function hasNoTranslateAncestor(node: Node, isNoTranslate: (node: Node) => boolean): boolean {
+  let el = node.parentElement;
+  while (el) {
+    if (isNoTranslate(el)) return true;
+    el = el.parentElement;
+  }
+  return false;
+}
+
+/**
  * Iterative (explicit stack, not recursive) — a pathologically deep DOM
  * (real risk: infinite-scroll/virtualized-list pages that nest a nearly
  * flat structure hundreds of levels deep) would blow the call stack with a
@@ -237,7 +267,26 @@ export function collectTextNodes(root: Node, options: NoTranslateOptions = {}): 
     if (node.nodeType === Node.TEXT_NODE) {
       const parent = node.parentNode;
       const text = node.textContent?.trim();
-      if (text && !BARE_MARKER.test(text) && !NO_LETTERS.test(text) && parent && !isNoTranslateNode(parent, options)) {
+      // Speed fix, found via a round-6 audit: `isNoTranslateNode(parent,
+      // options)` here is redundant for every Text node reached by normal
+      // descent — its parent Element was already checked by the branch
+      // below BEFORE that parent's children (this node included) were ever
+      // pushed onto the stack, so re-checking it per text node paid ~12 DOM
+      // reads, a string alloc, and (via isContentEditable) a possible style
+      // recalc, for a result already known — on EVERY text node, on every
+      // resweep (1.5-10s, forever). NOT safe to drop entirely, though: when
+      // `root` itself is a Text node — which happens via `onNewRoot` below,
+      // since a MutationObserver's addedNodes can be a bare Text node — its
+      // parent was never separately visited by this call, so this is the
+      // ONLY place that validates it. Scoped to exactly that one case.
+      const parentCheckNeeded = node === root;
+      if (
+        text &&
+        !BARE_MARKER.test(text) &&
+        !NO_LETTERS.test(text) &&
+        parent &&
+        !(parentCheckNeeded && isNoTranslateNode(parent, options))
+      ) {
         nodes.push(node as Text);
       }
       continue;

@@ -9,6 +9,21 @@ describe('collectTextNodes', () => {
     expect(nodes.map((n) => n.data)).toEqual(['Hello ', 'world', 'Second']);
   });
 
+  it("excludes a Text node passed directly as root when ITS OWN parent is a skip node — real bug this guards against, found via a round-6 audit while optimizing this exact check: mutationWatcher.ts's onNewRoot() can call this with a bare Text node as `root` (a MutationObserver's addedNodes can include a Text node added directly, not just an Element), whose parent was never separately visited/validated by this walk — unlike every OTHER text node, reached via normal descent from an already-checked parent, where re-checking the parent is pure redundant cost this fix removes", () => {
+    document.body.innerHTML = '<script></script>';
+    const scriptEl = document.querySelector('script');
+    if (!scriptEl) throw new Error('unreachable');
+    const textNode = document.createTextNode('var x = 1;');
+    scriptEl.appendChild(textNode);
+
+    // Passing the Text node itself as root, exactly like onNewRoot() does
+    // for a MutationObserver-reported bare Text node addition — NOT
+    // document.body, which is what every other call site always passes.
+    const nodes = collectTextNodes(textNode);
+
+    expect(nodes).toEqual([]);
+  });
+
   it('skips blank/whitespace-only text nodes', () => {
     document.body.innerHTML = '<p>Real</p>\n  \n<p>   </p>';
     const nodes = collectTextNodes(document.body);

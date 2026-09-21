@@ -131,21 +131,75 @@ describe('translationCache', () => {
     // two of the three entries this test writes, but not all three, so
     // exactly one eviction happens and recency (not insertion order)
     // decides which entry it is.
+    //
+    // Real-clock jumps (vi.setSystemTime), not just a few ms of real sleep:
+    // touchLastUsed's own coarsening (LAST_USED_TOUCH_INTERVAL_MS, see its
+    // doc comment) skips the rewrite for anything already fresh, so a
+    // realistic-but-tiny gap between steps would make this test's own
+    // get('a') a no-op and silently invert what it's checking. fake-indexeddb
+    // is a pure in-memory implementation with no real timer/I-O dependency,
+    // so only Date.now() needs to move — vi.useFakeTimers() (which would
+    // also touch setTimeout scheduling) isn't needed.
+    const now = Date.now();
+    vi.setSystemTime(now);
     const cache = createTranslationCache(5000);
     await cache.set('a', 'x'.repeat(1000));
-    await new Promise((resolve) => setTimeout(resolve, 5)); // ensure a distinct Date.now() per step
+    vi.setSystemTime(now + 5000);
     await cache.set('b', 'y'.repeat(1000));
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    vi.setSystemTime(now + 2 * 60 * 60 * 1000); // past the touch-coarsening interval
 
     // Touch "a" so it's now more recently used than "b".
     await cache.get('a');
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    vi.setSystemTime(now + 2 * 60 * 60 * 1000 + 5000);
 
     await cache.set('c', 'z'.repeat(1000));
+    vi.useRealTimers();
 
     // "b" should be evicted instead of "a", since "a" was just touched.
     expect(await cache.get('a')).toBe('x'.repeat(1000));
     expect(await cache.get('b')).toBeNull();
+  });
+
+  it("skips the lastUsed rewrite for a hit that was already touched recently — speed fix, found via a round-6 audit: touchLastUsed used to unconditionally re-put() the FULL record (translated value included, not just the timestamp) on every single hit, so repeatedly querying the same already-fresh entries within one session (a mutating page re-checking unchanged text, overlapping content across nearby getMany() calls) paid a real IndexedDB write for each one even though recency hadn't meaningfully changed", async () => {
+    const now = Date.now();
+    vi.setSystemTime(now);
+    const cache = createTranslationCache();
+
+    let db: IDBDatabase | undefined;
+    const originalOpen = globalThis.indexedDB.open.bind(globalThis.indexedDB);
+    vi.spyOn(globalThis.indexedDB, 'open').mockImplementation((...args: Parameters<typeof originalOpen>) => {
+      const request = originalOpen(...args);
+      request.addEventListener('success', () => {
+        db = request.result;
+      });
+      return request;
+    });
+
+    await cache.set('hello', 'hola');
+    expect(db).toBeDefined();
+    if (!db) throw new Error('unreachable');
+
+    let readwriteCount = 0;
+    const originalTransaction = db.transaction.bind(db);
+    vi.spyOn(db, 'transaction').mockImplementation((...args: Parameters<typeof originalTransaction>) => {
+      if (args[1] === 'readwrite') readwriteCount++;
+      return originalTransaction(...args);
+    });
+
+    // Past the coarsening interval since set()'s own insert — this hit's
+    // touch is genuinely stale, so it SHOULD write.
+    vi.setSystemTime(now + 2 * 60 * 60 * 1000);
+    await cache.getMany(['hello']);
+    await vi.waitFor(() => expect(readwriteCount).toBe(1));
+
+    // Immediately after — this hit's lastUsed was JUST refreshed above, so
+    // this one should be skipped entirely, not fire a second readwrite.
+    await cache.getMany(['hello']);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+    expect(readwriteCount).toBe(1);
   });
 
   it("getMany() reads through a 'readonly' transaction, real speed bug this closed: a fully-cached page revisit used to open the read as 'readwrite' purely so it could also touch lastUsed in the same transaction, forcing every cache HIT to pay for an IndexedDB write commit before the read it was piggybacking on could even resolve", async () => {

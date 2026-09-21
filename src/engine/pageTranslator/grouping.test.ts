@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { groupNodesForBatching } from './grouping';
 
 function textNode(text: string): Text {
@@ -366,6 +366,30 @@ describe('groupNodesForBatching', () => {
       const groups = groupNodesForBatching([aText, and, bText, rest], { groupByBlock: true, maxGroupChars: 2000 });
 
       expect(groups).toEqual([[aText, and, bText, rest]]);
+    });
+
+    it("scans a shared link-cluster container's children ONCE regardless of how many of its own links ask — speed fix, found via a round-6 audit: isLinkClusterContainer used to re-scan every child (Array.from + a textContent read per child) on EVERY call, and isolationKeyFor calls it once per node, so a container of L links paid an O(L²) cost (a nav bar, a tag cloud, a large category list) — harmless at the small L this feature was designed around, real at scale. Memoized per groupNodesForBatching() call, so a shared container's answer is computed exactly once", () => {
+      const nav = document.createElement('nav');
+      const LINK_COUNT = 50;
+      const words = Array.from({ length: LINK_COUNT }, (_, i) => {
+        const a = document.createElement('a');
+        const wordNode = textNode(`Item ${i}`);
+        a.append(wordNode);
+        nav.append(a, textNode(' | '));
+        return wordNode;
+      });
+
+      const childNodesSpy = vi.spyOn(Node.prototype, 'childNodes', 'get');
+      groupNodesForBatching(words, { groupByBlock: true, maxGroupChars: 2000 });
+
+      // Un-memoized, isLinkClusterContainer's own Array.from(container.childNodes)
+      // read fires once per link asking about the SAME shared container —
+      // LINK_COUNT times. Memoized, exactly once. (childNodes is also read
+      // elsewhere in this file's own DOM walk, so this asserts "small and
+      // constant," not a literal 1 — the real bug is scaling WITH LINK_COUNT.)
+      const containerReads = childNodesSpy.mock.calls.length;
+      childNodesSpy.mockRestore();
+      expect(containerReads).toBeLessThan(LINK_COUNT);
     });
   });
 });

@@ -283,15 +283,94 @@ describe('createAttributeTranslator', () => {
     resolveStart([ok(['BUSCAR'])]);
     await startPromise;
 
-    // The initial translate's own write-back still happens (it was already
-    // in flight when restore() landed) — restore() couldn't have undone
-    // something that hadn't been written yet. What matters is what
-    // happens AFTER: no observer should have been installed, so a later
-    // page-driven mutation is never picked up.
+    // Correction: this used to say the initial translate's own write-back
+    // "still happens" here, since restore() couldn't undo something not yet
+    // written — that was itself the round-6 audit finding, not a fact to
+    // rely on: translateTargets() now carries its own generation check
+    // (see that function's doc comment), so a restore() landing before its
+    // await resolves means NEITHER the write-back NOR the observer install
+    // happens. Confirmed below: the attribute is untouched, and a later
+    // page-driven mutation is never picked up either.
+    expect(document.getElementById('a')?.getAttribute('placeholder')).toBe('Search');
+
     document.getElementById('a')?.setAttribute('placeholder', 'Filter');
     await flushAsyncWork();
 
     expect(translateBatch).toHaveBeenCalledTimes(1); // only the initial call — no observer-driven retranslate
+  });
+
+  it("does not write a translation that lands after restore() — and does not corrupt the restore baseline either — real bug, found via a round-6 audit: translateTargets() had no generation guard of its own, unlike titleTranslator.ts's equivalent. A restore() landing while a MUTATION-DRIVEN batch (not just start()'s initial one) was still in flight used to write the stale translation straight through anyway, AND noteOriginal() re-populated originals with the TRANSLATED value as if it were the real original — so the NEXT restore() would restore to translated text, not the genuine original", async () => {
+    document.body.innerHTML = '<input id="a" placeholder="Search">';
+    uppercaseOnce();
+    const t = newTranslator();
+    await t.start('es');
+    expect(document.getElementById('a')?.getAttribute('placeholder')).toBe('SEARCH');
+
+    // A page-driven change triggers a mutation-observer batch (NOT
+    // start()'s own initial call — this is drainPending()'s path) that
+    // this test holds open.
+    let resolveRetranslate!: (outcomes: PieceOutcome[]) => void;
+    translateBatch.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveRetranslate = resolve;
+        }),
+    );
+    document.getElementById('a')?.setAttribute('placeholder', 'Filter');
+    await flushAsyncWork(); // observer callback fires, dispatches the in-flight translate
+
+    // restore() lands while that mutation-driven batch is still awaiting
+    // its network round trip.
+    t.restore();
+    expect(document.getElementById('a')?.getAttribute('placeholder')).toBe('Search'); // restored to the TRUE original
+
+    resolveRetranslate([ok(['FILTRAR'])]);
+    await flushAsyncWork();
+
+    // The stale translation must not land after the fact...
+    expect(document.getElementById('a')?.getAttribute('placeholder')).toBe('Search');
+
+    // ...and a SECOND start()/restore() cycle must restore to the real
+    // original, not a corrupted baseline the stale write would have left
+    // in `originals` without the generation guard.
+    uppercaseOnce();
+    await t.start('es');
+    expect(document.getElementById('a')?.getAttribute('placeholder')).toBe('SEARCH');
+    t.restore();
+    expect(document.getElementById('a')?.getAttribute('placeholder')).toBe('Search');
+  });
+
+  it('skips an attribute on an element added inside a translate="no"/.notranslate ancestor, discovered via the mutation observer — real bug, found via a round-6 audit: unlike mutationWatcher.ts\'s text-node path, this subsystem had no ancestor walk at all, only checking the added node\'s own descendants, not whether the node itself sits inside a skip subtree that already existed above it', async () => {
+    document.body.innerHTML = '<div id="wrapper" translate="no"></div>';
+    const t = newTranslator();
+    await t.start('es'); // nothing to translate yet
+
+    const input = document.createElement('input');
+    input.setAttribute('placeholder', 'Skip me');
+    document.getElementById('wrapper')?.appendChild(input);
+    await flushAsyncWork();
+
+    expect(translateBatch).not.toHaveBeenCalled();
+    expect(input.getAttribute('placeholder')).toBe('Skip me');
+  });
+
+  it("does not re-send an already-translated attribute when its element is re-attached (a virtualized/recycled list row), discovered via the mutation observer's childList branch — real bug, found via a round-6 audit: the sibling 'attributes' branch already guarded against re-sending its OWN write via lastWritten, but the childList branch (new elements) had no such guard, so a detach/reattach re-queued the element's OWN already-translated value as if it were new, unmodified content", async () => {
+    document.body.innerHTML = '<input id="a" placeholder="Search">';
+    uppercaseOnce();
+    const t = newTranslator();
+    await t.start('es');
+    const input = document.getElementById('a') as HTMLInputElement;
+    expect(input.getAttribute('placeholder')).toBe('SEARCH');
+
+    // Detach and re-attach the SAME element (its attribute still holds the
+    // translated value from above) — routine on a virtualized/recycled
+    // list widget.
+    input.remove();
+    document.body.appendChild(input);
+    await flushAsyncWork();
+
+    expect(translateBatch).toHaveBeenCalledTimes(1); // only the initial call — no spurious re-send of our own write
+    expect(input.getAttribute('placeholder')).toBe('SEARCH');
   });
 
   describe("pruneDisconnectedAttributeEntries (bounds originals' growth the same way translateLoop.ts bounds nodesToRestore)", () => {

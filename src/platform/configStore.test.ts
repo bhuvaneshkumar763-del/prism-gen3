@@ -45,6 +45,43 @@ describe('configStore', () => {
     expect(store.get('sourceLanguage')).toBe('vi');
   });
 
+  it("ignores an invalid live storage change instead of adopting it — real bug this closed, found via a round-6 audit: the backend.onChanged handler used to adopt change.newValue straight into state with NO validation at all, unlike initConfig (above) which validates every key and falls back to the existing value on failure. A value corrupted in storage by something OTHER than this store's own set() — another context, a bad migration, a stale shape from a different extension version — used to be trusted as-is on the live path even though the startup path already refused to trust it", async () => {
+    const store = await freshStore();
+    await store.onReady();
+    await store.set('targetLanguage', 'fr');
+    expect(store.get('targetLanguage')).toBe('fr');
+
+    let notified: unknown;
+    store.onChanged((name, value) => {
+      if (name === 'targetLanguage') notified = value;
+    });
+
+    // Simulate an external write landing directly in storage — bypassing
+    // this store's own set() (which would itself reject an invalid value)
+    // is the point: this is exactly the "some other origin wrote a bad
+    // value" case initConfig already guards against on startup.
+    await fakeBrowser.storage.local.set({ targetLanguage: 12345 });
+    // Give the onChanged event a real task to propagate.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // The invalid change must not have been adopted...
+    expect(store.get('targetLanguage')).toBe('fr');
+    // ...and no listener should have been told about it either.
+    expect(notified).toBeUndefined();
+  });
+
+  it("ignores a live storage change to undefined (a real key removal) instead of adopting it — same fix as the invalid-value case above: change.newValue is undefined for a storage.remove(), and this store's own ConfigKey type guarantees every key always has a real value, so silently adopting undefined here would have violated that guarantee for the rest of this store instance's life", async () => {
+    const store = await freshStore();
+    await store.onReady();
+    await store.set('targetLanguage', 'de');
+    expect(store.get('targetLanguage')).toBe('de');
+
+    await fakeBrowser.storage.local.remove('targetLanguage');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(store.get('targetLanguage')).toBe('de');
+  });
+
   it('set() persists to browser.storage.local under the plain field name', async () => {
     const store = await freshStore();
     await store.onReady();

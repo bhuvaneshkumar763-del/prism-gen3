@@ -157,6 +157,13 @@ async function findAuth(): Promise<void> {
       // class of never-settles risk as a stalled `fetch()` call.
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), AUTH_SCRAPE_TIMEOUT_MS);
+      // Hygiene fix, found via a round-6 audit: the backstop's own timer
+      // (below) was never cleared, leaving one armed for
+      // AUTH_SCRAPE_TIMEOUT_MS + 500ms past every scrape that settled
+      // normally — harmless (its reject() lands on an already-settled
+      // Promise.race), but untidy and unnecessary now that its handle is
+      // captured here. Same fix as batchedHttpProvider.ts's sendOnce().
+      let backstopTimeout: ReturnType<typeof setTimeout> | undefined;
       let text: string;
       try {
         text = await Promise.race([
@@ -168,11 +175,15 @@ async function findAuth(): Promise<void> {
             return await response.text();
           })(),
           new Promise<never>((_, reject) => {
-            setTimeout(() => reject(new Error('Auth scrape timed out (backstop)')), AUTH_SCRAPE_TIMEOUT_MS + 500);
+            backstopTimeout = setTimeout(
+              () => reject(new Error('Auth scrape timed out (backstop)')),
+              AUTH_SCRAPE_TIMEOUT_MS + 500,
+            );
           }),
         ]);
       } finally {
         clearTimeout(timeout);
+        clearTimeout(backstopTimeout);
       }
       const match = text.length > 1 ? text.match(/['"]x-goog-api-key['"]\s*:\s*['"](\w{39})['"]/i) : null;
       if (match?.[1]) {
@@ -451,7 +462,26 @@ export function createGoogleProvider(): Translator {
         if (paddedIndices.has(index) || !outcome.ok) return false;
         const originalPiece = request.pieces[index];
         if (!originalPiece || originalPiece.length <= 1) return false;
-        if (outcome.value.length !== originalPiece.length) return true;
+        // Reliability fix, found via a round-6 audit: `splitPieceResponse`
+        // builds this array by index assignment (`result[index] = ...`),
+        // which is CORRECT — it's what keeps a surviving index's value at
+        // its real position when an earlier one reflows away — but it also
+        // makes the array sparse. `.length` on a sparse array is
+        // `maxIndex + 1`, not the entry count, so this used to only catch
+        // a reflow that dropped the LAST index; one that dropped a middle
+        // or first index (a real Google reflow shape, not just the
+        // last-index case this was originally written for) left a hole
+        // `.length` doesn't see, so no repair fired — the neighboring
+        // index silently absorbed the merged content, and the holed index
+        // came back `undefined`, got treated as a missing result, and was
+        // retranslated on its own: the page ended up showing the merged
+        // clause AND a duplicate of it. `.filter()`, like `.some()` below
+        // it, skips holes entirely (never invokes its callback for an
+        // unassigned index) — counting only entries a real translation
+        // filled in, including a legitimately empty string, is what
+        // `byIndex.size` already means one function up in
+        // `splitPieceResponse` itself.
+        if (outcome.value.filter((s) => s !== undefined).length !== originalPiece.length) return true;
         return outcome.value.some((s) => RAW_MARKER_LEAK.test(s));
       }
 

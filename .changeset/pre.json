@@ -6,6 +6,7 @@
   },
   "changesets": [
     "attribute-translator-lifecycle-fixes",
+    "audit-round-6",
     "auth-key-invalidation-and-suspicious-ratio",
     "bubble-full-parity",
     "builtin-availability",

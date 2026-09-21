@@ -58,6 +58,26 @@ describe('createGoogleCloudTranslateProvider', () => {
     expect(results).toEqual([{ ok: true, value: ['hola', 'mundo'] }]);
   });
 
+  it("escapes a literal separator character INSIDE a node's own text before joining — see llm.ts's identical test for the full reasoning: an unescaped literal separator in page text produced more wire parts than nodes, silently misaligning every subsequent node's translation", async () => {
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(init.body as string);
+      const wireText: string = body.q[0];
+      const realSeparatorCount = (wireText.match(/␟/gu) ?? []).length;
+      expect(realSeparatorCount).toBe(1);
+      return jsonResponse({ data: { translations: [{ translatedText: 'TRANS_A␟TRANS_B' }] } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const provider = createGoogleCloudTranslateProvider({ apiKey: 'k' });
+    const results = await provider.translateBatch({
+      sourceLanguage: 'en',
+      targetLanguage: 'es',
+      pieces: [['a␟b', 'c']],
+    });
+
+    expect(results).toEqual([{ ok: true, value: ['TRANS_A', 'TRANS_B'] }]);
+  });
+
   it('returns an error outcome when the API responds with an error body', async () => {
     vi.stubGlobal(
       'fetch',

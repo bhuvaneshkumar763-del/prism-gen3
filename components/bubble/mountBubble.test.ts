@@ -98,6 +98,23 @@ describe('mountBubble', () => {
     expect(document.getElementById('prism-bubble-host')).toBeNull();
   });
 
+  it("disposes the Solid root on Hide, not just unmount() — real bug, found via a round-6 audit: Hide used to only remove the host, never call dispose(), so onCleanup's listeners (document pointerdown/fullscreenchange, window resize/orientationchange/visualViewport, the configStore.onChanged subscription) survived the click for the page's lifetime, unreachable afterward since content.ts nulls its bubble reference right after onClose fires", () => {
+    const unsubscribe = vi.fn();
+    const onChangedSpy = vi.spyOn(configStore, 'onChanged').mockImplementation(() => unsubscribe);
+
+    mountBubble(options());
+    expect(onChangedSpy).toHaveBeenCalled();
+    expect(unsubscribe).not.toHaveBeenCalled();
+
+    const shadow = bubbleShadowRoot();
+    const hideChip = Array.from(shadow.querySelectorAll('.chip')).find((el) => el.textContent?.includes('Hide'));
+    (hideChip as HTMLElement).dispatchEvent(trusted(new MouseEvent('click', { bubbles: true, composed: true })));
+
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+
+    onChangedSpy.mockRestore();
+  });
+
   it('unmount() removes the host element', () => {
     const controller = mountBubble(options());
     expect(document.getElementById('prism-bubble-host')).not.toBeNull();

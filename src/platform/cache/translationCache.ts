@@ -234,6 +234,19 @@ export function createTranslationCache(defaultMaxBytes: number = DEFAULT_MAX_BYT
   }
 
   /**
+   * How stale `lastUsed` must be before a hit is worth re-writing for.
+   * Speed fix, found via a round-6 audit: this used to re-`put()` EVERY
+   * hit record unconditionally — the full record, including `value` (the
+   * translated text itself), not just the timestamp — so a warm-cache page
+   * revisit (the exact case this cache exists to make fast) still wrote
+   * hundreds of KB back to IndexedDB on every load. Oldest-first eviction
+   * only needs recency accurate to "roughly how long ago," not to the
+   * millisecond, so skipping the write for anything already fresher than
+   * this bounds that cost without weakening eviction in practice.
+   */
+  const LAST_USED_TOUCH_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+
+  /**
    * Fire-and-forget: bumps `lastUsed` on a cache hit so oldest-first
    * eviction reflects real recency, not just insertion order. Never
    * awaited by a caller — a stale `lastUsed` on a rare failure here only
@@ -241,11 +254,13 @@ export function createTranslationCache(defaultMaxBytes: number = DEFAULT_MAX_BYT
    * correctness problem, so there's nothing worth blocking a read for.
    */
   function touchLastUsed(db: IDBDatabase, hits: CacheRecord[]): void {
+    const now = Date.now();
+    const stale = hits.filter((record) => now - record.lastUsed >= LAST_USED_TOUCH_INTERVAL_MS);
+    if (stale.length === 0) return;
     try {
       const tx = db.transaction(STORE_NAME, 'readwrite');
       const store = tx.objectStore(STORE_NAME);
-      const now = Date.now();
-      hits.forEach((record) => {
+      stale.forEach((record) => {
         store.put({ ...record, lastUsed: now });
       });
       tx.onerror = () => {

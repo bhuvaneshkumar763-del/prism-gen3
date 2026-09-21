@@ -166,15 +166,38 @@ function isClusterConnectorText(text: string): boolean {
   return trimmed.length === 0 || (trimmed.length <= LINK_CLUSTER_MAX_CONNECTOR_CHARS && !HAS_LETTER.test(trimmed));
 }
 
-/** See point 5 in this file's header comment. */
-function isLinkClusterContainer(container: Element): boolean {
+/**
+ * See point 5 in this file's header comment.
+ *
+ * Speed fix, found via a round-6 audit: `isolationKeyFor` calls this once
+ * PER NODE, and every call re-scanned the WHOLE container's children —
+ * `Array.from` plus a `textContent` read per child. A container of L
+ * cluster links (a nav bar, a tag cloud, a category list) has L nodes each
+ * triggering an L-child rescan: O(L²) `textContent` reads and allocations,
+ * recomputed from scratch on every tick and every requeue. Harmless at the
+ * small L this feature was designed around (the header comment's own "15
+ * tags" example), real at the scale a large link cluster can reach.
+ * `memo`, scoped to one `groupNodesForBatching()` call by its caller,
+ * makes each unique container's answer computed exactly once regardless of
+ * how many of its children ask.
+ */
+function isLinkClusterContainer(container: Element, memo: Map<Element, boolean>): boolean {
+  const cached = memo.get(container);
+  if (cached !== undefined) return cached;
   let linkCount = 0;
+  let result = true;
   for (const child of Array.from(container.childNodes)) {
     if (child.nodeType === Node.TEXT_NODE) {
-      if (!isClusterConnectorText(child.textContent ?? '')) return false;
+      if (!isClusterConnectorText(child.textContent ?? '')) {
+        result = false;
+        break;
+      }
     } else if (child.nodeType === Node.ELEMENT_NODE && (child as Element).tagName === 'A') {
       const text = (child.textContent ?? '').trim();
-      if (text.length === 0 || text.length > LINK_CLUSTER_MAX_ITEM_CHARS) return false;
+      if (text.length === 0 || text.length > LINK_CLUSTER_MAX_ITEM_CHARS) {
+        result = false;
+        break;
+      }
       linkCount++;
     } else {
       // Any other element type (a <b>/<em>/<span> wrapping real prose,
@@ -182,19 +205,22 @@ function isLinkClusterContainer(container: Element): boolean {
       // see point 5's header comment for why a false negative here is
       // cheap (today's existing grouping behavior) but a false positive
       // isn't.
-      return false;
+      result = false;
+      break;
     }
   }
-  return linkCount >= LINK_CLUSTER_MIN_LINKS;
+  if (result) result = linkCount >= LINK_CLUSTER_MIN_LINKS;
+  memo.set(container, result);
+  return result;
 }
 
 /** The isolation key for a node isolated by point 3, 4, or 5 above — `null` means "not isolated, use normal grouping." Point 3 keys on the node itself (always its own group); points 4 and 5 key on the shared anchor (so sibling nodes under the same tag anchor merge into one group, while different anchors in the same cluster stay isolated from each other). */
-function isolationKeyFor(node: Text): Text | Element | null {
+function isolationKeyFor(node: Text, linkClusterMemo: Map<Element, boolean>): Text | Element | null {
   if (isPureTagText(node.data.trim())) return node;
   const anchor = nearestTagAnchor(node);
   if (!anchor) return null;
   if (isPureTagText((anchor.textContent ?? '').trim())) return anchor;
-  if (anchor.parentElement && isLinkClusterContainer(anchor.parentElement)) return anchor;
+  if (anchor.parentElement && isLinkClusterContainer(anchor.parentElement, linkClusterMemo)) return anchor;
   return null;
 }
 
@@ -207,6 +233,10 @@ export function groupNodesForBatching(nodes: Text[], hint: BatchingHint | undefi
   if (!hint?.groupByBlock) return nodes.map((n) => [n]);
 
   const hardMax = hint.maxGroupChars * SENTENCE_OVERFLOW_FACTOR;
+  // See isLinkClusterContainer's own doc comment: scoped to this one call
+  // so a container's answer is computed once regardless of how many of its
+  // children ask, not stale across separate translate cycles.
+  const linkClusterMemo = new Map<Element, boolean>();
   const groups: Text[][] = [];
   let currentGroup: Text[] = [];
   let currentBlock: Element | null = null;
@@ -223,7 +253,7 @@ export function groupNodesForBatching(nodes: Text[], hint: BatchingHint | undefi
   }
 
   for (const node of nodes) {
-    const isolationKey = isolationKeyFor(node);
+    const isolationKey = isolationKeyFor(node, linkClusterMemo);
     if (isolationKey !== null) {
       if (currentIsolationKey !== isolationKey) {
         // Either starting fresh, leaving normal grouping, or moving from one

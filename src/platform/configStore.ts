@@ -91,9 +91,29 @@ export function createConfigStore(backend: StorageBackend = localStorageBackend)
       if (key === VERSION_KEY) continue;
       if (!Object.hasOwn(defaultConfig, key)) continue;
       const configKey = key as ConfigKey;
-      (state as Record<ConfigKey, unknown>)[configKey] = change.newValue;
+      // Reliability fix, found via a round-6 audit: this used to adopt
+      // `change.newValue` straight into `state` with no validation at
+      // all — unlike `initConfig` above, which runs every key through
+      // `configValidators` and falls back to the existing/default value
+      // on failure, precisely because storage can hold a value this
+      // module doesn't fully control the origin of (a stale shape from a
+      // different extension version, or a genuine removal, which reports
+      // as `change.newValue === undefined` here — silently adopting that
+      // would have propagated `undefined` straight into a `ConfigKey`
+      // this store's own type guarantees always have a value). Same
+      // validate-or-keep-existing discipline as `initConfig`, applied to
+      // the live path too.
+      const result = configValidators[configKey](change.newValue);
+      if (!result.ok) {
+        console.warn(
+          `[prism] live config change for key "${configKey}" failed validation, ignoring it`,
+          result.message,
+        );
+        continue;
+      }
+      (state as Record<ConfigKey, unknown>)[configKey] = result.value;
       listeners.forEach((cb) => {
-        cb(configKey, change.newValue);
+        cb(configKey, result.value);
       });
     }
   });

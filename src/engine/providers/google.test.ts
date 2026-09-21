@@ -239,6 +239,36 @@ describe('createGoogleProvider', () => {
       expect(fetchMock).toHaveBeenCalledTimes(3); // auth scrape + grouped attempt + one bundled repair request
     });
 
+    it("repairs a grouped piece when Google reflows a MIDDLE index away, not just the last one — real bug, found via a round-6 audit: splitPieceResponse's index-assigned array is sparse, so .length is maxIndex+1, not the entry count; needsRepair used to compare that against the original piece length, which only catches the LAST index disappearing. A dropped middle index left a hole .length doesn't see, so no repair fired, the neighboring index silently absorbed the merged content, and the holed index came back undefined — treated as missing and retranslated on its own, so the page showed the merged clause AND a duplicate of it", async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(authScrapeResponse())
+        // Index 1's translation merges into index 0 (Google reflow), but
+        // index 2 still appears distinctly — <a i=0>...</a><a i=2>...</a>,
+        // no <a i=1> at all. byIndex = {0: 'MergedAB', 2: 'C'}; the
+        // sparse-assigned result array has length 3 (from the highest
+        // index, 2) but only 2 real entries — exactly the shape `.length`
+        // alone can't distinguish from "all 3 indices present".
+        .mockResolvedValueOnce(jsonResponse([['<a i=0>MergedAB</a><a i=2>C</a>'], ['en']]))
+        .mockResolvedValueOnce(
+          jsonResponse([
+            ['<a i=0>RepA</a><a i=1> </a>', '<a i=0>RepB</a><a i=1> </a>', '<a i=0>RepC</a><a i=1> </a>'],
+            ['en', 'en', 'en'],
+          ]),
+        );
+      vi.stubGlobal('fetch', fetchMock);
+
+      const provider = await freshCreateGoogleProvider();
+      const results = await provider.translateBatch({
+        sourceLanguage: 'en',
+        targetLanguage: 'ja',
+        pieces: [['a1', 'a2', 'a3']],
+      });
+
+      expect(results).toEqual([{ ok: true, value: ['RepA', 'RepB', 'RepC'] }]);
+      expect(fetchMock).toHaveBeenCalledTimes(3); // auth scrape + grouped attempt + one bundled repair request
+    });
+
     it('does NOT repair a safe grouped response (indices appear once each, in order) — no extra request', async () => {
       const fetchMock = vi
         .fn()
@@ -662,6 +692,24 @@ describe('createGoogleProvider', () => {
         await vi.advanceTimersByTimeAsync(1000);
         const secondResults = await secondResultPromise;
         expect(secondResults[0]?.ok).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("clears BOTH of findAuth()'s timers (the AbortController one and its own backstop) once a normal scrape settles — hygiene fix, found via a round-6 audit: the backstop's own setTimeout was never cleared, leaving one armed for AUTH_SCRAPE_TIMEOUT_MS+500ms past every ordinary successful scrape. No functional effect (its reject() lands on an already-settled Promise.race, a silent no-op) — asserted directly via the fake-timer queue, since there's no other observable difference to check", async () => {
+      vi.useFakeTimers();
+      try {
+        const fetchMock = vi
+          .fn()
+          .mockResolvedValueOnce(authScrapeResponse())
+          .mockResolvedValueOnce(jsonResponse([['hola'], ['en']]));
+        vi.stubGlobal('fetch', fetchMock);
+
+        const provider = await freshCreateGoogleProvider();
+        await provider.translateBatch({ sourceLanguage: 'en', targetLanguage: 'es', pieces: [['hello']] });
+
+        expect(vi.getTimerCount()).toBe(0);
       } finally {
         vi.useRealTimers();
       }

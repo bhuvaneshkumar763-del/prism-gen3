@@ -311,6 +311,12 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
     const query = options.callbacks.getQueryString?.(sourceLanguage, targetLanguage, pieceWireTexts) ?? '';
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    // Hygiene fix, found via a round-6 audit: the backstop's own timer
+    // (below) was never cleared, leaving one armed for `timeoutMs + 500`
+    // past every request that settled normally — harmless (its reject()
+    // call lands on an already-settled Promise.race, a no-op), but untidy
+    // and unnecessary now that its handle is captured here.
+    let backstopTimeout: ReturnType<typeof setTimeout> | undefined;
     try {
       // Reliability fix, found via a live user report (spinning forever,
       // permanently, after exactly one successful translate — reproduced
@@ -363,11 +369,12 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
           return await response.json();
         })(),
         new Promise<never>((_, reject) => {
-          setTimeout(() => reject(new Error('Request timed out (backstop)')), timeoutMs + 500);
+          backstopTimeout = setTimeout(() => reject(new Error('Request timed out (backstop)')), timeoutMs + 500);
         }),
       ]);
     } finally {
       clearTimeout(timeout);
+      clearTimeout(backstopTimeout);
     }
   }
 

@@ -181,11 +181,42 @@ describe('createRemoteTranslator', () => {
           timestamp: Date.now(),
           data: { requestId, index: 1, outcome: ok(['B']) },
         },
-        {},
+        { id: browser.runtime.id } as Browser.runtime.MessageSender,
         () => {},
       );
 
       expect(received).toEqual([{ index: 1, outcome: ok(['B']) }]);
+    });
+
+    it("ignores a translatePiecesProgress notification from an untrusted sender — security fix, found via a round-6 audit: this was the only onMessage handler in the codebase with no isTrustedSender check, and requestId counts up from 0 per frame, so it's sprayable; a hit reaches writeTranslatedNode via onPieceComplete, letting an untrusted sender pick what text appears as a page's 'translation'", async () => {
+      let requestId: number | undefined;
+      unsubscribe = onMessage('translatePieces', (message) => {
+        requestId = (message.data as { requestId: number }).requestId;
+        return new Promise(() => {});
+      });
+
+      const received: Array<{ index: number; outcome: unknown }> = [];
+      const translator = createRemoteTranslator();
+      void translator.translateBatch({
+        sourceLanguage: 'en',
+        targetLanguage: 'es',
+        pieces: [['a'], ['b']],
+        onPieceComplete: (index, outcome) => received.push({ index, outcome }),
+      });
+      await vi.waitFor(() => expect(requestId).not.toBeUndefined());
+
+      await fakeBrowser.runtime.onMessage.trigger(
+        {
+          id: 4,
+          type: 'translatePiecesProgress',
+          timestamp: Date.now(),
+          data: { requestId, index: 1, outcome: ok(['spoofed']) },
+        },
+        { id: 'some-other-extension-id' } as Browser.runtime.MessageSender,
+        () => {},
+      );
+
+      expect(received).toEqual([]);
     });
 
     it("does NOT invoke a DIFFERENT in-flight request's onPieceComplete — routes strictly by requestId, since the main tick, attributeTranslator.ts, and titleTranslator.ts can all have their own translatePieces call in flight from the same frame at once", async () => {
@@ -220,7 +251,7 @@ describe('createRemoteTranslator', () => {
           timestamp: Date.now(),
           data: { requestId: idB, index: 0, outcome: ok(['B']) },
         },
-        {},
+        { id: browser.runtime.id } as Browser.runtime.MessageSender,
         () => {},
       );
 
@@ -241,7 +272,7 @@ describe('createRemoteTranslator', () => {
             timestamp: Date.now(),
             data: { requestId: 999999, index: 0, outcome: ok(['x']) },
           },
-          {},
+          { id: browser.runtime.id } as Browser.runtime.MessageSender,
           () => {},
         ),
       ).resolves.not.toThrow();

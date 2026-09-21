@@ -14,6 +14,16 @@ import { createBatchedHttpProvider } from './batchedHttpProvider';
 
 const API_URL = 'https://translation.googleapis.com/language/translate/v2';
 const PIECE_PART_SEPARATOR = '␟'; // U+241F — same convention as llm.ts
+// Reliability fix, found via a round-6 audit — see llm.ts's own copy of
+// this exact fix for the full reasoning: page text containing a literal
+// separator character misaligned every subsequent node's translation.
+const ESCAPED_SEPARATOR_PLACEHOLDER = '';
+function escapeSeparator(s: string): string {
+  return s.replaceAll(PIECE_PART_SEPARATOR, ESCAPED_SEPARATOR_PLACEHOLDER);
+}
+function unescapeSeparator(s: string): string {
+  return s.replaceAll(ESCAPED_SEPARATOR_PLACEHOLDER, PIECE_PART_SEPARATOR);
+}
 
 interface GoogleCloudTranslateResponse {
   data?: {
@@ -32,7 +42,7 @@ export function createGoogleCloudTranslateProvider(options: GoogleCloudTranslate
     baseUrl: `${API_URL}?key=${encodeURIComponent(options.apiKey)}`,
     method: 'POST',
     callbacks: {
-      transformPiece: (strings) => strings.join(PIECE_PART_SEPARATOR),
+      transformPiece: (strings) => strings.map(escapeSeparator).join(PIECE_PART_SEPARATOR),
       getRequestBody: (sourceLanguage, targetLanguage, pieceWireTexts) =>
         JSON.stringify({
           q: pieceWireTexts,
@@ -49,7 +59,7 @@ export function createGoogleCloudTranslateProvider(options: GoogleCloudTranslate
           detectedLanguage: t.detectedSourceLanguage ?? null,
         }));
       },
-      splitPieceResponse: (raw) => raw.split(PIECE_PART_SEPARATOR),
+      splitPieceResponse: (raw) => raw.split(PIECE_PART_SEPARATOR).map(unescapeSeparator),
     },
   });
 }

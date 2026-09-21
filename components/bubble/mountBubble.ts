@@ -52,7 +52,19 @@ export function mountBubble(options: MountBubbleOptions): BubbleController {
         onTranslate: options.onTranslate,
         onRestore: options.onRestore,
         onClose: () => {
+          // Reliability fix, found via a round-6 audit: this used to just
+          // remove the host, never calling `dispose()` — so Solid's
+          // `onCleanup` (FloatingBubble.tsx) never ran and every listener
+          // it registers (document pointerdown/fullscreenchange, window
+          // resize/orientationchange/visualViewport, the configStore.onChanged
+          // subscription) survived for the page's lifetime, per Hide click.
+          // `content.ts`'s own `onClose` nulls its `bubble` reference right
+          // after this fires, so `dispose` became permanently unreachable —
+          // not a slow leak, a guaranteed one. Same cleanup `unmount()`
+          // already does below; Hide and unmount are both "stop showing
+          // this bubble," they just differ in who initiated it.
           options.onClose();
+          dispose();
           host.remove();
         },
       }),

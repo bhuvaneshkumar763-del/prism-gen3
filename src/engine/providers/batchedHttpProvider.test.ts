@@ -373,6 +373,26 @@ describe('createBatchedHttpProvider — lifecycle hooks and concurrency', () => 
     vi.useRealTimers();
   });
 
+  it("clears BOTH of sendOnce()'s timers (the AbortController one and its own backstop) once a request settles normally — hygiene fix, found via a round-6 audit: the backstop's own setTimeout was never cleared, leaving one armed for REQUEST_TIMEOUT_MS+500ms past every ordinary successful request. No functional effect (its reject() lands on an already-settled Promise.race, a silent no-op) — asserted directly via the fake-timer queue, since there's no other observable difference to check", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => jsonResponse({ texts: ['hola'] })),
+    );
+
+    const provider = createBatchedHttpProvider({
+      name: 'clears-both-timers',
+      baseUrl: 'https://example.com',
+      method: 'POST',
+      callbacks: { ...plainCallbacks(), getRequestBody: () => '{}' },
+    });
+
+    await provider.translateBatch({ sourceLanguage: 'en', targetLanguage: 'es', pieces: [['hello']] });
+
+    expect(vi.getTimerCount()).toBe(0);
+    vi.useRealTimers();
+  });
+
   it('individual-piece repair retries respect the SAME concurrency limit as top-level batches, real bug this closed: the repair fan-out used to fire one HTTP request per missing/suspicious piece via a bare Promise.all, completely invisible to the concurrency limiter — a batch-wide echo/truncation failure could put dozens of simultaneous requests on the wire despite maxConcurrent', async () => {
     let inFlight = 0;
     let maxObservedInFlight = 0;

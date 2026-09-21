@@ -21,6 +21,7 @@ import {
 } from '../../src/shared/config/listMutations';
 import { type Config, type ConfigKey, defaultConfig } from '../../src/shared/config/schema';
 import { clearBubbleOverrideForHost, clearSourceLanguageOverrideForHost } from '../../src/shared/config/siteOverrides';
+import { downloadBlob } from '../../src/shared/downloadBlob';
 import { COMMON_LANGUAGES } from '../../src/shared/languages';
 import './App.css';
 
@@ -197,13 +198,8 @@ function App() {
   function handleExport(): void {
     const json = serializeBackup(settings as Config, Date.now());
     const blob = new Blob([json], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
     const date = new Date().toISOString().slice(0, 10);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `prism-settings-${date}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
+    downloadBlob(blob, `prism-settings-${date}.json`);
   }
 
   function handleImportClick(): void {
@@ -333,6 +329,18 @@ function App() {
               Settings are stored on this device only (see the Advanced tab's diagnostics for why —
               `chrome.storage.sync` caused real, hard-to-diagnose bugs on some browsers). Export/import is the supported
               way to move them between devices.
+            </p>
+            {/*
+              Product decision, found via a round-6 audit: diagnostics.ts's
+              own export already redacts *ApiKey fields, but this settings
+              export never has — it writes googleCloudTranslateApiKey/
+              llmApiKey in plain text, since removing them would silently
+              break restoring a backup on another device. Warning here
+              instead, so the exported file's contents aren't a surprise.
+            */}
+            <p class="hint">
+              <strong>The exported file includes any API keys you've entered in plain text</strong> — store and share it
+              the same way you would the keys themselves.
             </p>
             <div class="backupActions">
               <button type="button" onClick={handleExport}>

@@ -1,6 +1,6 @@
 import type { PieceOutcome, TranslateBatchRequest, Translator } from '../engine/translator';
 import { withTimeout } from '../shared/withTimeout';
-import { onMessage, sendMessage } from './messaging/protocol';
+import { isTrustedSender, onMessage, sendMessage } from './messaging/protocol';
 
 /**
  * Implements the engine's `Translator` port by messaging the background
@@ -83,6 +83,12 @@ function ensureProgressListener(): void {
   if (progressListenerRegistered) return;
   progressListenerRegistered = true;
   onMessage('translatePiecesProgress', (message) => {
+    // Security fix, found via a round-6 audit: the only one of this
+    // codebase's onMessage handlers with no sender check — requestId
+    // counts up from 0 per frame, so it's sprayable, and a hit reaches
+    // writeTranslatedNode via onPieceComplete, letting an untrusted sender
+    // pick what text appears as a "translation" on the page.
+    if (!isTrustedSender(message.sender)) return;
     const { requestId, index, outcome } = message.data;
     progressCallbacks.get(requestId)?.(index, outcome);
   });

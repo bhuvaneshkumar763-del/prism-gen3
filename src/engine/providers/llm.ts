@@ -19,6 +19,23 @@ import { createBatchedHttpProvider } from './batchedHttpProvider';
  */
 
 const PIECE_PART_SEPARATOR = '␟'; // U+241F SYMBOL FOR UNIT SEPARATOR
+// Reliability fix, found via a round-6 audit: transformPiece/splitPieceResponse
+// join/split on a literal separator character with no escaping. Page text
+// that happens to contain that exact character (rare, but real — copied
+// Unicode-art or technical content) produced more wire "parts" than nodes
+// were actually sent, and splitPieceResponse's positional reconstruction
+// silently shifted every SUBSEQUENT node's translation into the wrong
+// slot. Escaping a literal occurrence before joining (and reversing it
+// after splitting) — same placeholder-substitution technique this file's
+// sibling providers already use for their own delimiter characters —
+// keeps the separator unambiguous regardless of page content.
+const ESCAPED_SEPARATOR_PLACEHOLDER = '';
+function escapeSeparator(s: string): string {
+  return s.replaceAll(PIECE_PART_SEPARATOR, ESCAPED_SEPARATOR_PLACEHOLDER);
+}
+function unescapeSeparator(s: string): string {
+  return s.replaceAll(ESCAPED_SEPARATOR_PLACEHOLDER, PIECE_PART_SEPARATOR);
+}
 
 function buildPrompt(sourceLanguage: string, targetLanguage: string, segments: string[]): string {
   const sourceClause = sourceLanguage && sourceLanguage !== 'auto' ? `from ${sourceLanguage} ` : '';
@@ -61,7 +78,7 @@ export function createLlmProvider(options: LlmProviderOptions): Translator {
     // context to translate consistently, not just fewer round trips.
     maxBatchChars: 4000,
     callbacks: {
-      transformPiece: (strings) => strings.join(PIECE_PART_SEPARATOR),
+      transformPiece: (strings) => strings.map(escapeSeparator).join(PIECE_PART_SEPARATOR),
       getRequestBody: (sourceLanguage, targetLanguage, pieceWireTexts) =>
         JSON.stringify({
           model: options.model,
@@ -91,7 +108,7 @@ export function createLlmProvider(options: LlmProviderOptions): Translator {
         // fail the whole batch here.
         return parsed.map((text) => ({ text: typeof text === 'string' ? text : '', detectedLanguage: null }));
       },
-      splitPieceResponse: (raw) => raw.split(PIECE_PART_SEPARATOR),
+      splitPieceResponse: (raw) => raw.split(PIECE_PART_SEPARATOR).map(unescapeSeparator),
     },
   });
 }

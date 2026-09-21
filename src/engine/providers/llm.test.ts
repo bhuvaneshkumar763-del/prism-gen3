@@ -73,6 +73,41 @@ describe('createLlmProvider', () => {
     expect(results).toEqual([{ ok: true, value: ['hola', 'mundo'] }]);
   });
 
+  it("escapes a literal separator character INSIDE a node's own text before joining — real bug, found via a round-6 audit: transformPiece/splitPieceResponse joined/split on a literal separator with no escaping, so page text that happens to contain that exact character produced more wire parts than nodes were actually sent, silently shifting every subsequent node's translation into the wrong slot", async () => {
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(init.body as string);
+      const prompt: string = body.messages[0].content;
+      // The prompt embeds this piece's wire text as `[0]: <wireText>` on
+      // its own line — count how many REAL separator characters it
+      // contains. Without escaping, the embedded '␟' inside the first
+      // node's own text counts as a second boundary (2 total); escaped,
+      // only the genuine join between the two nodes counts (1 total).
+      const segmentLine = prompt.split('\n').find((line) => line.startsWith('[0]:'));
+      if (!segmentLine) throw new Error('piece 0 segment not found in prompt');
+      const realSeparatorCount = (segmentLine.match(/␟/gu) ?? []).length;
+      expect(realSeparatorCount).toBe(1);
+
+      // Model translates each of the (correctly) two real parts and
+      // preserves the separator between them, per the prompt's own
+      // instruction — the well-behaved-model case this mechanism exists
+      // to support.
+      return jsonResponse(chatResponse(JSON.stringify(['TRANS_A␟TRANS_B'])));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const provider = createLlmProvider({ baseUrl: 'https://example.com', apiKey: 'k', model: 'm' });
+    const results = await provider.translateBatch({
+      sourceLanguage: 'en',
+      targetLanguage: 'es',
+      // The first node's OWN text contains a literal separator character —
+      // simulating page content that happens to contain it, not a
+      // deliberately grouped multi-part piece.
+      pieces: [['a␟b', 'c']],
+    });
+
+    expect(results).toEqual([{ ok: true, value: ['TRANS_A', 'TRANS_B'] }]);
+  });
+
   it('treats a non-string array entry as empty, which the sanity-check repair pass then retries once', async () => {
     // A non-string entry (malformed model output) maps to '' per
     // parseResponse — for real (non-empty) input, an empty result is

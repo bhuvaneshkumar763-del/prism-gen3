@@ -1,31 +1,29 @@
 /**
  * Shared HTML-escaping helpers for providers that wrap pieces in HTML-ish
- * marker tags (Google's `<a i=N>`, Bing's `<bN>`). Bing's custom-dictionary
- * `<mstrans:dictionary translation="...">` tags are protected from
- * escaping first — a real Bing API feature this must not corrupt if a
- * future dictionary feature (Session 6) ever emits it.
+ * marker tags (Google's `<a i=N>`).
+ *
+ * Round-6 audit: this used to carve out an exemption for Bing's
+ * custom-dictionary `<mstrans:dictionary translation="...">` tags,
+ * protecting a literal occurrence of that substring from escaping —
+ * "a real Bing API feature this must not corrupt if a future dictionary
+ * feature (Session 6) ever emits it." No such feature was ever built (this
+ * codebase has no Bing provider at all — `registry.ts` lists only
+ * google/googleCloudTranslate/llm), so the carve-out was dead weight. Worse
+ * than inert: page text that happens to contain that literal marker
+ * substring (rare, but not impossible — a page discussing this exact XML
+ * tag syntax) skipped escaping for whatever sat between the markers,
+ * letting a stray `<`/`>`/`"` reach this file's callers' own wire format
+ * (Google's `<pre>`/`<a i=N>` markup) unescaped — real corruption risk for
+ * a feature that protected nothing real.
  */
 
-const BING_DICTIONARY_OPEN = '<mstrans:dictionary translation="';
-const BING_DICTIONARY_CLOSE = '"></mstrans:dictionary>';
-const BING_DICTIONARY_OPEN_PLACEHOLDER = '@-/629^*';
-const BING_DICTIONARY_CLOSE_PLACEHOLDER = '^$537+*';
-
 export function escapeHTML(unsafe: string): string {
-  let s = unsafe
-    .replaceAll(BING_DICTIONARY_OPEN, BING_DICTIONARY_OPEN_PLACEHOLDER)
-    .replaceAll(BING_DICTIONARY_CLOSE, BING_DICTIONARY_CLOSE_PLACEHOLDER);
-
-  s = s
+  return unsafe
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
-
-  return s
-    .replaceAll(BING_DICTIONARY_OPEN_PLACEHOLDER, BING_DICTIONARY_OPEN)
-    .replaceAll(BING_DICTIONARY_CLOSE_PLACEHOLDER, BING_DICTIONARY_CLOSE);
 }
 
 export function unescapeHTML(unsafe: string): string {
