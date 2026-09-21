@@ -148,6 +148,39 @@ interface PendingRequest {
 }
 
 const DEFAULT_MAX_BATCH_CHARS = 2000;
+/**
+ * Speed fix, found via measuring the actual delta between beta.27 and the
+ * next release (this file's own git history) after a live user report:
+ * `maxBatchChars` is documented (see its own doc comment above) as a
+ * CONTENT budget — "how much of the page's own text goes in one request" —
+ * but the batching loop below used to charge it against `wireText.length`,
+ * the POST-`transformPiece` string. For a provider whose wrapper is
+ * non-trivial (Google's `<pre><a i=N>text</a></pre>` per single-node
+ * piece), that's `content.length + 34` for the common single-node-piece
+ * case — pure markup ceremony eating the same budget meant for content, so
+ * a page of many short pieces (a novel chapter's dialogue lines, a nav
+ * list) filled each request with FEWER real pieces than the budget's own
+ * name promises, and paid for several times more HTTP requests as a result
+ * (measured: 8 requests vs 3 for 300 pieces of ~19 chars — see this file's
+ * own chapter-shaped test).
+ * Now budgeted on content length (`pending.originalText.length`, the same
+ * pre-`transformPiece` string `isSuspiciousOutcome` already compares
+ * against) instead, restoring what a typical short-piece page's actual
+ * request density looked like before that wrapper existed.
+ *
+ * A CONTENT budget alone isn't a complete substitute for the old WIRE
+ * budget, though: a batch built entirely from a handful of unusually LONG
+ * pieces could now produce a wire payload past what's actually been
+ * measured safe (see `maxBatchChars`'s own doc comment: ~6000 wire
+ * chars/request was the largest size directly verified against the live
+ * endpoint with 0 positional misalignment at up to 300 pieces). This is
+ * that same already-measured figure, kept as a hard ceiling alongside the
+ * content budget — whichever trips first closes the batch — so a request's
+ * wire size can never exceed what's actually been verified safe, while the
+ * common short-piece case is no longer artificially split by markup that
+ * was never part of what `maxBatchChars` was meant to bound.
+ */
+const HARD_MAX_WIRE_CHARS = 6000;
 const DEFAULT_MAX_CONCURRENT = 6;
 const REQUEST_TIMEOUT_MS = 20000;
 const MAX_ATTEMPTS = 3;
@@ -581,7 +614,10 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
       // requests for identical (already-transformed) piece text.
       const batches: PendingRequest[][] = [];
       let currentBatch: PendingRequest[] = [];
+      /** Content length (pre-`transformPiece`) — what `maxBatchChars` actually budgets. See `HARD_MAX_WIRE_CHARS`'s own doc comment. */
       let currentChars = 0;
+      /** Wire length (post-`transformPiece`) — the hard ceiling only, independent of the content budget above. */
+      let currentWireChars = 0;
       const resultPromises: Array<Promise<{ text: string; detectedLanguage: string | null } | null>> = [];
       // Populated by the same per-piece transform as the return statement
       // below — computed eagerly, as each `resultPromises[i]` settles
@@ -634,11 +670,17 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
 
         const pending: PendingRequest = { wireText, originalText: piece.join(''), resolve: resolveFn };
         currentBatch.push(pending);
-        currentChars += wireText.length;
-        if (currentChars > maxBatchChars) {
+        // Content against the content budget, wire against the hard
+        // ceiling — whichever trips first closes the batch. See
+        // `HARD_MAX_WIRE_CHARS`'s doc comment for why these are two
+        // separate bounds rather than one.
+        currentChars += pending.originalText.length;
+        currentWireChars += wireText.length;
+        if (currentChars > maxBatchChars || currentWireChars > HARD_MAX_WIRE_CHARS) {
           batches.push(currentBatch);
           currentBatch = [];
           currentChars = 0;
+          currentWireChars = 0;
         }
       }
       if (currentBatch.length > 0) batches.push(currentBatch);

@@ -148,6 +148,96 @@ describe('createBatchedHttpProvider — batching budget', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  // Mirrors google.ts's real wire shape: `transformPiece` wraps a piece in
+  // `<pre>`, and every string in a >1-string piece in `<a i=N>` — which,
+  // combined with that provider's single-string padding, is exactly 34
+  // chars of markup for the common one-node-per-block piece.
+  function googleShapedCallbacks() {
+    return {
+      transformPiece: (strings: string[]) =>
+        `<pre>${strings.map((text, index) => `<a i=${index}>${text}</a>`).join('')}</pre>`,
+      parseResponse: (response: unknown) =>
+        (response as { texts: string[] }).texts.map((text) => ({ text, detectedLanguage: null })),
+      splitPieceResponse: (raw: string) => [...raw.matchAll(/<a i=\d+>(.*?)<\/a>/g)].map((m) => m[1] ?? ''),
+    };
+  }
+
+  /** Echoes each sent piece back with its marker content uppercased — a distinct-from-input "translation", so nothing trips the suspicious-output repair path and inflates the call count for the wrong reason. */
+  function echoingUppercaseFetch() {
+    return vi.fn(async (_url: string, init: RequestInit) => {
+      const sent = JSON.parse(init.body as string) as string[];
+      return jsonResponse({
+        texts: sent.map((wire) =>
+          wire.replace(
+            /<a i=(\d+)>(.*?)<\/a>/g,
+            (_m, index, text) => `<a i=${index}>${String(text).toUpperCase()}</a>`,
+          ),
+        ),
+      });
+    });
+  }
+
+  it("charges maxBatchChars against a piece's CONTENT, not its wire markup — real speed regression this closed: a chapter-shaped page (300 short pieces) used to pay 8 HTTP requests where 3 carry the same text, because ~34 chars of <pre>/<a i=N> ceremony per piece ate a budget documented as a content budget", async () => {
+    const fetchMock = echoingUppercaseFetch();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const provider = createBatchedHttpProvider({
+      name: 'chapter-shaped',
+      baseUrl: 'https://example.com',
+      method: 'POST',
+      // No maxBatchChars override — exercising the real 2000 default.
+      callbacks: {
+        ...googleShapedCallbacks(),
+        getRequestBody: (_s, _t, texts) => JSON.stringify(texts),
+      },
+    });
+
+    // 300 distinct 19-char lines, each already padded to two strings the
+    // way google.ts pads a single-node piece (distinct text matters: an
+    // identical piece would dedupe via inFlightByKey and never reach the
+    // batching loop at all). 20 content chars/piece -> 101 pieces per
+    // 2000-char batch -> 3 requests. Charged on WIRE length (53/piece, the
+    // pre-fix behavior) it was 38 pieces per batch -> 8 requests.
+    const pieces = Array.from({ length: 300 }, (_, i) => [`line ${String(i).padStart(3, '0')} of chapter`, ' ']);
+
+    const results = await provider.translateBatch({ sourceLanguage: 'en', targetLanguage: 'es', pieces });
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(results).toHaveLength(300);
+    expect(results.every((outcome) => outcome.ok)).toBe(true);
+    expect(results[0]).toEqual({ ok: true, value: ['LINE 000 OF CHAPTER', ' '] });
+  });
+
+  it("still caps a request at HARD_MAX_WIRE_CHARS even when its content sits well under maxBatchChars — the wire ceiling is what keeps pieces-per-request inside the range positional alignment was actually measured safe for (see the constant's doc comment)", async () => {
+    const fetchMock = echoingUppercaseFetch();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const provider = createBatchedHttpProvider({
+      name: 'wire-ceiling',
+      baseUrl: 'https://example.com',
+      method: 'POST',
+      callbacks: {
+        ...googleShapedCallbacks(),
+        getRequestBody: (_s, _t, texts) => JSON.stringify(texts),
+      },
+    });
+
+    // 200 tiny pieces: 5 content chars each = 1000 total, HALF the 2000
+    // content budget — so the content budget alone would bundle all 200
+    // into one request. Their wire size is 38 chars each (7600 total), so
+    // the 6000-char hard ceiling closes a batch at 158 pieces and this
+    // splits into 2. Drop the ceiling and this collapses back to 1.
+    const pieces = Array.from({ length: 200 }, (_, i) => [`a${String(i).padStart(3, '0')}`, ' ']);
+
+    await provider.translateBatch({ sourceLanguage: 'en', targetLanguage: 'es', pieces });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const piecesPerCall = fetchMock.mock.calls.map(
+      ([, init]) => (JSON.parse((init as RequestInit).body as string) as string[]).length,
+    );
+    expect(piecesPerCall).toEqual([158, 42]);
+  });
 });
 
 describe('createBatchedHttpProvider — onPieceComplete (incremental delivery)', () => {

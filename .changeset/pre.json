@@ -8,6 +8,7 @@
     "attribute-translator-lifecycle-fixes",
     "audit-round-6",
     "auth-key-invalidation-and-suspicious-ratio",
+    "batch-budget-content-not-markup",
     "bubble-full-parity",
     "builtin-availability",
     "bundle-guard-retighten",
