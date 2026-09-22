@@ -625,7 +625,7 @@ describe('createGoogleProvider', () => {
     }
   });
 
-  it('maps the "prs" source/target language quirk to fa-AF before sending', async () => {
+  it('maps the "prs" source/target language quirk to fa-AF before sending, when the source was chosen EXPLICITLY by the user', async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(authScrapeResponse())
@@ -633,13 +633,70 @@ describe('createGoogleProvider', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     const provider = await freshCreateGoogleProvider();
-    await provider.translateBatch({ sourceLanguage: 'prs', targetLanguage: 'es', pieces: [['hello']] });
+    await provider.translateBatch({
+      sourceLanguage: 'prs',
+      sourceLanguageIsExplicit: true,
+      targetLanguage: 'es',
+      pieces: [['hello']],
+    });
 
     const translateCall = fetchMock.mock.calls[1];
     if (!translateCall) throw new Error('translate request was not made');
     const [, init] = translateCall as unknown as [string, RequestInit];
     const payload = JSON.parse(init.body as string) as [[string[], string, string], string];
     expect(payload[0][1]).toBe('fa-AF');
+  });
+
+  it("sends 'auto' rather than the page's GUESSED source language, so the endpoint returns its own per-piece detection — real user report (sangtacviet.vip): a page whose content is Vietnamese but whose UI labels are already English had those labels destroyed by the forced guess, confirmed live against this endpoint ('History' came back as 'Association', 'Ongoing' as 'On damage'), while the same labels sent with 'auto' came back untouched and the Vietnamese content still translated identically", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(authScrapeResponse())
+      .mockResolvedValueOnce(jsonResponse([['<a i=0>hola</a><a i=1> </a>'], ['es']]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const provider = await freshCreateGoogleProvider();
+    // No sourceLanguageIsExplicit — this is the page-level guess.
+    await provider.translateBatch({ sourceLanguage: 'vi', targetLanguage: 'en', pieces: [['hello']] });
+
+    const translateCall = fetchMock.mock.calls[1];
+    if (!translateCall) throw new Error('translate request was not made');
+    const [, init] = translateCall as unknown as [string, RequestInit];
+    const payload = JSON.parse(init.body as string) as [[string[], string, string], string];
+    expect(payload[0][1]).toBe('auto');
+    // The target is still mapped/sent as normal.
+    expect(payload[0][2]).toBe('en');
+  });
+
+  it("falls back to the page's GUESSED language when a piece comes back suspicious under 'auto', instead of retrying 'auto' into the identical echo — this is what replaces beta.39's auto-retry now that 'auto' is what gets sent first", async () => {
+    const echoed = '<a i=0>\u4f60\u597d\u4e16\u754c\u4f60\u597d\u4e16\u754c</a><a i=1> </a>';
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(authScrapeResponse())
+      // Echoed back unchanged: real CJK text, English target — the exact
+      // beta.29 silent-echo shape, caught by hasScriptMismatch regardless
+      // of what the detector claims.
+      .mockResolvedValueOnce(jsonResponse([[`<pre>${echoed}</pre>`], ['en']]))
+      .mockResolvedValueOnce(jsonResponse([['<pre><a i=0>Hello world</a><a i=1> </a></pre>'], ['zh-CN']]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const provider = await freshCreateGoogleProvider();
+    await provider.translateBatch({
+      sourceLanguage: 'zh-CN',
+      targetLanguage: 'en',
+      pieces: [['\u4f60\u597d\u4e16\u754c\u4f60\u597d\u4e16\u754c']],
+    });
+
+    const first = fetchMock.mock.calls[1];
+    const retry = fetchMock.mock.calls[2];
+    if (!first || !retry) throw new Error('expected an initial request and a suspicious retry');
+    const sourceOf = (call: unknown) => {
+      const [, init] = call as [string, RequestInit];
+      return (JSON.parse(init.body as string) as [[string[], string, string], string])[0][1];
+    };
+    expect(sourceOf(first)).toBe('auto');
+    // The whole point: NOT 'auto' again, which would reissue the identical
+    // request and get the identical echo back.
+    expect(sourceOf(retry)).toBe('zh-CN');
   });
 
   describe("auth-key reliability fixes — a stale/rejected key used to silently degrade translation into a no-op for up to 20 minutes at a time, found live during this exact repo's own testing", () => {

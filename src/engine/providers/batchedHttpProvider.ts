@@ -491,6 +491,13 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
     // call and reused as-is by the repair retry below — see
     // `sendWithRetry`'s `inheritedDeadline` doc comment for why.
     deadline: number = Date.now() + OVERALL_DEADLINE_MS,
+    /**
+     * Language a SUSPICIOUS piece is re-requested with. Supplied by a
+     * provider that sends `'auto'` on the wire (see `google.ts`): retrying
+     * such a piece with `'auto'` again would repeat the identical request,
+     * so the caller hands down the page's guessed language instead.
+     */
+    suspiciousRetrySourceLanguage: string | undefined = undefined,
   ): Promise<void> {
     try {
       const response = await sendWithRetry(
@@ -590,11 +597,14 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
       missing.forEach((p) => {
         void concurrencyGate.run(() =>
           handleBatch(
-            missingBecauseSuspicious.has(p) && sourceLanguage !== 'auto' ? 'auto' : sourceLanguage,
+            missingBecauseSuspicious.has(p)
+              ? (suspiciousRetrySourceLanguage ?? (sourceLanguage !== 'auto' ? 'auto' : sourceLanguage))
+              : sourceLanguage,
             targetLanguage,
             [p],
             true,
             deadline,
+            suspiciousRetrySourceLanguage,
           ),
         );
       });
@@ -608,7 +618,14 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
 
   return {
     async translateBatch(request: TranslateBatchRequest): Promise<PieceOutcome[]> {
-      const { sourceLanguage, targetLanguage, pieces, dontSortResults = false, onPieceComplete } = request;
+      const {
+        sourceLanguage,
+        targetLanguage,
+        pieces,
+        dontSortResults = false,
+        onPieceComplete,
+        suspiciousRetrySourceLanguage,
+      } = request;
 
       // Bundle pieces into HTTP-request-sized batches, sharing in-flight
       // requests for identical (already-transformed) piece text.
@@ -719,7 +736,11 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
         // above, and with every other translateBatch() call sharing this
         // provider instance — see createConcurrencyGate's doc comment.
         await Promise.all(
-          batches.map((batch) => concurrencyGate.run(() => handleBatch(sourceLanguage, targetLanguage, batch))),
+          batches.map((batch) =>
+            concurrencyGate.run(() =>
+              handleBatch(sourceLanguage, targetLanguage, batch, false, undefined, suspiciousRetrySourceLanguage),
+            ),
+          ),
         );
 
         // Every entry was already computed the instant its own

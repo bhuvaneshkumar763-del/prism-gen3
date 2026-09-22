@@ -803,6 +803,10 @@ export function createPageTranslator(options: PageTranslatorOptions) {
       try {
         const outcomes = await options.translator.translateBatch({
           sourceLanguage: sourceLanguageOverride ?? options.getSourceLanguage(),
+          // Lets the provider prefer its own per-piece detection over a
+          // page-level GUESS (see google.ts), while still honouring a
+          // source the user picked by hand in the bubble.
+          sourceLanguageIsExplicit: sourceLanguageOverride !== null,
           targetLanguage: currentTargetLanguage,
           pieces: groups.map((group) => group.map((node) => node.data)),
           dontSortResults: options.getDontSortResults?.() ?? false,
@@ -1106,6 +1110,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     // mis-detected as the wrong language, manually corrected via the
     // picker, would translate correctly everywhere except the title.
     getSourceLanguage: () => sourceLanguageOverride ?? options.getSourceLanguage(),
+    isSourceLanguageExplicit: () => sourceLanguageOverride !== null,
     isPageVisible: () => document.visibilityState === 'visible',
   });
 
@@ -1118,6 +1123,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
   const attributeTranslator = createAttributeTranslator({
     translator: options.translator,
     getSourceLanguage: () => sourceLanguageOverride ?? options.getSourceLanguage(),
+    isSourceLanguageExplicit: () => sourceLanguageOverride !== null,
   });
 
   const resweep = createResweepScheduler({

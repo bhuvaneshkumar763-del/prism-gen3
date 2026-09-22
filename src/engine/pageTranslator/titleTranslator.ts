@@ -28,6 +28,8 @@ const POLL_BACKOFF_FACTOR = 1.5;
 export interface TitleTranslatorOptions {
   translator: Translator;
   getSourceLanguage(): string;
+  /** True when the user picked the source language by hand; see `TranslateBatchRequest.sourceLanguageIsExplicit`. */
+  isSourceLanguageExplicit?(): boolean;
   isPageVisible(): boolean;
 }
 
@@ -99,6 +101,7 @@ export function createTitleTranslator(options: TitleTranslatorOptions) {
       try {
         outcomes = await options.translator.translateBatch({
           sourceLanguage: options.getSourceLanguage(),
+          sourceLanguageIsExplicit: options.isSourceLanguageExplicit?.() ?? false,
           targetLanguage: currentTargetLanguage,
           pieces: [[text]],
           dontSortResults: false,

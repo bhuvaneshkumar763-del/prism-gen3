@@ -9,6 +9,7 @@
     "audit-round-6",
     "audit-round-7",
     "auth-key-invalidation-and-suspicious-ratio",
+    "auto-detect-source-language",
     "batch-budget-content-not-markup",
     "bubble-full-parity",
     "builtin-availability",

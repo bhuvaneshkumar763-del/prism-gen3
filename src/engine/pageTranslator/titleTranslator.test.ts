@@ -77,6 +77,9 @@ describe('createTitleTranslator', () => {
 
     expect(translateBatch).toHaveBeenCalledWith({
       sourceLanguage: 'en',
+      // No explicit user choice here, so the provider is free to prefer
+      // its own per-piece detection over this page-level guess.
+      sourceLanguageIsExplicit: false,
       targetLanguage: 'es',
       pieces: [['Hello World']],
       dontSortResults: false,

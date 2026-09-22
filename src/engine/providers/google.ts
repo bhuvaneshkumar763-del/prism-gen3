@@ -522,10 +522,48 @@ export function createGoogleProvider(): Translator {
         return promise;
       }
 
+      // Accuracy fix, found via a live user report (sangtacviet.vip) and
+      // then confirmed by probing this endpoint directly: forcing the
+      // page's GUESSED source language onto every piece corrupts any piece
+      // that is already in the target language. Measured against the live
+      // endpoint, `vi -> en`: the site's own English UI labels came back
+      // `History -> "Association"` and `Ongoing -> "On damage"`, while the
+      // same labels sent with `'auto'` came back untouched and the page's
+      // genuinely-Vietnamese chips still translated identically. A page is
+      // routinely mixed-language like this — Vietnamese content under an
+      // English UI — and a single page-level guess cannot be right for
+      // both.
+      //
+      // `'auto'` was removed in beta.29 because Google's auto-detection
+      // silently echoed text back untranslated and nothing could tell that
+      // apart from a correct "already in the target language" no-op. What
+      // makes it safe again is that the endpoint returns a PER-PIECE
+      // detected language when (and only when) the source is `'auto'` —
+      // verified directly: with a forced source the response carries no
+      // detection data at all. `outputSanityCheck.ts` was already written
+      // around exactly that signal (`result.detectedLanguage !==
+      // targetLanguage`), so it has been sitting inert for this provider
+      // ever since; sending `'auto'` activates it. Its `hasScriptMismatch`
+      // check still runs FIRST and independently, which is the specific
+      // guard against beta.29's own failure shape (real CJK text echoed
+      // back while the detector claims English) — re-probed live here on
+      // Chinese prose and bare CJK characters, where `'auto'` and an
+      // explicit `zh-CN` returned byte-identical output.
+      //
+      // An EXPLICIT user choice (the bubble's From picker) is always
+      // honoured as-is: that control exists precisely because the guess
+      // was wrong, so overriding it with detection would break the only
+      // lever a user has on a misdetected page.
+      const declaredSource = fixLanguageCode(request.sourceLanguage);
+      const autoDetect = !request.sourceLanguageIsExplicit && declaredSource !== 'auto';
+
       const outcomes = await inner.translateBatch({
         ...request,
         pieces,
-        sourceLanguage: fixLanguageCode(request.sourceLanguage),
+        sourceLanguage: autoDetect ? 'auto' : declaredSource,
+        // Falls back to the page's guess for a piece the sanity check
+        // flags, rather than retrying `'auto'` into the same echo.
+        suspiciousRetrySourceLanguage: autoDetect ? declaredSource : request.suspiciousRetrySourceLanguage,
         targetLanguage: fixLanguageCode(request.targetLanguage),
         // Always wrapped (even when the caller didn't ask for incremental
         // delivery at all) so a grouped piece's repair can start the

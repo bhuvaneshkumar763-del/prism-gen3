@@ -48,6 +48,27 @@ export interface TranslateBatchRequest {
    * given piece of content). Ported concept from the old repo's
    * `dontSortResults`.
    */
+  /**
+   * True when `sourceLanguage` was chosen explicitly by the user (the
+   * bubble's From picker); false/absent when it is the page-level GUESS
+   * from `originalLanguageTracker`.
+   *
+   * A provider may override a guess with its own per-piece detection, but
+   * must honour an explicit choice — that picker exists precisely because
+   * the guess was wrong, so ignoring it would break the one control a user
+   * has for fixing a misdetected page.
+   */
+  sourceLanguageIsExplicit?: boolean;
+  /**
+   * Provider-internal hint: the language to re-request a piece with when
+   * the output sanity check flags it as suspicious.
+   *
+   * Set by a provider that deliberately sends `'auto'` on the wire, so a
+   * silently-echoed piece falls back to the page's guessed language
+   * instead of pointlessly retrying `'auto'` — which would just repeat the
+   * same request and return the same echo.
+   */
+  suspiciousRetrySourceLanguage?: string;
   dontSortResults?: boolean;
   /**
    * Speed fix, found via audit: a batch of N pieces used to have every

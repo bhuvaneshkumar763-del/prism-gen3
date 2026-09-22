@@ -2381,4 +2381,38 @@ describe('rapid navigation — overlapping translate cycles must always converge
 
     pageTranslator.restorePage();
   }, 30000);
+
+  // Round-9: google.ts prefers its own per-piece detection over a
+  // page-level GUESS, because a mixed-language page (Vietnamese content
+  // under an English UI) cannot be described by one language. It must
+  // still honour a source the user picked by hand — that picker exists
+  // precisely because the guess was wrong.
+  it("tells the provider whether the source language was a page guess or the user's explicit choice", async () => {
+    document.body.innerHTML = '<p>hola</p>';
+    const translateBatch = vi.fn(
+      async (request: { pieces: string[][] }): Promise<PieceOutcome[]> =>
+        request.pieces.map((piece): PieceOutcome => ok(piece.map((s) => s.toUpperCase()))),
+    );
+    const pageTranslator = createPageTranslator({
+      translator: { translateBatch },
+      getSourceLanguage: () => 'vi',
+      getBatchingHint: () => undefined,
+    });
+
+    await pageTranslator.translatePage('en');
+    await waitFor(() => translateBatch.mock.calls.length > 0);
+    expect(translateBatch).toHaveBeenLastCalledWith(
+      expect.objectContaining({ sourceLanguage: 'vi', sourceLanguageIsExplicit: false }),
+    );
+
+    pageTranslator.restorePage();
+    document.body.innerHTML = '<p>bonjour</p>';
+    await pageTranslator.translatePage('en', 'fr');
+    await waitFor(() => translateBatch.mock.calls.length > 1);
+    expect(translateBatch).toHaveBeenLastCalledWith(
+      expect.objectContaining({ sourceLanguage: 'fr', sourceLanguageIsExplicit: true }),
+    );
+
+    pageTranslator.restorePage();
+  }, 20000);
 });

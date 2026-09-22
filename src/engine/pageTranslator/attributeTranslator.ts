@@ -62,6 +62,8 @@ export function pruneDisconnectedAttributeEntries(
 export interface AttributeTranslatorOptions {
   translator: Translator;
   getSourceLanguage(): string;
+  /** True when the user picked the source language by hand; see `TranslateBatchRequest.sourceLanguageIsExplicit`. */
+  isSourceLanguageExplicit?(): boolean;
 }
 
 // Derived, never hand-listed — see TRANSLATABLE_ATTRIBUTES's doc comment
@@ -158,6 +160,7 @@ export function createAttributeTranslator(options: AttributeTranslatorOptions) {
     const myGeneration = generation;
     const outcomes = await options.translator.translateBatch({
       sourceLanguage: options.getSourceLanguage(),
+      sourceLanguageIsExplicit: options.isSourceLanguageExplicit?.() ?? false,
       targetLanguage: currentTargetLanguage,
       pieces: targets.map((t) => [t.element.getAttribute(t.attribute) ?? '']),
       dontSortResults: false,
