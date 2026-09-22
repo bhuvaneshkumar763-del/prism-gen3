@@ -239,6 +239,50 @@ describe('createGoogleProvider', () => {
       expect(fetchMock).toHaveBeenCalledTimes(3); // auth scrape + grouped attempt + one bundled repair request
     });
 
+    it('repairs a grouped piece when the entry COUNT is intact but content moved across node boundaries — real user report (sangtacviet.vip facet chips): the response decoded to exactly the right number of entries with no leaked markers, so both older signals passed it, while one chip held "System (192673) Fantasy (" and the next held only "189348)"', async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(authScrapeResponse())
+        // Two entries for two nodes — count matches, markers parsed
+        // cleanly — but the first absorbed the head of the second.
+        .mockResolvedValueOnce(jsonResponse([['<a i=0>System (192673) Fantasy (</a><a i=1>189348)</a>'], ['vi']]))
+        .mockResolvedValueOnce(
+          jsonResponse([
+            ['<a i=0>System (192673)</a><a i=1> </a>', '<a i=0>Fantasy (189348)</a><a i=1> </a>'],
+            ['vi', 'vi'],
+          ]),
+        );
+      vi.stubGlobal('fetch', fetchMock);
+
+      const provider = await freshCreateGoogleProvider();
+      const results = await provider.translateBatch({
+        sourceLanguage: 'vi',
+        targetLanguage: 'en',
+        pieces: [['Hệ Thống(192673)', 'Huyền Huyễn(189348)']],
+      });
+
+      expect(results).toEqual([{ ok: true, value: ['System (192673)', 'Fantasy (189348)'] }]);
+      expect(fetchMock).toHaveBeenCalledTimes(3); // auth scrape + grouped attempt + one bundled repair request
+    });
+
+    it("leaves a clean grouped response alone — the same page's known-good translation must not trigger a needless repair", async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(authScrapeResponse())
+        .mockResolvedValueOnce(jsonResponse([['<a i=0>System (192673)</a><a i=1>Fantasy (189348)</a>'], ['vi']]));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const provider = await freshCreateGoogleProvider();
+      const results = await provider.translateBatch({
+        sourceLanguage: 'vi',
+        targetLanguage: 'en',
+        pieces: [['Hệ Thống(192673)', 'Huyền Huyễn(189348)']],
+      });
+
+      expect(results).toEqual([{ ok: true, value: ['System (192673)', 'Fantasy (189348)'] }]);
+      expect(fetchMock).toHaveBeenCalledTimes(2); // auth scrape + the one grouped attempt, no repair
+    });
+
     it("repairs a grouped piece when Google reflows a MIDDLE index away, not just the last one — real bug, found via a round-6 audit: splitPieceResponse's index-assigned array is sparse, so .length is maxIndex+1, not the entry count; needsRepair used to compare that against the original piece length, which only catches the LAST index disappearing. A dropped middle index left a hole .length doesn't see, so no repair fired, the neighboring index silently absorbed the merged content, and the holed index came back undefined — treated as missing and retranslated on its own, so the page showed the merged clause AND a duplicate of it", async () => {
       const fetchMock = vi
         .fn()

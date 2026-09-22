@@ -51,6 +51,7 @@
     "revert-orion-nonpersistent-background",
     "safari-extension",
     "safari-webextension-syntax-error",
+    "same-count-reflow-detection",
     "selection-popup-language-awareness",
     "sender-validation-and-reflow-fix",
     "settings-full-parity",

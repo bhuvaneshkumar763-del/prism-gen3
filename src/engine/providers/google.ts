@@ -2,6 +2,7 @@ import { err, ok } from '../../shared/result';
 import type { PieceOutcome, TranslateBatchRequest, Translator } from '../translator';
 import { createBatchedHttpProvider } from './batchedHttpProvider';
 import { escapeHTML, unescapeHTML } from './htmlEscape';
+import { hasBoundaryReflow } from './reflowIntegrity';
 
 /**
  * Google provider — an undocumented, reverse-engineered endpoint
@@ -482,7 +483,14 @@ export function createGoogleProvider(): Translator {
         // `byIndex.size` already means one function up in
         // `splitPieceResponse` itself.
         if (outcome.value.filter((s) => s !== undefined).length !== originalPiece.length) return true;
-        return outcome.value.some((s) => RAW_MARKER_LEAK.test(s));
+        if (outcome.value.some((s) => RAW_MARKER_LEAK.test(s))) return true;
+        // Third signal (round-8, from a real user report): a SAME-COUNT
+        // reflow — right number of entries, no leaked markers, but content
+        // redistributed across the node boundaries. Both checks above are
+        // structurally blind to it. See `reflowIntegrity.ts` for the
+        // invariants and for why an over-eager answer here costs one extra
+        // repair request rather than wrong text.
+        return hasBoundaryReflow(originalPiece, outcome.value);
       }
 
       function repair(index: number): Promise<PieceOutcome> {
