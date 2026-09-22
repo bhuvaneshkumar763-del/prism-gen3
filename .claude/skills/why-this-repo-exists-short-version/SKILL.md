@@ -1,6 +1,6 @@
 ---
 name: why-this-repo-exists-short-version
-description: The old repo (two rewrites deep already) still has real lineage from the
+description: Why Prism Gen 3 is a new repository rather than another rewrite in place — the legacy fork lineage in the old repo's code, and what this rewrite is trying to leave behind. Background for questions about project history or direction.
 ---
 
 # Why this repo exists (short version)

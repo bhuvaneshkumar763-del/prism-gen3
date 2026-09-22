@@ -103,7 +103,13 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
             if (!e.isTrusted) return;
             void handleTranslateClick();
           },
-          onCloseClick: () => {
+          // Consistency with onTranslateClick above, NOT a defense: this
+          // path spends nothing, and a page that wants the popup gone has
+          // far better options (it owns the document). The translate guard
+          // exists because a synthetic click there would spend the user's
+          // own provider quota; nothing comparable is at stake here.
+          onCloseClick: (e) => {
+            if (!e.isTrusted) return;
             state = { ...state, buttonVisible: false, panelOpen: false };
             renderNow();
           },

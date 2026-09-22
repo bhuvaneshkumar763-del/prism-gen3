@@ -1,3 +1,4 @@
+import { createSignal } from 'solid-js';
 import { render } from 'solid-js/web';
 import { findOriginalTextForElement } from '../../src/engine/pageTranslator/hoverOriginalText';
 import { createShadowHost } from '../../src/shared/ui/shadowHost';
@@ -27,6 +28,25 @@ export interface TranslatedNodesSource {
 }
 
 /**
+ * The node the pointer is really over.
+ *
+ * For an event that originated inside an OPEN shadow tree the browser
+ * retargets `event.target` to the shadow HOST, so reading `target` directly
+ * can never identify a shadow-internal element — and page translation
+ * deliberately walks open shadow roots (`collectTextNodes`), so those nodes
+ * really are translated and really should show their original on hover.
+ * `composedPath()[0]` is the un-retargeted node.
+ *
+ * Both `onMouseOver` and `onMouseOut` must go through this, not just the
+ * former: `onMouseOut` compares against `currentTarget`, and once that
+ * holds a shadow-internal node a retargeted `mouseout` would no longer
+ * match it, leaving the tooltip stranded on screen.
+ */
+function resolveEventTarget(e: Event): EventTarget | null {
+  return e.composedPath()[0] ?? e.target;
+}
+
+/**
  * Wires up "hover over translated text to see the original." Desktop only
  * (matches the old repo's behavior — hover has no equivalent on touch), a
  * debounce before showing (so moving the mouse across the page doesn't
@@ -43,15 +63,39 @@ export function mountHoverTooltip(pageTranslator: TranslatedNodesSource): HoverT
 
   const { host, mountPoint } = createShadowHost(HOST_ID, HOVER_TOOLTIP_STYLES);
 
-  let dispose: (() => void) | null = null;
   let showTimer: ReturnType<typeof setTimeout> | null = null;
   let currentTarget: EventTarget | null = null;
 
+  // Speed fix, found via a round-7 audit: this used to `dispose()` the Solid
+  // root and `render()` a fresh one on every call — and `onMouseMove` below
+  // calls it on EVERY mousemove while the tooltip is visible, so following
+  // the cursor across one element rebuilt the whole root dozens of times.
+  // `FloatingBubble` was deliberately moved off this same pattern because
+  // the teardown broke drag. Rendered once now, with the component reading
+  // through getters so a `setState` just updates the existing DOM node.
+  const [state, setState] = createSignal({ visible: false, text: '', top: 0, left: 0 });
+  const dispose = render(
+    () =>
+      HoverTooltip({
+        get visible() {
+          return state().visible;
+        },
+        get text() {
+          return state().text;
+        },
+        get top() {
+          return state().top;
+        },
+        get left() {
+          return state().left;
+        },
+      }),
+    mountPoint,
+  );
+
   function renderState(visible: boolean, text: string, top: number, left: number): void {
-    dispose?.();
-    dispose = render(() => HoverTooltip({ visible, text, top, left }), mountPoint);
+    setState({ visible, text, top, left });
   }
-  renderState(false, '', 0, 0);
 
   function hide(): void {
     if (showTimer) clearTimeout(showTimer);
@@ -61,7 +105,7 @@ export function mountHoverTooltip(pageTranslator: TranslatedNodesSource): HoverT
   }
 
   function onMouseOver(e: MouseEvent): void {
-    const target = e.target;
+    const target = resolveEventTarget(e);
     if (!(target instanceof Element) || target === currentTarget) return;
     currentTarget = target;
     if (showTimer) clearTimeout(showTimer);
@@ -82,7 +126,7 @@ export function mountHoverTooltip(pageTranslator: TranslatedNodesSource): HoverT
   }
 
   function onMouseOut(e: MouseEvent): void {
-    if (e.target === currentTarget) hide();
+    if (resolveEventTarget(e) === currentTarget) hide();
   }
 
   function onMouseMove(e: MouseEvent): void {
@@ -106,7 +150,7 @@ export function mountHoverTooltip(pageTranslator: TranslatedNodesSource): HoverT
       document.removeEventListener('mouseout', onMouseOut);
       document.removeEventListener('mousemove', onMouseMove);
       if (showTimer) clearTimeout(showTimer);
-      dispose?.();
+      dispose();
       host.remove();
     },
   };

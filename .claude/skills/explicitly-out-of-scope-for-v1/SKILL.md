@@ -1,6 +1,6 @@
 ---
 name: explicitly-out-of-scope-for-v1
-description: Compiled Session 10, per the plan's Session 10 requirement — a visible
+description: The compiled "not yet" list for v1 — features deliberately excluded, each with a pointer to the ADR or session writeup holding the reason. Check before proposing or building something that may have already been ruled out.
 ---
 
 # Explicitly out of scope for v1

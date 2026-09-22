@@ -1,6 +1,6 @@
 ---
 name: known-gaps-expected-at-this-stage-not-oversights
-description: deliberate Session 4 deferral, see
+description: Deliberate gaps and deferrals in Prism Gen 3 (missing providers, cross-origin frames, custom dictionary), with resolved items struck through. Read before reporting something as a bug — it may be a documented, intentional deferral.
 ---
 
 # Known gaps (expected at this stage, not oversights)
@@ -8,15 +8,19 @@ description: deliberate Session 4 deferral, see
 - No DeepL provider (neither the Free API nor the live-tab bridge) — a
   deliberate Session 4 deferral, see
   `docs/decisions/0005-deepl-live-tab-bridge.md`.
-- No iframe support for auto-translate-on-load — main-frame only, see
-  `originalLanguageTracker.ts`'s header comment. The typed messaging layer
-  this needs now exists (Session 6); relaying a main frame's detected
-  language into same-origin iframes is still unbuilt.
-- No element-attribute translation (placeholder/title/alt/aria-label) or
-  custom-dictionary application — every text node still gets found and
-  translated correctly, this is the same documented phase-2 scope cut the
-  plan calls out, not a regression. Custom dictionary specifically:
-  deliberately not started in Session 6 either, see that session's writeup.
+- ~~No iframe support for auto-translate-on-load~~ **Resolved for
+  same-origin frames** (beta.37): `FrameLanguageDecision` carries the main
+  frame's detected `originalLanguage`, and a same-origin sub-frame passes it
+  through as an explicit `sourceLanguage`. Remaining gap: CROSS-ORIGIN
+  frames, which `entrypoints/content.ts` deliberately returns from early
+  (beta.53) since they can never receive a decision at all.
+- ~~No element-attribute translation~~ **Resolved**: `placeholder`, `alt`,
+  a button's `value`, `title`, and `aria-label` are translated by
+  `attributeTranslator.ts` (`aria-label` added by the round-7 audit). Still
+  unbuilt: **custom-dictionary application** — every text node is still
+  found and translated correctly, so this is a coverage gap, not a
+  regression; deliberately not started in Session 6 either, see that
+  session's writeup.
 - ~~The floating bubble has no drag-to-reposition or edge-docking~~
   **Resolved** by the post-launch UI-depth pass's Phase 1 (see that section
   above) — the bubble is now always-on, draggable, edge-docked, with a
@@ -74,12 +78,17 @@ description: deliberate Session 4 deferral, see
     third-party endpoint. `docs/decisions/0006-permission-model.md`
     reasons carefully about content-script injection permissions and
     never addresses the fetch path.
-  - `translateLoop.ts` slices the queue into `MAX_PIECES_PER_TICK`-sized
-    batches before `groupNodesForBatching()` ever runs, and that function
-    keeps no state across calls — so a paragraph whose nodes straddle a
-    100-node tick boundary loses shared grouping context. Only affects
-    `groupByBlock` (the LLM provider); `google`/`googleCloudTranslate`
-    don't use it.
+  - ~~`translateLoop.ts` slices the queue before `groupNodesForBatching()`
+    runs, so a paragraph straddling a tick boundary loses shared grouping
+    context~~ **Resolved** by the round-7 audit: the tick now pushes a
+    straddling block's trailing nodes back so the whole block groups
+    together next tick (with a starvation guard for a single block larger
+    than one tick — that one still splits, as before). Note this entry was
+    doubly stale before that fix: it said **100** nodes when
+    `MAX_PIECES_PER_TICK` has been **300** since the post-launch speed pass,
+    and said it affected the LLM provider only when `descriptors.ts` has
+    given `google` — the DEFAULT provider — `groupByBlock: true` since
+    Google sentence-context grouping landed.
 - Selection-translation (`getSelectionInfo`/`window.getSelection()`)
   cannot see text inside an open shadow root — `window.getSelection()`
   doesn't reach into one, even though page translation itself

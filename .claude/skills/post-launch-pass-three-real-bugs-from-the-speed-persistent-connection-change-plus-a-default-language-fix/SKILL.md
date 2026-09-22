@@ -1,6 +1,6 @@
 ---
 name: post-launch-pass-three-real-bugs-from-the-speed-persistent-connection-change-plus-a-default-language-fix
-description: Filed by the user shortly after the pass above shipped — the persistent
+description: Three real bugs caused by the persistent-IndexedDB-connection speed change, plus a default-language fix. Read when touching the cache connection or investigating a regression traced to that speed work.
 ---
 
 # Post-launch pass: three real bugs from the speed/persistent-connection change, plus a default-language fix

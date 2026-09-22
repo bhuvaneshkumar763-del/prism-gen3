@@ -1,6 +1,6 @@
 ---
 name: post-launch-ui-depth-pass-phase-3-settings
-description: Third and final phase of the pass documented above (Phases 1-2: bubble,
+description: Phase 3 (settings) of the UI-depth pass: the options page taken from 4 sections/13 fields to a 5-tab layout. Read before changing the options/settings page.
 ---
 
 # Post-launch UI-depth pass, Phase 3: settings

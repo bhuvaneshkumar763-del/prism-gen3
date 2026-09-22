@@ -315,6 +315,10 @@ export function collectTextNodes(root: Node, options: NoTranslateOptions = {}): 
  * button/submit/reset `<input>` (its VISIBLE label, not a form's actual
  * submitted data — a text/email/etc. input's `value` is real user data and
  * is deliberately never touched), and `title` on any element (a tooltip).
+ * `aria-label` on any element was added by a round-7 audit — it is the one
+ * commonly-used visible-to-screen-readers label TWP's set omits, so it left
+ * assistive tech announcing the source language on an otherwise fully
+ * translated page.
  * Honors `.notranslate`/`translate="no"`/`isContentEditable` on the
  * element itself and every ancestor, same as text-node collection. Does
  * NOT reuse `isNoTranslateNode` wholesale for the element's OWN attribute
@@ -328,9 +332,25 @@ export function collectTextNodes(root: Node, options: NoTranslateOptions = {}): 
  * `<option>` remain exactly right for deciding whether to DESCEND into an
  * element's children, just not for excluding the element's own attributes.
  */
+/**
+ * The single source of truth for which attributes get translated.
+ *
+ * `attributeTranslator.ts`'s `WATCHED_ATTRIBUTES` (its MutationObserver's
+ * `attributeFilter`) is derived from this rather than hand-listed: that
+ * array used to be typed as a plain `AttributeTarget['attribute'][]`, which
+ * a subset satisfies, so adding an attribute here and forgetting it there
+ * compiled fine and silently translated the initial value while ignoring
+ * every later change to it.
+ *
+ * `aria-label` is included; `aria-placeholder`/`aria-description` are not —
+ * they are rare, and each added attribute is more surface for the "a machine
+ * identifier gets translated" risk `title` already carries.
+ */
+export const TRANSLATABLE_ATTRIBUTES = ['placeholder', 'alt', 'value', 'title', 'aria-label'] as const;
+
 export interface AttributeTarget {
   element: Element;
-  attribute: 'placeholder' | 'alt' | 'value' | 'title';
+  attribute: (typeof TRANSLATABLE_ATTRIBUTES)[number];
 }
 
 function isHardExcludedFromAttributes(el: Element): boolean {
@@ -354,6 +374,7 @@ function translatableAttributesFor(el: Element): AttributeTarget['attribute'][] 
     attrs.push('value');
   }
   if (el.hasAttribute('title')) attrs.push('title');
+  if (el.hasAttribute('aria-label')) attrs.push('aria-label');
   return attrs;
 }
 

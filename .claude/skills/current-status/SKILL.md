@@ -1,16 +1,43 @@
 ---
 name: current-status
-description: slice) are complete.** What Session 2 landed:
+description: Session-by-session history of what each phase of the Gen 3 build landed, plus an authoritative "state of the code right now" summary at the top. Read the top block first — the rest is historical narrative and describes the code as it was at the time, not as it is.
 ---
 
 # Current status
+
+> **Read this block first — it supersedes the historical narrative below.**
+>
+> Everything after this block is a session-by-session record written at the
+> time. It is kept because the reasoning is valuable, but it describes the
+> code as it WAS, and several statements in it are no longer true. A round-7
+> audit found a reader could come away believing this project still ships
+> providers that were deleted.
+>
+> **As of 0.3.0-beta.64 / the round-7 audit:**
+>
+> - **Three providers, not five**: `google.ts` (default, free scraped
+>   endpoint), `googleCloudTranslate.ts` (user's own key), `llm.ts`
+>   (OpenAI-compatible). `libretranslate.ts` and `builtin.ts` were both
+>   **removed post-launch** and their files no longer exist — see the
+>   provider table further down, which is correct.
+> - **Google DOES use block-level grouping.** `descriptors.ts` gives it
+>   `batchingHint: { groupByBlock: true, maxGroupChars: 2000 }`. The
+>   narrative below (and the provider table's Google row) says this hint was
+>   removed post-launch; it was later re-added, guarded by `google.ts`'s own
+>   reflow `needsRepair`/`repair` mechanism. Anything reasoning about
+>   grouping must treat Google as a grouping provider.
+> - **Element attributes are translated** — `placeholder`, `alt`, a button's
+>   `value`, `title`, `aria-label` — by `attributeTranslator.ts`.
+> - **Same-origin iframes inherit the main frame's detected language**
+>   (beta.37). Cross-origin frames deliberately do nothing at all (beta.53).
 
 **Session 1 (framework/repo bootstrap) and Session 2 (first vertical
 slice) are complete.** What Session 2 landed:
 - `src/engine/translator.ts`: the `Translator` port every provider
   implements — deliberately minimal (no batching/retry/concurrency yet;
   those generalize once there's more than one provider, in Session 4).
-- `src/engine/providers/libretranslate.ts`: a real LibreTranslate provider
+- `src/engine/providers/libretranslate.ts` **(removed post-launch — this
+  file no longer exists; see the top block)**: a real LibreTranslate provider
   (documented JSON HTTP API — POST `{q, source, target, format}` to
   `${baseUrl}/translate`). Chosen deliberately over Google/Bing/Yandex
   (token-scraping) and the DeepL live-tab bridge (third-party UI
@@ -106,7 +133,9 @@ slice) are complete.** What Session 2 landed:
   once. Built on `fetch` (no XHR shim needed — unlike the old repo's MV3
   constraint, `fetch` has no `chrome`-API dependency), so it lives cleanly
   in `src/engine/` under the purity guard.
-- **Five providers**: `libretranslate.ts` (rebuilt on the shared base),
+- **Five providers** *(at the time — two were removed post-launch, so THREE
+  ship today; see the top block)*: `libretranslate.ts` (rebuilt on the
+  shared base, since removed),
   `google.ts` (free scraped `translateHtml` endpoint — response parser
   **independently re-derived from live API testing**, not templated from
   the old repo's file, per an explicit mid-session user instruction — see
@@ -754,7 +783,7 @@ libretranslate, llm, builtin):
 | Provider | Status | Note |
 |---|---|---|
 | LibreTranslate | **Removed post-launch** | Ported Session 2; removed by explicit user request after being demoted from the default provider (public instance rate-limits to the point of uselessness) and not worth keeping as a selectable-but-broken-by-default option — see the "Provider removals" post-launch section below and `docs/decisions/0004-provider-scope.md`'s "Update" |
-| Google (free scraped `translateHtml`) | Ported | Session 4, independently re-engineered against live traffic — see `docs/decisions/0004-provider-scope.md`. Its block-level `batchingHint` was later removed post-launch too — see below |
+| Google (free scraped `translateHtml`) | Ported | Session 4, independently re-engineered against live traffic — see `docs/decisions/0004-provider-scope.md`. Its block-level `batchingHint` was removed post-launch (beta.13, reflow corruption) and then **RE-ADDED** once `google.ts` grew its own `needsRepair`/`repair` mechanism — Google is a `groupByBlock` provider today |
 | Google Cloud Translate | Deliberately Improved | New in Session 4, not in the old repo — added specifically because it's the real API Arc's own translate feature is built on, confirmed by investigation, not the free scrape's quality ceiling |
 | LLM (OpenAI-compatible) | Ported | Session 4 |
 | Builtin (on-device Gemini Nano) | **Removed post-launch** | Ported Session 4; removed after root-causing a real "not configured or unavailable" report to a hard platform limitation — Chrome's on-device model is Google's own proprietary service and never works in any other Chromium-based browser, even ones sharing the same engine — see the "Provider removals" post-launch section below |

@@ -1,6 +1,6 @@
 ---
 name: post-launch-ui-depth-pass-phase-2-popup
-description: Same pass as Phase 1 above (bubble), same three-phase plan agreed with the
+description: Phase 2 (popup) of the UI-depth pass: the toolbar popup taken from 4 controls toward the pre-rewrite fork's 19. Read before changing the popup.
 ---
 
 # Post-launch UI-depth pass, Phase 2: popup

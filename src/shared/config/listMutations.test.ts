@@ -10,6 +10,7 @@ import {
   removeLangFromNeverTranslate,
   removeSiteFromAlwaysTranslate,
   removeSiteFromNeverTranslate,
+  siteListIncludesHostname,
 } from './listMutations';
 
 const emptySnapshot = {
@@ -152,5 +153,54 @@ describe('addRecentTargetLanguage', () => {
   });
   it('caps the list at max entries', () => {
     expect(addRecentTargetLanguage(['a', 'b', 'c'], 'd', 3)).toEqual(['d', 'a', 'b']);
+  });
+});
+
+describe('siteListIncludesHostname', () => {
+  // Real bug this closed, found via a round-7 audit: every site-list check
+  // used `list.includes(hostname)` — exact string equality — while
+  // `normalizeHostname` strips scheme/path and lowercases but never touches
+  // `www.`. A rule saved as `example.com` therefore never fired on
+  // `www.example.com`, and the options page kept displaying it as an active
+  // rule. Bidirectional on purpose: a user who saved either form means the
+  // same site.
+  it('matches an apex rule against a www visit', () => {
+    expect(siteListIncludesHostname(['example.com'], 'www.example.com')).toBe(true);
+  });
+
+  it('matches a www rule against an apex visit', () => {
+    expect(siteListIncludesHostname(['www.example.com'], 'example.com')).toBe(true);
+  });
+
+  it('still matches the plain exact case', () => {
+    expect(siteListIncludesHostname(['example.com'], 'example.com')).toBe(true);
+    expect(siteListIncludesHostname(['www.example.com'], 'www.example.com')).toBe(true);
+  });
+
+  // Deliberately NOT all-subdomain matching: a never-translate rule should
+  // not silently cover subdomains the user never named.
+  it('does not match an unrelated subdomain', () => {
+    expect(siteListIncludesHostname(['example.com'], 'docs.example.com')).toBe(false);
+    expect(siteListIncludesHostname(['docs.example.com'], 'example.com')).toBe(false);
+  });
+
+  it('does not match a hostname that merely ends with the rule', () => {
+    expect(siteListIncludesHostname(['example.com'], 'notexample.com')).toBe(false);
+  });
+
+  it('normalizes legacy/imported entries that were never run through normalizeHostname', () => {
+    expect(siteListIncludesHostname(['HTTPS://Example.COM/some/path'], 'www.example.com')).toBe(true);
+  });
+
+  it('does not strip a leading www when nothing but a bare label would remain', () => {
+    // `www.com` is a real registrable hostname; stripping its `www.` would
+    // leave `com` and let a nonsensical `com` rule match it.
+    expect(siteListIncludesHostname(['com'], 'www.com')).toBe(false);
+    expect(siteListIncludesHostname(['www.com'], 'www.com')).toBe(true);
+  });
+
+  it('never matches an empty hostname (a non-http(s) tab leaves it blank)', () => {
+    expect(siteListIncludesHostname(['example.com'], '')).toBe(false);
+    expect(siteListIncludesHostname([''], '')).toBe(false);
   });
 });

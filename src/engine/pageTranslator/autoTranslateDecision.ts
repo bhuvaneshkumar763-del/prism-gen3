@@ -11,6 +11,8 @@
  * carve-out, but visiting someone else's translate-result page would
  * otherwise get auto-translated again on top of their translation.
  */
+
+import { siteListIncludesHostname } from '../../shared/config/listMutations';
 import { baseLanguageTag } from '../../shared/languages';
 
 const TRANSLATION_SERVICE_HOSTS = new Set([
@@ -63,10 +65,10 @@ export interface AutoTranslateDecisionInput {
 export function shouldAutoTranslateOnLoad(input: AutoTranslateDecisionInput): boolean {
   if (input.pageLanguageState !== 'original') return false;
   if (input.isIncognito) return false;
-  if (input.neverTranslateSites.includes(input.hostname)) return false;
+  if (siteListIncludesHostname(input.neverTranslateSites, input.hostname)) return false;
   if (isTranslationServiceHost(input.hostname)) return false;
 
-  if (input.alwaysTranslateSites.includes(input.hostname)) return true;
+  if (siteListIncludesHostname(input.alwaysTranslateSites, input.hostname)) return true;
 
   if (input.originalLanguage === 'und') return false;
   // Compared by base tag (see baseLanguageTag's doc comment) — a regional

@@ -62,6 +62,36 @@ describe('createAttributeTranslator', () => {
     expect(document.getElementById('d')?.getAttribute('title')).toBe('TR:A tooltip');
   });
 
+  // Round-7 audit: `aria-label` was the one common user-visible label the
+  // attribute set left out, so a screen reader still announced the source
+  // language on an otherwise fully translated page.
+  it('translates aria-label, including a dynamic change and restore()', async () => {
+    document.body.innerHTML = '<button id="a" aria-label="Close dialog">x</button>';
+    translateBatch.mockImplementation(async (request) =>
+      request.pieces.map((piece): PieceOutcome => ok([`TR:${piece[0]}`])),
+    );
+
+    const t = newTranslator();
+    await t.start('es');
+    expect(document.getElementById('a')?.getAttribute('aria-label')).toBe('TR:Close dialog');
+
+    // The dynamic path is what the WATCHED_ATTRIBUTES drift guard protects:
+    // a widened attribute union that forgot this array would translate the
+    // initial value and then silently ignore every later change.
+    document.getElementById('a')?.setAttribute('aria-label', 'Open dialog');
+    await flushAsyncWork();
+    await flushAsyncWork();
+    expect(document.getElementById('a')?.getAttribute('aria-label')).toBe('TR:Open dialog');
+
+    t.restore();
+    // The FIRST-ever-seen value, not the page's later one — `noteOriginal`
+    // deliberately never overwrites the real original, so a re-translate
+    // can't poison the restore baseline with an already-translated value.
+    // Same for every other attribute; asserted here so this test documents
+    // the real contract rather than an assumed one.
+    expect(document.getElementById('a')?.getAttribute('aria-label')).toBe('Close dialog');
+  });
+
   it('sends the source/target languages and original values through as pieces', async () => {
     document.body.innerHTML = '<input placeholder="Search">';
     uppercaseOnce();

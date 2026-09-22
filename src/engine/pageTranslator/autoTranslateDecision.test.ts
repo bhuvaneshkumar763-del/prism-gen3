@@ -27,6 +27,46 @@ describe('shouldAutoTranslateOnLoad', () => {
     );
   });
 
+  // Round-7 audit: both site-list checks go through
+  // `siteListIncludesHostname` now, so an apex rule covers the `www.` host
+  // and vice versa. Previously `list.includes(hostname)` made a saved rule
+  // silently inert on the other form.
+  it('honors an apex always-translate rule when visiting the www host', () => {
+    expect(
+      shouldAutoTranslateOnLoad(baseInput({ hostname: 'www.example.com', alwaysTranslateSites: ['example.com'] })),
+    ).toBe(true);
+  });
+
+  it('honors a www never-translate rule when visiting the apex host', () => {
+    expect(
+      shouldAutoTranslateOnLoad(
+        baseInput({
+          hostname: 'example.com',
+          neverTranslateSites: ['www.example.com'],
+          alwaysTranslateLangs: ['fr'],
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it('keeps never winning over always across the www/apex equivalence', () => {
+    expect(
+      shouldAutoTranslateOnLoad(
+        baseInput({
+          hostname: 'www.example.com',
+          alwaysTranslateSites: ['www.example.com'],
+          neverTranslateSites: ['example.com'],
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it('does not let an apex rule leak onto an unrelated subdomain', () => {
+    expect(
+      shouldAutoTranslateOnLoad(baseInput({ hostname: 'docs.example.com', alwaysTranslateSites: ['example.com'] })),
+    ).toBe(false);
+  });
+
   it('is false when the hostname is on the never-translate-sites list', () => {
     expect(shouldAutoTranslateOnLoad(baseInput({ neverTranslateSites: ['example.com'] }))).toBe(false);
   });

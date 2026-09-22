@@ -12,6 +12,7 @@ import {
   addSiteToNeverTranslate,
   removeSiteFromAlwaysTranslate,
   removeSiteFromNeverTranslate,
+  siteListIncludesHostname,
 } from '../../src/shared/config/listMutations';
 import { resolveBubbleVisibility, setBubbleVisibilityForHost } from '../../src/shared/config/siteOverrides';
 import { COMMON_LANGUAGES, languageName } from '../../src/shared/languages';
@@ -77,8 +78,10 @@ function App() {
   // pollUntilWorkingDone below) must also hold before this counts as done.
   // Same fix as FloatingBubble.tsx's `translated()`.
   const translated = createMemo(() => pageState() === 'translated' && status() !== 'busy');
-  const alwaysSiteOn = createMemo(() => alwaysSites().includes(hostname()));
-  const neverSiteOn = createMemo(() => neverSites().includes(hostname()));
+  // Via the shared helper, not `.includes()`: a `www.`/apex mismatch used
+  // to make these toggles read OFF while auto-translate fired anyway.
+  const alwaysSiteOn = createMemo(() => siteListIncludesHostname(alwaysSites(), hostname()));
+  const neverSiteOn = createMemo(() => siteListIncludesHostname(neverSites(), hostname()));
   const alwaysLangOn = createMemo(() => alwaysLangs().includes(originalLanguage()));
   const bubbleOnForSite = createMemo(() =>
     resolveBubbleVisibility({ hostname: hostname(), bubbleEnabled: bubbleEnabled(), bubbleByHost: bubbleByHost() }),

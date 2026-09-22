@@ -17,7 +17,11 @@ import {
   positionFromDragPoint,
   resolveDockedPoint,
 } from '../../src/shared/bubble/bubblePosition';
-import { addSiteToAlwaysTranslate, removeSiteFromAlwaysTranslate } from '../../src/shared/config/listMutations';
+import {
+  addSiteToAlwaysTranslate,
+  removeSiteFromAlwaysTranslate,
+  siteListIncludesHostname,
+} from '../../src/shared/config/listMutations';
 import {
   resolveSourceLanguageForHost,
   setBubbleVisibilityForHost,
@@ -97,7 +101,9 @@ export function FloatingBubble(props: FloatingBubbleProps) {
 
   const [targetLanguage, setTargetLanguageSignal] = createSignal(configStore.get('targetLanguage'));
   const [service, setServiceSignal] = createSignal(configStore.get('pageTranslatorProvider'));
-  const [alwaysOn, setAlwaysOn] = createSignal(configStore.get('alwaysTranslateSites').includes(props.hostname));
+  const [alwaysOn, setAlwaysOn] = createSignal(
+    siteListIncludesHostname(configStore.get('alwaysTranslateSites'), props.hostname),
+  );
   const [sourceLanguage, setSourceLanguageSignal] = createSignal(
     resolveSourceLanguageForHost(configStore.get('sourceLanguageByHost'), props.hostname, 'auto'),
   );
@@ -318,7 +324,8 @@ export function FloatingBubble(props: FloatingBubbleProps) {
     const unsubConfig = configStore.onChanged((name, value) => {
       if (name === 'targetLanguage') setTargetLanguageSignal(value as string);
       else if (name === 'pageTranslatorProvider') setServiceSignal(value as ProviderId);
-      else if (name === 'alwaysTranslateSites') setAlwaysOn((value as string[]).includes(props.hostname));
+      else if (name === 'alwaysTranslateSites')
+        setAlwaysOn(siteListIncludesHostname(value as string[], props.hostname));
       else if (name === 'sourceLanguageByHost') {
         setSourceLanguageSignal(resolveSourceLanguageForHost(value as Record<string, string>, props.hostname, 'auto'));
       } else if (name === 'bubblePosition') {

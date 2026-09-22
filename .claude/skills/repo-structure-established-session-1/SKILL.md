@@ -1,6 +1,6 @@
 ---
 name: repo-structure-established-session-1
-description: entrypoints/         WXT entrypoints — one per browser-visible surface.
+description: Directory layout of Prism Gen 3 and what each layer is allowed to import — entrypoints/, components/, src/engine/ (browser-API-pure, CI-enforced), src/platform/, src/shared/. Read before adding a file so it lands in the right layer.
 ---
 
 # Repo structure (established Session 1)

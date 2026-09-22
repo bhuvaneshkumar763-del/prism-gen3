@@ -25,7 +25,7 @@ export interface SelectionPopupProps {
   busy: boolean;
   translatedText: string;
   errorMessage: string | null;
-  onCloseClick: () => void;
+  onCloseClick: (e: MouseEvent) => void;
 }
 
 export function SelectionPopup(props: SelectionPopupProps) {

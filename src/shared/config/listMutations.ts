@@ -51,6 +51,48 @@ export function normalizeHostname(input: string): string {
   }
 }
 
+/**
+ * Treats `www.example.com` and `example.com` as the same site, which is what
+ * a user who typed either one into the site lists means.
+ *
+ * Stops short of full subdomain matching on purpose: a never-translate rule
+ * for `example.com` should not silently cover `docs.example.com`, which the
+ * user never named. Only the `www.` label is collapsed.
+ *
+ * The `www.` strip is skipped when nothing but a bare label would remain, so
+ * the real registrable hostname `www.com` keeps its own identity instead of
+ * being matched by a nonsensical `com` rule.
+ */
+function apexForm(hostname: string): string {
+  const normalized = normalizeHostname(hostname);
+  if (!normalized.startsWith('www.')) return normalized;
+  const withoutWww = normalized.slice(4);
+  return withoutWww.includes('.') ? withoutWww : normalized;
+}
+
+/**
+ * The single membership test for the always/never-translate site lists.
+ *
+ * Real bug this exists to close (round-7 audit): the decision
+ * (`autoTranslateDecision.ts`) and BOTH per-site toggles (the bubble's and
+ * the popup's) each did their own `list.includes(hostname)`, so a `www.`
+ * mismatch made a saved rule silently inert while the UI still showed it as
+ * active. Three independent copies of the same comparison is also why this
+ * lives here rather than being fixed at any one call site — fixing only the
+ * decision would have left both toggles reading OFF while auto-translate
+ * fired, which is worse than being consistently wrong.
+ *
+ * Entries are re-normalized rather than trusted: `addSiteTo*` normalizes on
+ * save, but a list restored from a backup or written by an older build can
+ * still hold a raw `HTTPS://Example.COM/path`.
+ */
+export function siteListIncludesHostname(list: readonly string[], hostname: string): boolean {
+  if (!hostname.trim()) return false;
+  const target = apexForm(hostname);
+  if (!target) return false;
+  return list.some((entry) => entry.trim() !== '' && apexForm(entry) === target);
+}
+
 export function addSiteToAlwaysTranslate(snapshot: ListsSnapshot, hostname: string): ListsPatch {
   const normalized = normalizeHostname(hostname);
   return {

@@ -1,6 +1,6 @@
 ---
 name: post-launch-pass-speed-dynamic-content-correctness-tag-cluster-accuracy
-description: A separate pass from the UI-depth work above, prompted by a real user
+description: Post-launch pass driven by a user report that the rewrite felt slower than the pre-rewrite fork: speed work, dynamic-content correctness, and tag-cluster accuracy. Read before making performance claims or changes in these areas.
 ---
 
 # Post-launch pass: speed, dynamic-content correctness, tag-cluster accuracy

@@ -1,6 +1,6 @@
 ---
 name: testing
-description: Run before considering any Gen 3 change done:
+description: The verification gate every Gen 3 change must pass before it is considered done: compile, lint, unit tests, the engine-purity/solid-reactivity/bundle-size guards, both browser builds, and e2e. Read before finishing or shipping any change.
 ---
 
 # Testing

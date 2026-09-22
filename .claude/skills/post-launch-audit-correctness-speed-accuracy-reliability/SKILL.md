@@ -1,6 +1,6 @@
 ---
 name: post-launch-audit-correctness-speed-accuracy-reliability
-description: Two-part post-launch audit pass — a whole-codebase correctness
+description: Post-launch audit pass: a whole-codebase correctness review plus a line-by-line sweep focused on the free google provider. Historical record of what was found and fixed — check before re-auditing the same ground.
 ---
 
 # Post-launch audit: correctness, speed, accuracy, reliability

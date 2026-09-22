@@ -2326,4 +2326,59 @@ describe('rapid navigation — overlapping translate cycles must always converge
     await waitFor(() => !pageTranslator.isWorking(), 5000);
     pageTranslator.restorePage();
   }, 30000);
+
+  // Round-7 audit. `MAX_PIECES_PER_TICK` slices the queue BEFORE
+  // `groupNodesForBatching()` runs, and grouping keeps no state across
+  // calls — so a block whose text nodes straddle that cut used to be
+  // translated as two context-free fragments. Reaches the DEFAULT provider
+  // now, not just LLM: `descriptors.ts` gives google `groupByBlock: true`.
+  it('keeps a block whose nodes straddle the per-tick slice boundary in ONE group instead of splitting it into context-free fragments', async () => {
+    // 299 single-node paragraphs, then one paragraph of three text nodes —
+    // so the 300-node cut lands inside that last paragraph.
+    const filler = Array.from({ length: 299 }, (_, i) => `<p>line${i}</p>`).join('');
+    document.body.innerHTML = `${filler}<p>Alpha <b>beta</b> gamma</p>`;
+
+    const allPieces: string[][] = [];
+    const translateBatch = vi.fn(async (request: { pieces: string[][] }): Promise<PieceOutcome[]> => {
+      allPieces.push(...request.pieces.map((piece) => [...piece]));
+      return request.pieces.map((piece): PieceOutcome => ok(piece.map((s) => s.toUpperCase())));
+    });
+
+    const pageTranslator = createPageTranslator({
+      translator: { translateBatch },
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => ({ groupByBlock: true, maxGroupChars: 2000 }),
+    });
+
+    await pageTranslator.translatePage('es');
+    await waitFor(() => document.body.textContent?.includes('GAMMA') === true, 5000);
+
+    const straddling = allPieces.filter((piece) => piece.some((s) => /Alpha|beta|gamma/.test(s)));
+    // Pre-fix this was [['Alpha '], ['beta', ' gamma']] — the sentence
+    // arrived as two separate requests with no shared context.
+    expect(straddling).toEqual([['Alpha ', 'beta', ' gamma']]);
+
+    pageTranslator.restorePage();
+  }, 30000);
+
+  it('still makes progress when a SINGLE block holds more nodes than one tick can carry — starvation guard: trimming the straddling block unconditionally would empty the batch every tick and translate nothing, forever', async () => {
+    // One paragraph, 320 text nodes, every one of them in the same block —
+    // so the trim above has no boundary it can pull back to.
+    const inner = Array.from({ length: 320 }, (_, i) => `w${i} <b>x</b>`).join('');
+    document.body.innerHTML = `<p>${inner}</p>`;
+
+    const pageTranslator = createPageTranslator({
+      translator: uppercaseTranslator(),
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => ({ groupByBlock: true, maxGroupChars: 2000 }),
+    });
+
+    await pageTranslator.translatePage('es');
+    await waitFor(() => document.body.textContent?.includes('W319') === true, 8000);
+
+    expect(document.body.textContent).toContain('W0');
+    expect(document.body.textContent).toContain('W319');
+
+    pageTranslator.restorePage();
+  }, 30000);
 });

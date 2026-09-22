@@ -1,6 +1,6 @@
 ---
 name: post-launch-ui-depth-pass-bubble-popup-settings-restored-toward-the-pre-rewrite-fork-s-feature-set-phase-1-bubble
-description: A real user compared this rewrite's popup/bubble/options against the
+description: Phase 1 (bubble) of the UI-depth pass restoring parity with the pre-rewrite fork: always-on draggable edge-docked bubble with a full control panel. Read before changing the floating bubble.
 ---
 
 # Post-launch UI-depth pass: bubble/popup/settings restored toward the pre-rewrite fork's feature set (Phase 1: bubble)

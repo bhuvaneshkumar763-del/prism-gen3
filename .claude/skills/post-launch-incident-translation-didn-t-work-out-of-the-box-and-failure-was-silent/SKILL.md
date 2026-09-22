@@ -1,6 +1,6 @@
 ---
 name: post-launch-incident-translation-didn-t-work-out-of-the-box-and-failure-was-silent
-description: A real user installed the `0.2.2-beta.0` build and reported, in direct
+description: Incident writeup: the 0.2.2-beta.0 build translated nothing with any provider and failed silently. Root causes and fixes. Read when debugging a silent-failure or nothing-translates report.
 ---
 
 # Post-launch incident: translation didn't work out of the box, and failure was silent

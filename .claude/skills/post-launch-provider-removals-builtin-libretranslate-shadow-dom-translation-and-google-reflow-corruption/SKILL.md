@@ -1,6 +1,6 @@
 ---
 name: post-launch-provider-removals-builtin-libretranslate-shadow-dom-translation-and-google-reflow-corruption
-description: Four related real-user reports, worked through in sequence in one session,
+description: Why the builtin and libretranslate providers were removed, how shadow-DOM translation was added, and the Google reflow-corruption incident (beta.9 to beta.13). Read before reasoning about provider scope or Google grouping/reflow.
 ---
 
 # Post-launch: provider removals (`builtin`, `libretranslate`), shadow-DOM translation, and Google reflow corruption

@@ -4,7 +4,7 @@ import type { Translator } from '../translator';
 import { createAttributeTranslator } from './attributeTranslator';
 import { collectTextNodes, isNoTranslateNode } from './collectTextNodes';
 import { createDedupeTracker } from './dedupe';
-import { groupNodesForBatching } from './grouping';
+import { groupNodesForBatching, nearestBlockAncestor } from './grouping';
 import { createMutationWatcher } from './mutationWatcher';
 import { createResweepScheduler } from './resweep';
 import { createTitleTranslator } from './titleTranslator';
@@ -29,10 +29,17 @@ import { prioritizeByViewport } from './viewportPriority';
  * directly, and this entire engine would work unmodified — the
  * cross-surface-reuse goal from the Gen 3 plan, made concrete.
  *
- * Scope note: this port does not yet translate element attributes
- * (placeholder/title/alt/aria-label) or apply a custom dictionary — every
- * text node still gets found and translated correctly, this is a quality/
- * coverage gap, not a correctness one, and a documented later-session item.
+ * Scope note: element attributes (`placeholder`, `alt`, a button `value`,
+ * `title`, `aria-label`) ARE translated — by `attributeTranslator.ts`, its
+ * own subsystem, started and restored from this file below. They are not
+ * handled HERE because they aren't `Text` nodes, so none of this file's
+ * collect/queue/write-back/restore machinery (built entirely around `Text`
+ * node identity) applies to them. Still genuinely unbuilt: applying a
+ * custom dictionary — a quality/coverage gap, not a correctness one.
+ *
+ * (This note previously claimed attributes were not translated at all,
+ * which had been false since the attribute subsystem landed. Corrected by a
+ * round-7 audit; the same audit found two skill docs stale the same way.)
  */
 
 // Post-launch speed pass: raised from 100 — real bug, found via a live user
@@ -641,8 +648,31 @@ export function createPageTranslator(options: PageTranslatorOptions) {
         lastReorderTime = Date.now();
       }
       const batch = queue.splice(0, MAX_PIECES_PER_TICK);
+      const batchingHint = options.getBatchingHint();
+      // Accuracy fix, found via a round-7 audit: the slice above happens
+      // BEFORE grouping, and `groupNodesForBatching` keeps no state across
+      // calls — so a block whose text nodes straddle the cut used to be
+      // translated as two context-free fragments (the exact loss grouping
+      // exists to prevent: "left" as the direction instead of the verb).
+      // Reaches the DEFAULT provider, not just LLM — `descriptors.ts` gives
+      // google `groupByBlock: true`. Push the straddling block's trailing
+      // nodes back so the whole block groups together next tick.
+      if (batchingHint?.groupByBlock && queue.length > 0) {
+        // biome-ignore lint/style/noNonNullAssertion: length just checked
+        const straddledBlock = nearestBlockAncestor(queue[0]!);
+        if (straddledBlock !== null) {
+          let cut = batch.length;
+          // biome-ignore lint/style/noNonNullAssertion: cut is always in bounds
+          while (cut > 0 && nearestBlockAncestor(batch[cut - 1]!) === straddledBlock) cut--;
+          // `cut > 0` is a starvation guard, not an optimization: a single
+          // block holding more than MAX_PIECES_PER_TICK nodes would
+          // otherwise trim the batch to empty on every tick and translate
+          // nothing, forever. Such a block simply gets split, as before.
+          if (cut > 0 && cut < batch.length) queue.unshift(...batch.splice(cut));
+        }
+      }
       for (const node of batch) queuedSet.delete(node);
-      const groups = groupNodesForBatching(batch, options.getBatchingHint());
+      const groups = groupNodesForBatching(batch, batchingHint);
       const requestedUnderGeneration = cycleGeneration;
       inFlightGeneration = requestedUnderGeneration;
       recomputeWorking();

@@ -1,6 +1,6 @@
 ---
 name: conventions-established-so-far
-description: now in maintenance mode — and CRXJS — solves a narrower problem than we
+description: Project conventions for Prism Gen 3: framework (WXT), UI library (Solid) and its reactivity footgun, module boundaries, naming, and the ADRs behind each choice. Read before writing new code so a change matches existing patterns.
 ---
 
 # Conventions established so far

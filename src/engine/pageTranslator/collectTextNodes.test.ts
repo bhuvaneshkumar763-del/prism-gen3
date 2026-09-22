@@ -268,6 +268,15 @@ describe('isNoTranslateNode', () => {
 });
 
 describe('collectAttributeTargets', () => {
+  it('finds aria-label on any element', () => {
+    document.body.innerHTML = '<button aria-label="Close dialog">x</button><div aria-label="Main navigation"></div>';
+    const targets = collectAttributeTargets(document.body);
+    expect(targets.map((t) => [t.element.tagName, t.attribute])).toEqual([
+      ['BUTTON', 'aria-label'],
+      ['DIV', 'aria-label'],
+    ]);
+  });
+
   it('finds placeholder on input and textarea', () => {
     document.body.innerHTML = '<input placeholder="Search..."><textarea placeholder="Type here"></textarea>';
     const targets = collectAttributeTargets(document.body);

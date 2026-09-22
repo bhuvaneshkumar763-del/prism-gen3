@@ -4,6 +4,7 @@ import {
   collectAttributeTargets,
   hasNoTranslateAncestor,
   isNoTranslateNode,
+  TRANSLATABLE_ATTRIBUTES,
 } from './collectTextNodes';
 
 /**
@@ -35,7 +36,7 @@ export function pruneDisconnectedAttributeEntries(
 /**
  * Attribute translation (round-3 audit follow-up, deferred from beta.35's
  * accuracy round for its own design pass): `placeholder`, `alt`, `value`
- * (button/submit/reset only), and `title` — see
+ * (button/submit/reset only), `title`, and `aria-label` — see
  * `collectTextNodes.ts`'s `collectAttributeTargets` doc comment for the
  * exact target set, matched against TWP's real live source. Prism
  * previously translated no attributes at all — search boxes, image alt
@@ -63,7 +64,9 @@ export interface AttributeTranslatorOptions {
   getSourceLanguage(): string;
 }
 
-const WATCHED_ATTRIBUTES: AttributeTarget['attribute'][] = ['placeholder', 'alt', 'value', 'title'];
+// Derived, never hand-listed — see TRANSLATABLE_ATTRIBUTES's doc comment
+// for the silent-drift bug that separate lists allowed.
+const WATCHED_ATTRIBUTES: AttributeTarget['attribute'][] = [...TRANSLATABLE_ATTRIBUTES];
 
 export function createAttributeTranslator(options: AttributeTranslatorOptions) {
   /**

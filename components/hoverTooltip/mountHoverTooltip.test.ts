@@ -12,6 +12,38 @@ function dispatchMouseEvent(type: string, target: Element, opts: Partial<MouseEv
   target.dispatchEvent(new MouseEvent(type, { bubbles: true, clientX: 10, clientY: 10, ...opts }));
 }
 
+/**
+ * Dispatches `type` the way a REAL browser delivers an event that
+ * originated inside an open shadow tree: `event.target` is retargeted to
+ * the shadow HOST, while `composedPath()[0]` is the actual inner node.
+ *
+ * This has to be constructed by hand because happy-dom does NOT implement
+ * retargeting — it reports the inner node as `target` too (verified
+ * directly), so simply dispatching on an inner node would test a shape no
+ * browser ever produces and would pass even against the pre-fix code. The
+ * `composedPath` stub must include document/window or happy-dom's own
+ * propagation stops before a document-level listener is reached.
+ */
+function dispatchRetargetedMouseEvent(
+  type: string,
+  host: Element,
+  innerTarget: Element,
+  opts: Partial<MouseEventInit> = {},
+): void {
+  const event = new MouseEvent(type, { bubbles: true, composed: true, clientX: 10, clientY: 10, ...opts });
+  const path: EventTarget[] = [
+    innerTarget,
+    innerTarget.getRootNode(),
+    host,
+    document.body,
+    document.documentElement,
+    document,
+    window,
+  ];
+  Object.defineProperty(event, 'composedPath', { value: () => path, configurable: true });
+  host.dispatchEvent(event);
+}
+
 /** Mirrors hoverOriginalText.ts's real scan, so findOriginalTextForElement behaves identically to getTranslatedNodes()'s data — both must stay in sync for a mock to be realistic. */
 function makeSource(entries: Array<{ node: Text; original: string }>): TranslatedNodesSource {
   return {
@@ -147,6 +179,76 @@ describe('mountHoverTooltip', () => {
 
     dispatchMouseEvent('mouseout', p);
     expect(tooltipShadowRoot()?.querySelector('.tooltip')).toBeNull();
+
+    controller.destroy();
+  });
+
+  it('resolves the original for text inside an OPEN SHADOW ROOT, where the browser retargets event.target to the shadow host — real user-visible miss this closed: page translation deliberately walks open shadow roots (collectTextNodes), so the exact widgets shadow support was added for (a Bilibili-style comment list) translated fine and then showed nothing on hover, because event.target is the host and findOriginalTextForElement matches on node.parentElement', () => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const shadow = host.attachShadow({ mode: 'open' });
+    const inner = document.createElement('p');
+    inner.textContent = 'Hola';
+    shadow.appendChild(inner);
+    const textNode = inner.firstChild as Text;
+
+    const source: TranslatedNodesSource = makeSource([{ node: textNode, original: 'Hello' }]);
+    const controller = mountHoverTooltip(source);
+
+    dispatchRetargetedMouseEvent('mouseover', host, inner);
+    vi.advanceTimersByTime(350);
+
+    expect(tooltipShadowRoot()?.querySelector('.tooltip')?.textContent).toBe('Hello');
+
+    controller.destroy();
+    host.remove();
+  });
+
+  it('hides a shadow-DOM tooltip on mouseout — guards the specific NEW bug that fixing only onMouseOver would introduce: once currentTarget holds the shadow-internal node, a retargeted mouseout (target = host) no longer equals it, so hide() never fires and the tooltip stays stranded on screen', () => {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const shadow = host.attachShadow({ mode: 'open' });
+    const inner = document.createElement('p');
+    inner.textContent = 'Hola';
+    shadow.appendChild(inner);
+    const textNode = inner.firstChild as Text;
+
+    const source: TranslatedNodesSource = makeSource([{ node: textNode, original: 'Hello' }]);
+    const controller = mountHoverTooltip(source);
+
+    dispatchRetargetedMouseEvent('mouseover', host, inner);
+    vi.advanceTimersByTime(350);
+    expect(tooltipShadowRoot()?.querySelector('.tooltip')).not.toBeNull();
+
+    dispatchRetargetedMouseEvent('mouseout', host, inner);
+    expect(tooltipShadowRoot()?.querySelector('.tooltip')).toBeNull();
+
+    controller.destroy();
+    host.remove();
+  });
+
+  it('updates the SAME tooltip element while following the cursor instead of tearing down and recreating its Solid root on every mousemove — real perf bug this closed: renderState() did dispose() + a fresh render() per call, and onMouseMove calls it on every single mousemove while visible; FloatingBubble was deliberately moved off this exact pattern because the teardown broke drag', () => {
+    const p = document.getElementById('target') as HTMLParagraphElement;
+    const textNode = p.firstChild as Text;
+    const source: TranslatedNodesSource = makeSource([{ node: textNode, original: 'Hello' }]);
+    const controller = mountHoverTooltip(source);
+
+    dispatchMouseEvent('mouseover', p, { clientX: 10, clientY: 10 });
+    vi.advanceTimersByTime(350);
+    const firstElement = tooltipShadowRoot()?.querySelector('.tooltip') as HTMLElement;
+    expect(firstElement).not.toBeNull();
+    const initialLeft = firstElement.style.left;
+
+    dispatchMouseEvent('mousemove', p, { clientX: 200, clientY: 200 });
+    dispatchMouseEvent('mousemove', p, { clientX: 300, clientY: 300 });
+    dispatchMouseEvent('mousemove', p, { clientX: 400, clientY: 400 });
+
+    const afterMoves = tooltipShadowRoot()?.querySelector('.tooltip') as HTMLElement;
+    // Same DOM node, mutated in place — a re-render would have replaced it.
+    expect(afterMoves).toBe(firstElement);
+    // ...and it genuinely followed the cursor, so this isn't passing by
+    // virtue of the tooltip having stopped updating at all.
+    expect(afterMoves.style.left).not.toBe(initialLeft);
 
     controller.destroy();
   });

@@ -7,6 +7,7 @@
   "changesets": [
     "attribute-translator-lifecycle-fixes",
     "audit-round-6",
+    "audit-round-7",
     "auth-key-invalidation-and-suspicious-ratio",
     "batch-budget-content-not-markup",
     "bubble-full-parity",
