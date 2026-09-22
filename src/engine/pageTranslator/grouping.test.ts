@@ -322,6 +322,55 @@ describe('groupNodesForBatching', () => {
       expect(groups).toEqual([[linkText, otherText]]);
     });
 
+    it('isolates each BUTTON in a filter/tag chip row into its own piece — real user report (sangtacviet.vip): its facet panel is <span id="faceted"> holding 1003 <button class="btn btn-light">Đô Thị(263673)</button> siblings, and every isolation path here required an <a>, so all of them fell into ordinary block grouping and got packed into big multi-item <a i=N> pieces; Google redistributed content across those markers, so the visible chips read "System (192673) Fantasy (" / "189348)" instead of one tag per chip', () => {
+      const span = document.createElement('span');
+      // The real container has NO text between the chips at all —
+      // childNodes.length === children.length.
+      const words = ['Đô Thị(263673)', 'Hệ Thống(192673)', 'Huyền Huyễn(189348)'].map((text) => {
+        const button = document.createElement('button');
+        const wordNode = textNode(text);
+        button.append(wordNode);
+        span.append(button);
+        return wordNode;
+      });
+
+      const groups = groupNodesForBatching(words, { groupByBlock: true, maxGroupChars: 2000 });
+
+      expect(groups).toEqual([[words[0]], [words[1]], [words[2]]]);
+    });
+
+    it('isolates a mixed row of <a> and <button> chips — both are short interactive controls, so a row of them is a control cluster either way', () => {
+      const div = document.createElement('div');
+      const link = document.createElement('a');
+      const linkText = textNode('All');
+      link.append(linkText);
+      const button = document.createElement('button');
+      const buttonText = textNode('Finished');
+      button.append(buttonText);
+      div.append(link, textNode(' | '), button);
+
+      const groups = groupNodesForBatching([linkText, buttonText], { groupByBlock: true, maxGroupChars: 2000 });
+
+      expect(groups).toEqual([[linkText], [buttonText]]);
+    });
+
+    it('does not isolate a button sitting inside an ordinary sentence (true negative) — the surrounding prose text node bears letters, which disqualifies the whole container', () => {
+      const p = document.createElement('p');
+      const lead = textNode('Press ');
+      const button = document.createElement('button');
+      const buttonText = textNode('Submit');
+      button.append(buttonText);
+      p.append(lead, button, textNode(' to continue the application.'));
+      const tail = p.lastChild as Text;
+
+      const groups = groupNodesForBatching([lead, buttonText, tail], {
+        groupByBlock: true,
+        maxGroupChars: 2000,
+      });
+
+      expect(groups).toEqual([[lead, buttonText, tail]]);
+    });
+
     it('does not isolate a single short link with no sibling links (needs at least 2 to read as a cluster)', () => {
       const p = document.createElement('p');
       const a = textNode('Read ');

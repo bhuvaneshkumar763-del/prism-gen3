@@ -13,6 +13,7 @@
     "bubble-full-parity",
     "builtin-availability",
     "bundle-guard-retighten",
+    "button-chip-cluster-isolation",
     "enter-beta-prerelease",
     "firefox-amo-signing",
     "firefox-detect-language-hang",

@@ -141,20 +141,42 @@ export function nearestBlockAncestor(node: Text): Element | null {
   return el;
 }
 
-/** Walks up from `node` to its nearest `<a>` ancestor, stopping at a block boundary — the marker/word split described in point 4 above is always inside one anchor closer than any block element. */
+/**
+ * Elements that count as one ITEM of a chip/nav/tag cluster.
+ *
+ * `<button>` joined `<a>` here after a real user report (sangtacviet.vip):
+ * its facet panel is a single `<span>` holding ~1000
+ * `<button class="btn btn-light">Đô Thị(263673)</button>` siblings — a tag
+ * cloud in every respect except the tag name. Every isolation path in this
+ * file required an `<a>`, so all of those chips fell through to ordinary
+ * block grouping, got packed into large multi-item `<a i=N>` pieces, and
+ * Google redistributed content across the markers: the rendered chips read
+ * "System (192673) Fantasy (" and "189348)" instead of one tag each.
+ *
+ * Deliberately limited to the two INTERACTIVE controls rather than "any
+ * short element", which is what point 5's header comment warned against
+ * guessing at. A container whose children are all short anchors/buttons
+ * with no letter-bearing text between them is a control row; prose is not
+ * built that way. Widening this to `<span>`/`<div>` would reopen exactly
+ * the over-eager-isolation risk that note describes, so it stays closed
+ * until a real report needs it.
+ */
+const CLUSTER_ITEM_TAGS = new Set(['A', 'BUTTON']);
+
+/** Walks up from `node` to its nearest cluster-item ancestor (`<a>`/`<button>`), stopping at a block boundary — the marker/word split described in point 4 above is always inside one such element closer than any block element. */
 function nearestTagAnchor(node: Text): Element | null {
   let el = node.parentElement;
   while (el && !BLOCK_TAGS.has(el.tagName)) {
-    if (el.tagName === 'A') return el;
+    if (CLUSTER_ITEM_TAGS.has(el.tagName)) return el;
     el = el.parentElement;
   }
   return null;
 }
 
-/** An individual link's own text may be at most this long to still read as a nav/breadcrumb/chapter-title item rather than a real inline link sitting in prose. */
+/** An individual cluster item's own text may be at most this long to still read as a nav/breadcrumb/chip/chapter-title item rather than a real inline link or button sitting in prose. */
 const LINK_CLUSTER_MAX_ITEM_CHARS = 40;
 
-/** How many short-link siblings a container needs before it's treated as a cluster, not one link incidentally sitting in an ordinary sentence. */
+/** How many short cluster-item siblings a container needs before it's treated as a cluster, not one link/button incidentally sitting in an ordinary sentence. */
 const LINK_CLUSTER_MIN_LINKS = 2;
 
 /** A connector between cluster links (` | `, ` > `, `»`, ...) may be at most this long and must carry no letters — see point 5's header comment for why a letter-bearing child disqualifies the whole container. */
@@ -192,7 +214,7 @@ function isLinkClusterContainer(container: Element, memo: Map<Element, boolean>)
         result = false;
         break;
       }
-    } else if (child.nodeType === Node.ELEMENT_NODE && (child as Element).tagName === 'A') {
+    } else if (child.nodeType === Node.ELEMENT_NODE && CLUSTER_ITEM_TAGS.has((child as Element).tagName)) {
       const text = (child.textContent ?? '').trim();
       if (text.length === 0 || text.length > LINK_CLUSTER_MAX_ITEM_CHARS) {
         result = false;
