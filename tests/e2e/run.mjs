@@ -343,6 +343,22 @@ try {
     // still produce a real registered alarm (proving the manifest
     // permission and the activity-scoped create/clear wiring both still
     // work), even though none exists at idle startup anymore.
+    // Watched with a MutationObserver armed BEFORE the translate starts, not
+    // polled: a poll every 100ms can simply miss the busy state. Measured
+    // directly against this build: a translate straight after page load is
+    // busy for ~1s, but once Google's auth key is warm the whole thing can
+    // finish in single-digit milliseconds. CI's network sits close to Google,
+    // and the UI-audit checks above run first and give the key time to warm,
+    // so this check started failing there while the product was fine (the
+    // keepalive assertion below proves the translate really ran). An observer
+    // sees the class change the moment it happens, however brief.
+    await page.evaluate(() => {
+      const ball = document.getElementById('prism-bubble-host').shadowRoot.querySelector('.ball');
+      window.__prismSawBusy = ball.classList.contains('busy');
+      new MutationObserver(() => {
+        if (ball.classList.contains('busy')) window.__prismSawBusy = true;
+      }).observe(ball, { attributes: true, attributeFilter: ['class'] });
+    });
     await worker.evaluate(async () => {
       const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
       const message = { id: 2, type: 'pageTranslate', data: { targetLanguage: 'es' }, timestamp: Date.now() };
@@ -365,7 +381,7 @@ try {
     for (let i = 0; i < 20; i++) {
       const alarms = await worker.evaluate(() => chrome.alarms.getAll());
       if (alarms.some((a) => a.name === 'prism-keepalive')) hasKeepaliveDuringTranslate = true;
-      if ((await page.locator('.ball.busy').count()) > 0) sawBubbleBusy = true;
+      if (await page.evaluate(() => window.__prismSawBusy)) sawBubbleBusy = true;
       if (hasKeepaliveDuringTranslate && sawBubbleBusy) break;
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
