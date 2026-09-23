@@ -16,6 +16,8 @@ import {
 } from '../../src/shared/config/listMutations';
 import { resolveBubbleVisibility, setBubbleVisibilityForHost } from '../../src/shared/config/siteOverrides';
 import { COMMON_LANGUAGES, languageName } from '../../src/shared/languages';
+import { loadPageStatus } from '../../src/shared/pageStatus';
+import { CANT_TRANSLATE_MESSAGE, describeUnsupportedPage } from '../../src/shared/unsupportedPage';
 import { withTimeout } from '../../src/shared/withTimeout';
 import './App.css';
 
@@ -70,6 +72,8 @@ function App() {
   const [hoverTooltipEnabled, setHoverTooltipEnabled] = createSignal(true);
   const [selectionPopupEnabled, setSelectionPopupEnabled] = createSignal(true);
   const [showMore, setShowMore] = createSignal(false);
+  /** Set when there's no Prism running in this tab — see `describeUnsupportedPage`. */
+  const [unsupportedMessage, setUnsupportedMessage] = createSignal<string | null>(null);
   let tabId: number | null = null;
 
   // Real bug this replaced: `pageState` flips to 'translated' well before
@@ -101,35 +105,48 @@ function App() {
     setSelectionPopupEnabled(configStore.get('selectionPopupEnabled'));
     setReady(true);
 
+    let tab: Awaited<ReturnType<typeof getActiveTab>>;
     try {
-      const tab = await getActiveTab();
-      tabId = tab.id ?? null;
-      if (tab.url) {
-        setTabUrl(tab.url);
-        try {
-          setHostname(new URL(tab.url).hostname);
-        } catch {
-          // non-http(s) URL (chrome://, about:, ...) — leave hostname empty, per-site controls stay inert
-        }
-      }
-      if (tabId !== null) {
-        const state = await withTimeout(sendMessage('getPageState', undefined, tabId), CONTENT_SCRIPT_TIMEOUT_MS);
-        setPageState(state);
-        const lang = await withTimeout(sendMessage('getOriginalLanguage', undefined, tabId), CONTENT_SCRIPT_TIMEOUT_MS);
-        setOriginalLanguage(lang);
-        // A translation can keep failing in the background well after the
-        // page reports 'translated' (translateLoop.ts never reverts
-        // pageLanguageState on error — see refreshError()'s own comment).
-        // Without this, opening the popup for a tab that's already
-        // mid-error shows a plain "Translated" state with no error, while
-        // the on-page bubble (live-subscribed to onError()) correctly
-        // shows one for the same tab — the popup actively contradicted it.
-        await refreshError();
-      }
+      tab = await getActiveTab();
     } catch {
-      // No content script alive yet in this tab (e.g. a chrome:// page, or
-      // a tab that predates install) — leave defaults; the translate button
-      // below will still surface any real failure.
+      setUnsupportedMessage(CANT_TRANSLATE_MESSAGE);
+      return;
+    }
+    tabId = tab.id ?? null;
+    if (tab.url) {
+      setTabUrl(tab.url);
+      try {
+        setHostname(new URL(tab.url).hostname);
+      } catch {
+        // non-http(s) URL (chrome://, about:, ...) — leave hostname empty, per-site controls stay disabled
+      }
+    }
+    if (tabId === null) {
+      setUnsupportedMessage(CANT_TRANSLATE_MESSAGE);
+      return;
+    }
+    const id = tabId;
+    // Concurrent, not three round trips in a row — see loadPageStatus. The
+    // error question matters here: a translation can keep failing in the
+    // background well after the page reports 'translated' (translateLoop.ts
+    // never reverts pageLanguageState on error), and without it the popup
+    // showed a plain "Translated" for a tab the on-page bubble correctly
+    // shows as failing.
+    const pageStatus = await loadPageStatus({
+      getPageState: () => withTimeout(sendMessage('getPageState', undefined, id), CONTENT_SCRIPT_TIMEOUT_MS),
+      getOriginalLanguage: () =>
+        withTimeout(sendMessage('getOriginalLanguage', undefined, id), CONTENT_SCRIPT_TIMEOUT_MS),
+      getPageError: () => withTimeout(sendMessage('getPageError', undefined, id), CONTENT_SCRIPT_TIMEOUT_MS),
+    });
+    // Replaces the browser's raw "Receiving end does not exist" with advice
+    // the user can act on — see describeUnsupportedPage.
+    setUnsupportedMessage(describeUnsupportedPage(tab.url ?? '', pageStatus.reachable));
+    if (pageStatus.pageState) setPageState(pageStatus.pageState);
+    if (pageStatus.originalLanguage) setOriginalLanguage(pageStatus.originalLanguage);
+    if (pageStatus.error) {
+      setErrorMessage(pageStatus.error.message);
+      setErrorKind(pageStatus.error.kind);
+      setStatus('error');
     }
   });
 
@@ -171,15 +188,30 @@ function App() {
     }
   }
 
+  /**
+   * Real bug this closed, found via a UI audit: changing the language here
+   * used to only SAVE it — the page stayed in its old language, while the
+   * quick-language pill (highlighted when `translated() && code ===
+   * targetLanguage()`) claimed the page was now in the new one. The bubble's
+   * own To/Service pickers already retranslate immediately; this now matches
+   * them. Keyed on `pageState` rather than `translated()` so picking a new
+   * language mid-translation also takes effect — `translatePage` restores and
+   * restarts cleanly. On an untranslated page the choice is just saved for
+   * the Translate button, as before.
+   */
   async function onTargetLanguageChange(code: string): Promise<void> {
     setTargetLanguage(code);
     await configStore.set('targetLanguage', code);
     await configStore.set('targetLanguages', addRecentTargetLanguage(quickLanguages(), code, MAX_QUICK_LANGUAGES));
+    if (pageState() === 'translated') await onTranslateClick();
   }
 
   async function onProviderChange(id: string): Promise<void> {
     setProvider(id);
+    // Awaited before retranslating: the provider is read from config by the
+    // background at translate time, so the write has to have landed first.
     await configStore.set('pageTranslatorProvider', id as never);
+    if (pageState() === 'translated') await onTranslateClick();
   }
 
   /**
@@ -323,12 +355,16 @@ function App() {
     <div class="app">
       <div class="header">
         <h1>Prism</h1>
-        <span class="statusPill" classList={{ on: translated() }}>
+        <span class="statusPill" classList={{ on: translated() }} role="status">
           {translated()
             ? 'Translated'
             : `Original · ${originalLanguage() === 'und' ? '…' : languageName(originalLanguage())}`}
         </span>
       </div>
+
+      <Show when={unsupportedMessage()}>
+        <p class="notice">{unsupportedMessage()}</p>
+      </Show>
 
       <Show
         when={translated()}
@@ -337,7 +373,7 @@ function App() {
             type="button"
             class="primaryBtn"
             classList={{ busy: status() === 'busy' }}
-            disabled={status() === 'busy'}
+            disabled={status() === 'busy' || unsupportedMessage() !== null}
             onClick={onTranslateClick}
           >
             {/* Perceived-speed fix: previously text-only while busy, the one
@@ -402,11 +438,24 @@ function App() {
           </label>
         </Show>
         <label class="toggleRow">
-          <input type="checkbox" checked={alwaysSiteOn()} onChange={() => void onToggleAlwaysSite()} />
+          {/* Disabled with no hostname (chrome://, the stores, ...): the handler
+              can't act there, but the native checkbox used to flip anyway and
+              show "on" for a setting that was never saved. */}
+          <input
+            type="checkbox"
+            checked={alwaysSiteOn()}
+            disabled={!hostname()}
+            onChange={() => void onToggleAlwaysSite()}
+          />
           <span>Always translate this site</span>
         </label>
         <label class="toggleRow accent">
-          <input type="checkbox" checked={bubbleOnForSite()} onChange={() => void onToggleBubbleForSite()} />
+          <input
+            type="checkbox"
+            checked={bubbleOnForSite()}
+            disabled={!hostname()}
+            onChange={() => void onToggleBubbleForSite()}
+          />
           <span>Show the floating translate bubble</span>
         </label>
       </div>
@@ -441,6 +490,8 @@ function App() {
           type="button"
           class="menuItem"
           classList={{ on: neverSiteOn() }}
+          aria-pressed={neverSiteOn()}
+          disabled={!hostname()}
           onClick={() => void onToggleNeverSite()}
         >
           Never translate this site
@@ -454,7 +505,7 @@ function App() {
       </nav>
 
       <Show when={status() === 'error'}>
-        <p class="error" classList={{ offline: errorKind() === 'offline' }}>
+        <p class="error" classList={{ offline: errorKind() === 'offline' }} role="alert">
           {errorKind() === 'offline' ? errorMessage() : `Error: ${errorMessage()}`}
         </p>
       </Show>

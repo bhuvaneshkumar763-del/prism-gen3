@@ -98,14 +98,18 @@ description: Deliberate gaps and deferrals in Prism Gen 3 (missing providers, cr
   (no cross-browser spec, and `happy-dom` doesn't implement it, so it
   couldn't be verified automatically) — flagged during the post-launch
   audit pass below, not fixed.
-- The floating bubble's panel (language pickers, Service, Always/
-  Settings/Hide) is keyboard-unreachable — visibility is CSS
-  `:hover`/`.pinned` only, with `.pinned` set solely by a 450ms
-  pointer long-press. A keyboard user can trigger translate/restore via
-  the ball itself (Enter/Space), but can't reach anything inside the
-  panel. Flagged during the post-launch audit pass below; fixing it needs
-  a `:focus-within` CSS path plus a real keyboard-open affordance on the
-  ball, not just a guard-script-sized change.
+- ~~The floating bubble's panel is keyboard-unreachable~~ **Resolved.**
+  The two things this entry said a fix would need both landed, but the
+  entry was never updated: ArrowDown on the ball opens the panel and moves
+  focus into it, and the panel has a focus-based visibility path. A UI
+  audit then found and fixed what was still broken about it: the
+  visibility rule was `.wrap:focus-within`, so merely tabbing onto the
+  ball opened the whole panel and forced a keyboard user through every
+  control in it, and Escape only worked on the ball itself. It is now
+  `.panel:focus-within` — ArrowDown opens it deliberately, Escape from
+  anywhere inside closes it and returns focus to the ball, and tabbing
+  out closes it. Its selects are also labelled now, and the ball's
+  accessible name follows what a click will actually do.
 - ~~Icons/branding are still the WXT template defaults~~ **Resolved**
   post-launch: `public/icon/*.png` now ships a real icon (two rounded
   arcs forming an exchange loop, cyan→blue gradient) plus a source

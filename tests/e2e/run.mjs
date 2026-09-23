@@ -270,6 +270,75 @@ try {
       console.log('pass floating bubble present on an untranslated page');
     }
 
+    // UI audit: the bubble's panel is a keyboard disclosure — focusing the
+    // ball alone must NOT open it, ArrowDown opens it and moves focus inside,
+    // Escape closes it and returns focus to the ball. Real-browser only on
+    // purpose: test DOMs don't model focusability, and a real browser won't
+    // focus anything inside a still-hidden ancestor. That exact gap let a
+    // regression straight through the unit suite once (ArrowDown opened the
+    // panel while its visibility was still mid-transition, so focus()
+    // silently no-op'd and stayed on the ball).
+    const bubbleRoot = () => document.getElementById('prism-bubble-host').shadowRoot;
+    const panelVisibility = () =>
+      page.evaluate(`getComputedStyle((${bubbleRoot})().querySelector('.panel')).visibility`);
+    const bubbleFocus = () => page.evaluate(`(${bubbleRoot})().activeElement?.className ?? ''`);
+    await page.evaluate(`(${bubbleRoot})().querySelector('.ball').focus()`);
+    await page.waitForTimeout(250);
+    const closedOnFocusAlone = (await panelVisibility()) === 'hidden';
+    await page.keyboard.press('ArrowDown');
+    await page.waitForTimeout(250);
+    const focusAfterArrow = await bubbleFocus();
+    const arrowOpensAndFocusesInside =
+      (await panelVisibility()) === 'visible' && focusAfterArrow !== '' && !focusAfterArrow.includes('ball');
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(250);
+    const escapeClosesToBall = (await panelVisibility()) === 'hidden' && (await bubbleFocus()).includes('ball');
+    if (!closedOnFocusAlone || !arrowOpensAndFocusesInside || !escapeClosesToBall) {
+      console.error(
+        `FAIL bubble keyboard disclosure: focus-alone-stays-closed=${closedOnFocusAlone} arrowdown-opens-and-focuses-inside=${arrowOpensAndFocusesInside} escape-closes-to-ball=${escapeClosesToBall}`,
+      );
+      failures++;
+    } else {
+      console.log('pass bubble panel is a working keyboard disclosure (focus, ArrowDown, Escape)');
+    }
+
+    // UI audit: keyup is listened for on the whole document, and every one
+    // used to tear down and rebuild the selection popup's view. Measured with
+    // the trigger VISIBLE on purpose: re-rendering a hidden popup rebuilds an
+    // empty tree, which is real wasted work but changes nothing in the DOM,
+    // so a mutation count can't see it (the unit suite counts renders
+    // directly for that case). With the trigger showing, a rebuild replaces
+    // its node, which this does catch.
+    await page.click('p', { clickCount: 3 });
+    await page.waitForFunction(
+      () => document.getElementById('prism-selection-popup-host')?.shadowRoot?.querySelector('.trigger'),
+      null,
+      { timeout: 5_000 },
+    );
+    await page.evaluate(() => {
+      window.__prismMutations = 0;
+      new MutationObserver((records) => {
+        window.__prismMutations += records.length;
+      }).observe(document.getElementById('prism-selection-popup-host').shadowRoot, {
+        childList: true,
+        subtree: true,
+      });
+    });
+    // Keys that don't change the selection — nothing about the view should change.
+    for (let k = 0; k < 5; k++) await page.keyboard.press('Shift');
+    await page.waitForTimeout(400);
+    const selectionPopupMutations = await page.evaluate(() => window.__prismMutations);
+    if (selectionPopupMutations !== 0) {
+      console.error(
+        `FAIL selection popup: ${selectionPopupMutations} DOM mutations from keystrokes that didn't change the selection, expected 0 (it is being rebuilt per keystroke)`,
+      );
+      failures++;
+    } else {
+      console.log("pass selection popup isn't rebuilt by keystrokes that leave the selection unchanged");
+    }
+    await page.evaluate(() => window.getSelection()?.removeAllRanges());
+    await page.keyboard.press('Escape');
+
     // Second half of the keepalive check above: a real translate must
     // still produce a real registered alarm (proving the manifest
     // permission and the activity-scoped create/clear wiring both still
@@ -286,9 +355,11 @@ try {
     // same loop as the keepalive check (not a separate window) so both
     // assertions observe the SAME in-flight translate, deterministically,
     // rather than racing two independent windows against one real network
-    // call. Playwright's own locator engine pierces shadow DOM (including
-    // the bubble's `mode: 'closed'` root, per round-4 audit item 1)
-    // automatically — no shadow-DOM-specific selector needed.
+    // call. Playwright's own locator engine pierces shadow DOM
+    // automatically — no shadow-DOM-specific selector needed. (The bubble's
+    // root is `mode: 'open'`, created in src/shared/ui/shadowHost.ts; this
+    // comment previously said 'closed', which the checks above rely on NOT
+    // being true, since they read `.shadowRoot` directly.)
     let hasKeepaliveDuringTranslate = false;
     let sawBubbleBusy = false;
     for (let i = 0; i < 20; i++) {

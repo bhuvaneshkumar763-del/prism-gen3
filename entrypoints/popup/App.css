@@ -279,3 +279,31 @@ body {
 :root[data-theme="dark"] .app .error {
   color: #f87171;
 }
+
+/* Shown instead of the browser's raw "Receiving end does not exist" when
+   there's no Prism running in this tab — see describeUnsupportedPage. */
+.app .notice {
+  margin: 0 0 0.6rem;
+  padding: 0.5rem 0.6rem;
+  border-radius: 8px;
+  font-size: 12.5px;
+  color: #334155;
+  background: #f1f5f9;
+}
+
+:root[data-theme="dark"] .app .notice {
+  color: #cbd5e1;
+  background: #1e293b;
+}
+
+/* Per-site controls are disabled on pages with no hostname; make that
+   visible rather than leaving a control that silently does nothing. */
+.toggleRow:has(input:disabled),
+.menuItem:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.menuItem:disabled:hover {
+  background: none;
+}

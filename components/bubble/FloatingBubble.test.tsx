@@ -324,4 +324,131 @@ describe('FloatingBubble', () => {
       expect(onTranslate).not.toHaveBeenCalled();
     });
   });
+
+  describe('accessibility — UI audit', () => {
+    function stateOf(overrides: Record<string, unknown> = {}) {
+      return {
+        pageState: 'original' as const,
+        busy: false,
+        errorMessage: null as string | null,
+        errorKind: null as 'offline' | 'provider' | null,
+        progress: null as number | null,
+        ...overrides,
+      };
+    }
+
+    it('gives every panel select an accessible name — the From/To/Service captions were sibling spans, so a screen reader heard three unnamed pop-up buttons (the popup and options page already label theirs)', () => {
+      const { el } = mount();
+      // Each select sits inside a <label>, whose caption is its accessible name.
+      const names = Array.from(el.querySelectorAll('select')).map(
+        (select) => select.closest('label')?.querySelector('.sellbl')?.textContent,
+      );
+      expect(names).toEqual(['From', 'To', 'Service']);
+    });
+
+    it("names the ball after what clicking it will actually do, not always 'Translate this page'", () => {
+      const label = (state: ReturnType<typeof stateOf>) => {
+        const { el } = mount({ state });
+        const value = el.querySelector('.ball')?.getAttribute('aria-label');
+        dispose?.();
+        container?.remove();
+        return value;
+      };
+      expect(label(stateOf())).toBe('Translate this page');
+      expect(label(stateOf({ pageState: 'translated' }))).toBe('Show original');
+      expect(label(stateOf({ errorMessage: 'Provider down', errorKind: 'provider' }))).toBe('Retry translation');
+      expect(label(stateOf({ errorMessage: 'You are offline', errorKind: 'offline' }))).toBe(
+        'Offline — waiting for connection',
+      );
+      expect(label(stateOf({ busy: true }))).toBe('Translating…');
+    });
+
+    it('announces status changes through a live region that sits OUTSIDE the panel — the panel is visibility:hidden most of the time, and screen readers do not announce content in hidden regions', () => {
+      const { el } = mount({ state: stateOf({ pageState: 'translated' }) });
+      const live = el.querySelector('[role="status"]');
+      expect(live).not.toBeNull();
+      expect(live?.closest('.panel')).toBeNull();
+      expect(live?.textContent).toBe('Page translated');
+    });
+
+    it('exposes the Always chip as a toggle with its real state, not just a colour change', async () => {
+      const { el } = mount();
+      const always = Array.from(el.querySelectorAll('.chip')).find((c) => c.textContent?.includes('Always'));
+      expect(always?.getAttribute('aria-pressed')).toBe('false');
+
+      await configStore.set('alwaysTranslateSites', ['example.com']);
+
+      expect(always?.getAttribute('aria-pressed')).toBe('true');
+    });
+
+    it('closes the panel on Escape from INSIDE it and returns focus to the ball — the key handler used to live on the ball only, so once ArrowDown moved focus into the panel, Escape did nothing', () => {
+      const { el } = mount();
+      const ball = el.querySelector('.ball') as HTMLButtonElement;
+      const panel = el.querySelector('.panel') as HTMLElement;
+      ball.dispatchEvent(trusted(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })));
+      expect(panel.classList.contains('pinned')).toBe(true);
+      const inside = document.activeElement as HTMLElement;
+      expect(panel.contains(inside)).toBe(true);
+
+      inside.dispatchEvent(trusted(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+
+      expect(panel.classList.contains('pinned')).toBe(false);
+      expect(document.activeElement).toBe(ball);
+    });
+
+    it('unpins the panel when keyboard focus leaves the bubble entirely, instead of leaving it open until a pointer click somewhere', () => {
+      const { el } = mount();
+      const ball = el.querySelector('.ball') as HTMLButtonElement;
+      const panel = el.querySelector('.panel') as HTMLElement;
+      const outside = document.createElement('button');
+      document.body.append(outside);
+      ball.dispatchEvent(trusted(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })));
+      expect(panel.classList.contains('pinned')).toBe(true);
+
+      outside.focus();
+
+      expect(panel.classList.contains('pinned')).toBe(false);
+      outside.remove();
+    });
+  });
+
+  describe('layout work on viewport changes — UI audit', () => {
+    /** Counts reads of the panel's size — the forced layout read positionPanelNow() does. */
+    function countPanelMeasurements(panel: HTMLElement): { reads: number } {
+      const counter = { reads: 0 };
+      Object.defineProperty(panel, 'offsetWidth', {
+        configurable: true,
+        get() {
+          counter.reads++;
+          return 296;
+        },
+      });
+      return counter;
+    }
+    const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
+    it('does not measure the panel on viewport changes while it is closed — it is hidden almost all the time, and gets re-measured the moment it opens anyway', async () => {
+      const { el } = mount();
+      const counter = countPanelMeasurements(el.querySelector('.panel') as HTMLElement);
+
+      for (let i = 0; i < 5; i++) window.dispatchEvent(new Event('resize'));
+      await nextFrame();
+
+      expect(counter.reads).toBe(0);
+    });
+
+    it('coalesces a burst of viewport events into one update per frame while the panel IS open', async () => {
+      const { el } = mount();
+      const ball = el.querySelector('.ball') as HTMLButtonElement;
+      const panel = el.querySelector('.panel') as HTMLElement;
+      ball.dispatchEvent(trusted(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })));
+      await nextFrame();
+      const counter = countPanelMeasurements(panel);
+
+      for (let i = 0; i < 5; i++) window.dispatchEvent(new Event('resize'));
+      await nextFrame();
+
+      expect(counter.reads).toBe(1);
+    });
+  });
 });

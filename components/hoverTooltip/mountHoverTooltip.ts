@@ -1,6 +1,5 @@
 import { createSignal } from 'solid-js';
 import { render } from 'solid-js/web';
-import { findOriginalTextForElement } from '../../src/engine/pageTranslator/hoverOriginalText';
 import { createShadowHost } from '../../src/shared/ui/shadowHost';
 import { HoverTooltip } from './HoverTooltip';
 import { HOVER_TOOLTIP_STYLES } from './hoverTooltipStyles';
@@ -15,14 +14,18 @@ export interface HoverTooltipController {
 
 /** Only what this module actually needs from a PageTranslator — a narrower dependency than the full interface, and easier to stub in tests. */
 export interface TranslatedNodesSource {
-  getTranslatedNodes(): ReadonlyArray<{ node: Text; original: string }>;
   /**
-   * Speed fix, found via a round-4 audit: same lookup as
-   * `findOriginalTextForElement(target, getTranslatedNodes())` but without
-   * materialising an intermediate array first — see this file's own
-   * `onMouseMove` for why that matters on a high-frequency event. Used
-   * ONLY there; `onMouseOver` below still uses `getTranslatedNodes()`
-   * directly, since it fires far less often (once per hovered element).
+   * The original text of the translated node directly inside `target`, or
+   * null — without materialising a list of every translated node first.
+   *
+   * Deliberately the ONLY lookup this interface offers. It used to also
+   * expose `getTranslatedNodes()` (a fresh array, one object per translated
+   * node), which `onMouseMove` stopped using in a round-4 audit and
+   * `onMouseOver` stopped using in a UI audit — the latter had been kept on
+   * the reasoning that mouseover fires "once per hovered element", when it
+   * actually fires on every element boundary the pointer crosses. Removing it
+   * from this interface makes the allocating path impossible to reintroduce
+   * here without a type error, rather than relying on a test to notice.
    */
   findOriginalTextForElement(target: Element): string | null;
 }
@@ -110,7 +113,7 @@ export function mountHoverTooltip(pageTranslator: TranslatedNodesSource): HoverT
     currentTarget = target;
     if (showTimer) clearTimeout(showTimer);
 
-    const original = findOriginalTextForElement(target, pageTranslator.getTranslatedNodes());
+    const original = pageTranslator.findOriginalTextForElement(target);
     if (!original) return;
 
     showTimer = setTimeout(() => {
@@ -132,9 +135,7 @@ export function mountHoverTooltip(pageTranslator: TranslatedNodesSource): HoverT
   function onMouseMove(e: MouseEvent): void {
     if (currentTarget && !showTimer) {
       // Tooltip already visible for the current target — follow the
-      // cursor. Fires on EVERY mousemove while visible, so this uses the
-      // allocation-free lookup rather than getTranslatedNodes() — see
-      // TranslatedNodesSource's doc comment.
+      // cursor. Fires on EVERY mousemove while visible.
       const original = pageTranslator.findOriginalTextForElement(currentTarget as Element);
       if (original) renderState(true, original, e.clientY + 16, e.clientX + 8);
     }

@@ -28,6 +28,7 @@ import {
   setSourceLanguageForHost,
 } from '../../src/shared/config/siteOverrides';
 import { COMMON_LANGUAGES, languageName } from '../../src/shared/languages';
+import { TRANSLATE_ICON_PATH } from '../../src/shared/ui/icons';
 import type { BubbleViewState } from './bubbleState';
 
 /**
@@ -129,12 +130,21 @@ export function FloatingBubble(props: FloatingBubbleProps) {
     panel.style.top = `${point.y}px`;
   }
 
+  /** Open by any of its three routes: pinned (long-press/ArrowDown), hovered, or holding keyboard focus. */
+  function isPanelOpen(): boolean {
+    return pinned() || wrap.matches(':hover') || panel.matches(':focus-within');
+  }
+
   function applyState(): Point {
     const point = resolveDockedPoint(dockState, viewport(), BALL_SIZE);
     wrap.style.left = `${point.x}px`;
     wrap.style.top = `${point.y}px`;
     wrap.classList.toggle('right', isRightEdge(point.x, vw(), BALL_SIZE));
-    positionPanelNow();
+    // Only measure the panel while it's actually showing — the measurement
+    // is a forced layout read, and the panel is hidden nearly all the time.
+    // Every way of opening it (pointerenter, focusin, long-press, ArrowDown)
+    // already re-measures right before it appears, so nothing goes stale.
+    if (isPanelOpen()) positionPanelNow();
     return point;
   }
 
@@ -147,8 +157,19 @@ export function FloatingBubble(props: FloatingBubbleProps) {
     return point;
   }
 
+  /**
+   * Speed fix, found via a UI audit: resize and visualViewport resize/scroll
+   * used to run applyState() synchronously on every event, each one a
+   * forced layout read — and on iOS visualViewport fires continuously during
+   * pinch-zoom and as the toolbar collapses. Now at most once per frame.
+   */
+  let reflowFrame: number | null = null;
   function reflow(): void {
-    pos = applyState();
+    if (reflowFrame !== null) return;
+    reflowFrame = requestAnimationFrame(() => {
+      reflowFrame = null;
+      pos = applyState();
+    });
   }
 
   function handlePrimaryAction(): void {
@@ -295,9 +316,6 @@ export function FloatingBubble(props: FloatingBubbleProps) {
       if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault();
         toggleTranslate();
-      } else if (e.key === 'Escape') {
-        setPinned(false);
-        ball.blur();
       } else if (e.key === 'ArrowDown') {
         // Real gap: the panel's only "open" triggers were :hover (mouse)
         // and a 450ms pointer long-press (touch) — a keyboard/screen-reader
@@ -314,6 +332,29 @@ export function FloatingBubble(props: FloatingBubbleProps) {
       }
     };
     ball.addEventListener('keydown', onKeydown);
+
+    // Escape from ANYWHERE in the bubble, not just the ball — real gap,
+    // found via a UI audit: this used to live in the ball's own handler, so
+    // once ArrowDown had moved focus into the panel (see above), Escape did
+    // nothing. Returning focus to the ball is the standard disclosure
+    // pattern, and now actually closes it: the panel is shown on
+    // `.panel:focus-within`, not `.wrap:focus-within`, so focus resting on
+    // the ball no longer holds it open (see bubbleStyles.ts).
+    const onWrapKeydown = (e: KeyboardEvent) => {
+      if (!e.isTrusted || e.key !== 'Escape') return;
+      setPinned(false);
+      ball.focus();
+    };
+    wrap.addEventListener('keydown', onWrapKeydown);
+
+    // Tabbing out of the bubble entirely closes a panel ArrowDown pinned
+    // open. Previously only a pointer press elsewhere did, so a keyboard
+    // user who tabbed away left it floating over the page. `relatedTarget`
+    // is where focus is going; still inside the bubble means keep it open.
+    const onWrapFocusOut = (e: FocusEvent) => {
+      if (!wrap.contains(e.relatedTarget as Node | null)) setPinned(false);
+    };
+    wrap.addEventListener('focusout', onWrapFocusOut);
 
     const onFsChange = () => {
       const fs = document.fullscreenElement;
@@ -346,12 +387,15 @@ export function FloatingBubble(props: FloatingBubbleProps) {
       window.visualViewport?.removeEventListener('resize', reflow);
       window.visualViewport?.removeEventListener('scroll', reflow);
       window.removeEventListener('orientationchange', onOrientationChange);
+      if (reflowFrame !== null) cancelAnimationFrame(reflowFrame);
       ball.removeEventListener('pointerdown', onPointerDown);
       ball.removeEventListener('pointermove', onPointerMove);
       ball.removeEventListener('pointerup', onPointerUp);
       ball.removeEventListener('pointercancel', onPointerCancel);
       document.removeEventListener('pointerdown', onDocPointerDown, true);
       ball.removeEventListener('keydown', onKeydown);
+      wrap.removeEventListener('keydown', onWrapKeydown);
+      wrap.removeEventListener('focusout', onWrapFocusOut);
       document.removeEventListener('fullscreenchange', onFsChange, false);
       unsubConfig();
     });
@@ -461,6 +505,19 @@ export function FloatingBubble(props: FloatingBubbleProps) {
   const translated = () => !props.state.errorMessage && props.state.pageState === 'translated' && !props.state.busy;
   const errored = () => Boolean(props.state.errorMessage);
   const offline = () => errored() && props.state.errorKind === 'offline';
+  /**
+   * What clicking the ball will actually do — real gap, found via a UI
+   * audit: its accessible name was hard-coded to "Translate this page", so a
+   * screen-reader user heard that even on a translated page (where a click
+   * RESTORES it), a failed one (retries), or offline (does nothing). Mirrors
+   * handlePrimaryAction's own branching above.
+   */
+  const ballLabel = () => {
+    if (offline()) return 'Offline — waiting for connection';
+    if (errored()) return props.state.busy ? 'Retrying…' : 'Retry translation';
+    if (props.state.busy) return props.state.pageState === 'translated' ? 'Working…' : 'Translating…';
+    return translated() ? 'Show original' : 'Translate this page';
+  };
   const headTitle = () => {
     if (offline()) return 'Offline';
     if (errored()) return 'Translation failed';
@@ -491,13 +548,13 @@ export function FloatingBubble(props: FloatingBubbleProps) {
         class="ball"
         classList={{ busy: props.state.busy }}
         ref={ball}
-        aria-label="Translate this page"
+        aria-label={ballLabel()}
         aria-haspopup="true"
         aria-expanded={pinned()}
         title="Click to translate · drag to move · Arrow Down to open settings"
       >
         <svg class="ic ic-tr" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-          <path d="M12.87 15.07l-2.54-2.51.03-.03c1.74-1.94 2.98-4.17 3.71-6.53H17V4h-7V2H8v2H1v1.99h11.17C11.5 7.92 10.44 9.75 9 11.35c-.93-1.03-1.7-2.16-2.31-3.35h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11.76-2.04zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2l-4.5-12zm-2.62 7l1.62-4.33L19.12 17h-3.24z" />
+          <path d={TRANSLATE_ICON_PATH} />
         </svg>
         <svg
           class="ic ic-or"
@@ -514,6 +571,12 @@ export function FloatingBubble(props: FloatingBubbleProps) {
         </svg>
         <span class="spinner" />
       </button>
+      {/* Outside the panel on purpose: the panel is visibility:hidden most of
+          the time, and screen readers don't announce changes inside a hidden
+          region. Visually hidden, but read out when the status changes. */}
+      <span class="srOnly" role="status" aria-live="polite">
+        {headTitle()}
+      </span>
       <div class="panel" classList={{ pinned: pinned() }} ref={panel}>
         <div class="head">
           <svg class="hicon" viewBox="0 0 128 128" aria-hidden="true">
@@ -537,7 +600,7 @@ export function FloatingBubble(props: FloatingBubbleProps) {
             <p class="errorText">{props.state.errorMessage}</p>
           </Show>
           <div class="selrow">
-            <div class="selcol">
+            <label class="selcol">
               <span class="sellbl">From</span>
               <select
                 class="sel"
@@ -557,8 +620,8 @@ export function FloatingBubble(props: FloatingBubbleProps) {
                   )}
                 </For>
               </select>
-            </div>
-            <div class="selcol">
+            </label>
+            <label class="selcol">
               <span class="sellbl">To</span>
               <select class="sel" on:click={(e) => e.stopPropagation()} on:change={onTargetLanguageChange}>
                 <For each={targetLangOptions()}>
@@ -569,8 +632,8 @@ export function FloatingBubble(props: FloatingBubbleProps) {
                   )}
                 </For>
               </select>
-            </div>
-            <div class="selcol">
+            </label>
+            <label class="selcol">
               <span class="sellbl">Service</span>
               <select class="sel" on:click={(e) => e.stopPropagation()} on:change={onServiceChange}>
                 <For each={serviceOptions()}>
@@ -581,10 +644,16 @@ export function FloatingBubble(props: FloatingBubbleProps) {
                   )}
                 </For>
               </select>
-            </div>
+            </label>
           </div>
           <div class="row">
-            <button type="button" class="chip" classList={{ on: alwaysOn() }} on:click={onAlwaysClick}>
+            <button
+              type="button"
+              class="chip"
+              classList={{ on: alwaysOn() }}
+              aria-pressed={alwaysOn()}
+              on:click={onAlwaysClick}
+            >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
                 <path d="M5 13l4 4L19 7" />
               </svg>

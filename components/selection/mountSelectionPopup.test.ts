@@ -4,9 +4,34 @@ import type { PieceOutcome, Translator } from '../../src/engine/translator';
 import { ok } from '../../src/shared/result';
 import { trusted } from '../../tests/trustedEvent';
 import { mountSelectionPopup } from './mountSelectionPopup';
+import { SelectionPopup } from './SelectionPopup';
+
+// Wrapped (behaviour unchanged) so a test can count how many times the view
+// is actually rendered — the direct measure of the render-once fix. A DOM
+// mutation count can't see it: re-rendering a HIDDEN popup rebuilds an empty
+// tree, which is real wasted work but changes nothing in the DOM.
+vi.mock('./SelectionPopup', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./SelectionPopup')>();
+  return { ...actual, SelectionPopup: vi.fn(actual.SelectionPopup) };
+});
+
+/** Comfortably past mountSelectionPopup's keyup debounce. */
+const KEYUP_SETTLE_MS = 250;
 
 function shadowRoot(): ShadowRoot | null {
   return document.getElementById('prism-selection-popup-host')?.shadowRoot ?? null;
+}
+
+function fakeSelectionAt(text: string, rect: { top: number; left: number; bottom: number; right: number }): Selection {
+  return {
+    isCollapsed: false,
+    rangeCount: 1,
+    toString: () => text,
+    getRangeAt: () =>
+      ({
+        getBoundingClientRect: () => ({ ...rect, width: rect.right - rect.left, height: rect.bottom - rect.top }),
+      }) as unknown as Range,
+  } as unknown as Selection;
 }
 
 function fakeSelection(text: string): Selection {
@@ -73,8 +98,74 @@ describe('mountSelectionPopup', () => {
     });
 
     document.dispatchEvent(trusted(new KeyboardEvent('keyup', { key: 'ArrowRight', shiftKey: true, bubbles: true })));
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    // Keyboard-driven updates are debounced (see KEYUP_DEBOUNCE_MS) — wait past it.
+    await new Promise((resolve) => setTimeout(resolve, KEYUP_SETTLE_MS));
 
+    expect(shadowRoot()?.querySelector('.trigger')).not.toBeNull();
+    controller.destroy();
+  });
+
+  it('does not tear down and rebuild its view on every keystroke — real perf bug this closed, found via a UI audit: keyup is listened for on the WHOLE document, and every one used to end in a full dispose() + render() of the popup, including while typing into any form field on any site, where the selection is collapsed and the popup was already hidden', async () => {
+    vi.spyOn(window, 'getSelection').mockReturnValue(fakeSelection('hello'));
+    const controller = mountSelectionPopup({
+      translator: uppercaseTranslator(),
+      getSourceLanguage: () => 'en',
+      getTargetLanguage: () => 'es',
+    });
+
+    document.dispatchEvent(trusted(new MouseEvent('mouseup', { bubbles: true })));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const triggerBefore = shadowRoot()?.querySelector('.trigger');
+    expect(triggerBefore).not.toBeNull();
+
+    // Same selection, several keystrokes: nothing about the view changed,
+    // so the SAME DOM node must survive. A re-render replaces it.
+    for (let i = 0; i < 4; i++) {
+      document.dispatchEvent(trusted(new KeyboardEvent('keyup', { key: 'Shift', bubbles: true })));
+    }
+    await new Promise((resolve) => setTimeout(resolve, KEYUP_SETTLE_MS));
+
+    expect(shadowRoot()?.querySelector('.trigger')).toBe(triggerBefore);
+    controller.destroy();
+  });
+
+  it('renders its view ONCE, however much the user types elsewhere on the page — the realistic case: typing into a form field, with no selection and the popup already hidden, used to rebuild it per keystroke', async () => {
+    vi.spyOn(window, 'getSelection').mockReturnValue(null);
+    vi.mocked(SelectionPopup).mockClear();
+    const controller = mountSelectionPopup({
+      translator: uppercaseTranslator(),
+      getSourceLanguage: () => 'en',
+      getTargetLanguage: () => 'es',
+    });
+
+    for (let i = 0; i < 20; i++) {
+      document.dispatchEvent(trusted(new KeyboardEvent('keyup', { key: 'a', bubbles: true })));
+    }
+    await new Promise((resolve) => setTimeout(resolve, KEYUP_SETTLE_MS));
+
+    expect(SelectionPopup).toHaveBeenCalledTimes(1);
+    controller.destroy();
+  });
+
+  it('detects the selection language once for a rapid run of selection-extending keys, not once per key', async () => {
+    vi.spyOn(window, 'getSelection').mockReturnValue(fakeSelection('hello world'));
+    const detect = spyOnDetectLanguage().mockResolvedValue({
+      isReliable: true,
+      languages: [{ language: 'en', percentage: 100 }],
+    });
+    const controller = mountSelectionPopup({
+      translator: uppercaseTranslator(),
+      getSourceLanguage: () => 'en',
+      getTargetLanguage: () => 'es',
+    });
+
+    // Shift+ArrowRight held down across a word — one keyup per character.
+    for (let i = 0; i < 6; i++) {
+      document.dispatchEvent(trusted(new KeyboardEvent('keyup', { key: 'ArrowRight', shiftKey: true, bubbles: true })));
+    }
+    await new Promise((resolve) => setTimeout(resolve, KEYUP_SETTLE_MS));
+
+    expect(detect).toHaveBeenCalledTimes(1);
     expect(shadowRoot()?.querySelector('.trigger')).not.toBeNull();
     controller.destroy();
   });
@@ -360,6 +451,136 @@ describe('mountSelectionPopup', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(sourceLanguagesSeen).toEqual(['auto']);
+    controller.destroy();
+  });
+
+  it("keeps the trigger and the result panel on screen for a selection at the right edge, and flips the panel above a selection near the bottom — real bug this closed, found via a UI audit: both were placed at the selection's bottom-left with no clamping and no height limit, so the 280px panel ran off the side and a long translation grew below the fold", async () => {
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    vi.spyOn(window, 'getSelection').mockReturnValue(
+      fakeSelectionAt('hello', { top: vh - 40, bottom: vh - 20, left: vw - 20, right: vw - 5 }),
+    );
+    const controller = mountSelectionPopup({
+      translator: uppercaseTranslator(),
+      getSourceLanguage: () => 'en',
+      getTargetLanguage: () => 'es',
+    });
+
+    document.dispatchEvent(trusted(new MouseEvent('mouseup', { bubbles: true })));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const trigger = shadowRoot()?.querySelector('.trigger') as HTMLButtonElement;
+    expect(Number.parseFloat(trigger.style.left) + 30).toBeLessThanOrEqual(vw);
+    expect(Number.parseFloat(trigger.style.top) + 30).toBeLessThanOrEqual(vh);
+
+    trigger.dispatchEvent(trusted(new MouseEvent('click', { bubbles: true, composed: true })));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const panel = shadowRoot()?.querySelector('.panel') as HTMLElement;
+    expect(Number.parseFloat(panel.style.left) + Number.parseFloat(panel.style.maxWidth)).toBeLessThanOrEqual(vw);
+    // Anchored by its bottom edge above the selection, not pushed below the fold.
+    expect(panel.style.top).toBe('');
+    expect(panel.style.bottom).not.toBe('');
+    controller.destroy();
+  });
+
+  it('closes on Escape — previously the only way to dismiss it was a mouse click on its close button', async () => {
+    vi.spyOn(window, 'getSelection').mockReturnValue(fakeSelection('hello'));
+    const controller = mountSelectionPopup({
+      translator: uppercaseTranslator(),
+      getSourceLanguage: () => 'en',
+      getTargetLanguage: () => 'es',
+    });
+
+    document.dispatchEvent(trusted(new MouseEvent('mouseup', { bubbles: true })));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const trigger = shadowRoot()?.querySelector('.trigger') as HTMLButtonElement;
+    trigger.dispatchEvent(trusted(new MouseEvent('click', { bubbles: true, composed: true })));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(shadowRoot()?.querySelector('.panel')).not.toBeNull();
+
+    document.dispatchEvent(trusted(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+
+    expect(shadowRoot()?.querySelector('.panel')).toBeNull();
+    expect(shadowRoot()?.querySelector('.trigger')).toBeNull();
+    controller.destroy();
+  });
+
+  it("stays dismissed after Escape even though the Escape key's own keyup follows — real bug, caught by a real-browser check, not by the keydown-only test above: a physical keypress is keydown AND keyup, and the keyup re-read the still-present selection and brought the trigger straight back", async () => {
+    vi.spyOn(window, 'getSelection').mockReturnValue(fakeSelection('hello'));
+    const controller = mountSelectionPopup({
+      translator: uppercaseTranslator(),
+      getSourceLanguage: () => 'en',
+      getTargetLanguage: () => 'es',
+    });
+    document.dispatchEvent(trusted(new MouseEvent('mouseup', { bubbles: true })));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(shadowRoot()?.querySelector('.trigger')).not.toBeNull();
+
+    document.dispatchEvent(trusted(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    document.dispatchEvent(trusted(new KeyboardEvent('keyup', { key: 'Escape', bubbles: true })));
+    // A later incidental key (Shift, an arrow that doesn't change the
+    // selection) must not resurrect it either.
+    document.dispatchEvent(trusted(new KeyboardEvent('keyup', { key: 'Shift', bubbles: true })));
+    await new Promise((resolve) => setTimeout(resolve, KEYUP_SETTLE_MS));
+
+    expect(shadowRoot()?.querySelector('.trigger')).toBeNull();
+    controller.destroy();
+  });
+
+  it('shows again for a NEW selection after being dismissed', async () => {
+    const getSelection = vi.spyOn(window, 'getSelection').mockReturnValue(fakeSelection('hello'));
+    const controller = mountSelectionPopup({
+      translator: uppercaseTranslator(),
+      getSourceLanguage: () => 'en',
+      getTargetLanguage: () => 'es',
+    });
+    document.dispatchEvent(trusted(new MouseEvent('mouseup', { bubbles: true })));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    document.dispatchEvent(trusted(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    expect(shadowRoot()?.querySelector('.trigger')).toBeNull();
+
+    getSelection.mockReturnValue(fakeSelection('a different sentence'));
+    document.dispatchEvent(trusted(new KeyboardEvent('keyup', { key: 'ArrowRight', shiftKey: true, bubbles: true })));
+    await new Promise((resolve) => setTimeout(resolve, KEYUP_SETTLE_MS));
+
+    expect(shadowRoot()?.querySelector('.trigger')).not.toBeNull();
+    controller.destroy();
+  });
+
+  it('shows again when the user deliberately re-selects with the mouse, even the same text', async () => {
+    vi.spyOn(window, 'getSelection').mockReturnValue(fakeSelection('hello'));
+    const controller = mountSelectionPopup({
+      translator: uppercaseTranslator(),
+      getSourceLanguage: () => 'en',
+      getTargetLanguage: () => 'es',
+    });
+    document.dispatchEvent(trusted(new MouseEvent('mouseup', { bubbles: true })));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    document.dispatchEvent(trusted(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+
+    document.dispatchEvent(trusted(new MouseEvent('mouseup', { bubbles: true })));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(shadowRoot()?.querySelector('.trigger')).not.toBeNull();
+    controller.destroy();
+  });
+
+  it('announces the translation to screen readers as a polite live region', async () => {
+    vi.spyOn(window, 'getSelection').mockReturnValue(fakeSelection('hello'));
+    const controller = mountSelectionPopup({
+      translator: uppercaseTranslator(),
+      getSourceLanguage: () => 'en',
+      getTargetLanguage: () => 'es',
+    });
+
+    document.dispatchEvent(trusted(new MouseEvent('mouseup', { bubbles: true })));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const trigger = shadowRoot()?.querySelector('.trigger') as HTMLButtonElement;
+    trigger.dispatchEvent(trusted(new MouseEvent('click', { bubbles: true, composed: true })));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const panel = shadowRoot()?.querySelector('.panel');
+    expect(panel?.getAttribute('role')).toBe('status');
+    expect(panel?.getAttribute('aria-live')).toBe('polite');
     controller.destroy();
   });
 

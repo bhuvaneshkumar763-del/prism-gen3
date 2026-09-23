@@ -44,10 +44,9 @@ function dispatchRetargetedMouseEvent(
   host.dispatchEvent(event);
 }
 
-/** Mirrors hoverOriginalText.ts's real scan, so findOriginalTextForElement behaves identically to getTranslatedNodes()'s data — both must stay in sync for a mock to be realistic. */
+/** Mirrors the page translator's real lookup (translateLoop.ts's findOriginalTextForElement) so the mock behaves like the real thing. */
 function makeSource(entries: Array<{ node: Text; original: string }>): TranslatedNodesSource {
   return {
-    getTranslatedNodes: () => entries,
     findOriginalTextForElement: (target) => {
       for (const { node, original } of entries) {
         if (node.parentElement === target && node.data !== original) return original;
@@ -126,31 +125,20 @@ describe('mountHoverTooltip', () => {
     controller.destroy();
   });
 
-  it('onMouseMove uses findOriginalTextForElement, not getTranslatedNodes() — speed fix, found via a round-4 audit: getTranslatedNodes() allocates a fresh N-object array on every call, so calling it on every mousemove event while the tooltip is visible was real, measurable jank on a page with thousands of translated nodes', () => {
+  it('looks up the original through the allocation-free path on both mouseover and mousemove — the allocating getTranslatedNodes() is no longer part of TranslatedNodesSource at all, so reintroducing it here is a type error rather than something this test has to catch', () => {
     const p = document.getElementById('target') as HTMLParagraphElement;
     const textNode = p.firstChild as Text;
-    let getTranslatedNodesCalls = 0;
-    const source: TranslatedNodesSource = {
-      // Deliberately returns WRONG data — if onMouseMove regressed to
-      // calling this instead of findOriginalTextForElement, the tooltip
-      // would fail to move/update and this test would catch it.
-      getTranslatedNodes: () => {
-        getTranslatedNodesCalls++;
-        return [];
-      },
-      findOriginalTextForElement: (target) => (target === p && textNode.data !== 'Hello' ? 'Hello' : null),
-    };
-    const controller = mountHoverTooltip(source);
+    const lookup = vi.fn((target: Element) => (target === p && textNode.data !== 'Hello' ? 'Hello' : null));
+    const controller = mountHoverTooltip({ findOriginalTextForElement: lookup });
 
     dispatchMouseEvent('mouseover', p, { clientX: 10, clientY: 10 });
     vi.advanceTimersByTime(350);
-    const callsAfterShow = getTranslatedNodesCalls; // onMouseOver legitimately calls it once
+    expect(tooltipShadowRoot()?.querySelector('.tooltip')?.textContent).toBe('Hello');
+    const callsAfterShow = lookup.mock.calls.length;
+    expect(callsAfterShow).toBeGreaterThan(0); // mouseover used it
 
     dispatchMouseEvent('mousemove', p, { clientX: 200, clientY: 200 });
-    dispatchMouseEvent('mousemove', p, { clientX: 300, clientY: 300 });
-
-    expect(tooltipShadowRoot()?.querySelector('.tooltip')?.textContent).toBe('Hello');
-    expect(getTranslatedNodesCalls).toBe(callsAfterShow); // no further calls from onMouseMove
+    expect(lookup.mock.calls.length).toBeGreaterThan(callsAfterShow); // mousemove used it too
 
     controller.destroy();
   });

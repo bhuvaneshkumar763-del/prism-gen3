@@ -27,6 +27,7 @@ describe('SelectionPopup', () => {
     buttonLeft: 0,
     onTranslateClick: () => {},
     panelOpen: false,
+    panel: { left: 10, top: 40, bottom: null, maxWidth: 280, maxHeight: 400 },
     busy: false,
     translatedText: '',
     errorMessage: null,

@@ -1302,7 +1302,12 @@ export function createPageTranslator(options: PageTranslatorOptions) {
       stateListeners.add(cb);
       return () => stateListeners.delete(cb);
     },
-    /** Currently-translated text nodes and their pre-translation text — used by the "hover to see original" tooltip (`components/hoverTooltip/mountHoverTooltip.ts`). */
+    /**
+     * Currently-translated text nodes and their pre-translation text. Kept as
+     * a public accessor, but the hover tooltip no longer uses it at all — it
+     * allocates one object per translated node, so the tooltip goes through
+     * `findOriginalTextForElement` below on every event instead.
+     */
     getTranslatedNodes: (): ReadonlyArray<{ node: Text; original: string }> =>
       Array.from(nodesToRestore, ([node, original]) => ({ node, original })),
     /**
@@ -1310,7 +1315,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
      * `onMouseMove` used to call `getTranslatedNodes()` above — a fresh
      * N-object array, one object per currently-translated node — on EVERY
      * mousemove event while the tooltip is visible, then linear-scanned it
-     * (`hoverOriginalText.ts`'s `findOriginalTextForElement`) to find the
+     * (the tooltip's own `findOriginalTextForElement` scan) to find the
      * one node under the cursor. On a page with a few thousand translated
      * nodes at ~120 mousemove events/s while hovering, that's on the order
      * of 100k+ short-lived object allocations per second for real jank
@@ -1318,9 +1323,10 @@ export function createPageTranslator(options: PageTranslatorOptions) {
      * (`node.parentElement === target && node.data !== original`), just
      * walking `nodesToRestore` directly instead of first copying it out —
      * zero allocation beyond the Map iteration itself, which the array
-     * build would have paid on top of regardless. `getTranslatedNodes()`
-     * above is UNCHANGED and still used by `onMouseOver`, which only fires
-     * once per hovered element (negligible frequency by comparison).
+     * build would have paid on top of regardless. `onMouseOver` was moved
+     * onto this too by a later UI audit: it had been left on the allocating
+     * path on the assumption it fires once per hovered element, when it
+     * fires on every element boundary the pointer crosses.
      */
     findOriginalTextForElement: (target: Element): string | null => {
       for (const [node, original] of nodesToRestore) {

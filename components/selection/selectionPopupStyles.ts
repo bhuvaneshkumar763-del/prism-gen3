@@ -1,3 +1,13 @@
+/*
+ * Rationale lives here, in a JS comment the minifier strips — CSS comments
+ * inside the string below ship verbatim in the content script on every page.
+ *
+ * - `.trigger` is 30px (was 26), matching SELECTION_TRIGGER_SIZE in
+ *   selectionPanelPlacement.ts, which uses that number to keep it on screen.
+ * - `.panel` gets max-width/max-height inline from selectionPanelPlacement.ts,
+ *   clamped to the room actually available; `overflow: auto` lets a long
+ *   translation scroll instead of running off screen.
+ */
 export const SELECTION_POPUP_STYLES = `
   :host {
     all: initial !important;
@@ -5,22 +15,29 @@ export const SELECTION_POPUP_STYLES = `
   .trigger {
     position: fixed;
     z-index: 2147483647;
-    width: 26px;
-    height: 26px;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     border-radius: 50%;
     border: none;
     background: #4f46e5;
     color: #fff;
-    font-weight: 700;
-    font-size: 13px;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
     cursor: pointer;
     box-shadow: 0 2px 8px rgba(15, 23, 42, 0.35);
+  }
+  .trigger svg {
+    width: 17px;
+    height: 17px;
+    pointer-events: none;
   }
   .panel {
     position: fixed;
     z-index: 2147483647;
-    max-width: 280px;
+    overflow: auto;
+    box-sizing: border-box;
     padding: 10px 28px 10px 12px;
     border-radius: 8px;
     background: #1e1b4b;

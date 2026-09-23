@@ -7,6 +7,32 @@
  * "translated" accent — kept here rather than reinvented, plus a red/amber
  * "error" accent for the "Translation failed" state, which the fork never had.
  */
+/*
+ * Why some rules are the way they are. Kept HERE, in a JS comment the
+ * minifier strips, rather than as CSS comments inside the string below:
+ * anything inside that template literal ships verbatim in the content
+ * script, on every page. A UI audit found ~2KB of such comments had crept in.
+ *
+ * - `.wrap:focus-within .ball` — keyboard focus raises the ball to full
+ *   opacity; only :hover used to, so a tabbed-to ball stayed at 55%.
+ * - `.panel:focus-within`, NOT `.wrap:focus-within` — the latter opened the
+ *   whole panel as soon as the ball was focused, dragging a keyboard user
+ *   through every control on the way past, and made Escape unable to close
+ *   it visibly. ArrowDown on the ball opens it deliberately instead.
+ * - `visibility 0s` in the OPEN-state transition — visibility flips instantly
+ *   on the way in; the base rule's 160ms delay applies only on the way out,
+ *   so it stays visible while fading. Without it, ArrowDown's focus() landed
+ *   while visibility was still mid-transition from hidden, and a real browser
+ *   won't focus inside a hidden ancestor. Test DOMs don't model focusability,
+ *   so this is guarded by the e2e suite, not the unit tests.
+ * - `.srOnly` — visually hidden but read aloud; hosts the status live region,
+ *   which must sit outside the usually-hidden panel to be announced.
+ * - `.chip.on` — the tint follows `--accent` like its border and text, rather
+ *   than a hard-coded indigo that clashed with the green/red states. The rgba
+ *   line is the fallback for engines without color-mix().
+ * - `.sellbl` — 10.5px at 70% opacity is ~6.6:1 (light) / ~7.8:1 (dark); it
+ *   was 9.5px at 55%, about 4.0:1, under WCAG AA's 4.5:1.
+ */
 export const BUBBLE_STYLES = `
   * { box-sizing: border-box; margin: 0; padding: 0;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; }
@@ -29,7 +55,7 @@ export const BUBBLE_STYLES = `
     opacity: .55; transition: opacity .2s ease, transform .15s ease, box-shadow .2s ease;
     touch-action: none;
   }
-  .wrap:hover .ball, .ball.active { opacity: 1; }
+  .wrap:hover .ball, .wrap:focus-within .ball { opacity: 1; }
   .ball:active { cursor: grabbing; transform: scale(.94); }
   .ball .ic { width: 21px; height: 21px; pointer-events: none; }
   .ball .ic-or { display: none; }
@@ -56,8 +82,14 @@ export const BUBBLE_STYLES = `
     transform-origin: center center;
     transition: opacity .16s ease, transform .16s ease, visibility .16s;
   }
-  .wrap:hover .panel, .panel.pinned, .wrap:focus-within .panel {
+  .wrap:hover .panel, .panel.pinned, .panel:focus-within {
     opacity: 1; visibility: visible; transform: scale(1);
+    transition: opacity .16s ease, transform .16s ease, visibility 0s;
+  }
+
+  .srOnly {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
   }
 
   .head {
@@ -91,8 +123,6 @@ export const BUBBLE_STYLES = `
 
   .errorText { font-size: 12px; color: #b91c1c; line-height: 1.4; }
 
-  .divider { height: 1px; background: #e2e8f0; margin: 1px 0; }
-
   .row { display: flex; gap: 8px; }
   .chip {
     flex: 1; border: 1px solid #e2e8f0; background: #f8fafc; color: #0f172a;
@@ -102,12 +132,16 @@ export const BUBBLE_STYLES = `
   }
   .chip:hover { background: #eef2f7; }
   .chip svg { width: 17px; height: 17px; }
-  .chip.on { border-color: var(--accent); color: var(--accent); background: rgba(99,102,241,.08); }
+  .chip.on {
+    border-color: var(--accent); color: var(--accent);
+    background: rgba(99,102,241,.08);
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+  }
 
   .selrow { display: flex; gap: 8px; }
   .selcol { flex: 1; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-  .sellbl { font-size: 9.5px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase;
-            opacity: .55; padding-left: 2px; }
+  .sellbl { font-size: 10.5px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase;
+            opacity: .7; padding-left: 2px; }
   .sel {
     width: 100%; padding: 8px 9px; border-radius: 10px; cursor: pointer;
     border: 1px solid #e2e8f0; background: #f8fafc; color: #0f172a;
@@ -118,10 +152,12 @@ export const BUBBLE_STYLES = `
 
   @media (prefers-color-scheme: dark) {
     .panel { background: #1f1f38; color: #f1f5f9; box-shadow: 0 12px 40px -10px rgba(0,0,0,.7), 0 0 0 1px rgba(255,255,255,.06); }
-    .divider { background: #33335a; }
     .chip { background: #232342; border-color: #33335a; color: #f1f5f9; }
     .chip:hover { background: #2b2b4d; }
-    .chip.on { background: rgba(129,140,248,.18); }
+    .chip.on {
+      background: rgba(129,140,248,.18);
+      background: color-mix(in srgb, var(--accent) 22%, transparent);
+    }
     .sel { background: #232342; border-color: #33335a; color: #f1f5f9; }
     .sel option { background: #1f1f38; color: #f1f5f9; }
     .errorText { color: #fca5a5; }

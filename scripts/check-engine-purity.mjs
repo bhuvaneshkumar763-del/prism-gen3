@@ -94,6 +94,58 @@ function stripCommentsFromLine(line, inBlockComment) {
   return { result, inBlockComment };
 }
 
+/**
+ * Blanks the contents of '...' and "..." string literals, for the bare-global
+ * check ONLY.
+ *
+ * Real false positive this closed: a hostname like 'chrome.google.com' in a
+ * string (a list of extension-store URLs) matched BARE_GLOBAL_PATTERN, even
+ * though text inside a quoted string can never be an API access.
+ *
+ * Deliberately NOT applied to the import check: DISALLOWED_IMPORT_PATTERN
+ * matches the quoted module name itself (`from 'wxt/browser'`), so blanking
+ * strings there would silently disable it.
+ *
+ * Template literals are copied through untouched, and their own quote
+ * characters don't open a string here: `${chrome.runtime.id}` inside one is
+ * a genuine access, and an apostrophe in `it's ${browser.x}` must not start a
+ * fake string that swallows it. Erring toward keeping text keeps this from
+ * ever hiding a real violation.
+ */
+function blankQuotedStrings(line) {
+  let out = '';
+  let quote = null;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (quote === '`') {
+      out += ch;
+      if (ch === '\\' && i + 1 < line.length) {
+        out += line[++i];
+      } else if (ch === '`') {
+        quote = null;
+      }
+      continue;
+    }
+    if (quote) {
+      if (ch === '\\' && i + 1 < line.length) {
+        out += '  ';
+        i++;
+        continue;
+      }
+      if (ch === quote) {
+        quote = null;
+        out += ch;
+      } else {
+        out += ' ';
+      }
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === '`') quote = ch;
+    out += ch;
+  }
+  return out;
+}
+
 function walk(dir, files = []) {
   for (const entry of readdirSync(dir)) {
     const full = join(dir, entry);
@@ -133,7 +185,7 @@ for (const dir of GUARDED_DIRS) {
       if (DISALLOWED_IMPORT_PATTERN.test(line)) {
         violations.push(`${file}:${i + 1}: imports a browser-extension/framework module — ${rawLine.trim()}`);
       }
-      if (BARE_GLOBAL_PATTERN.test(line)) {
+      if (BARE_GLOBAL_PATTERN.test(blankQuotedStrings(line))) {
         violations.push(`${file}:${i + 1}: uses the ambient chrome/browser extension API global — ${rawLine.trim()}`);
       }
     });

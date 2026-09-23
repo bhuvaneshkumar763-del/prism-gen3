@@ -1,14 +1,28 @@
+import { createStore } from 'solid-js/store';
 import { render } from 'solid-js/web';
 import { getSelectionInfo, isValidSelectionText } from '../../src/engine/selection/selectionInfo';
 import type { Translator } from '../../src/engine/translator';
 import { translateOne } from '../../src/engine/translator';
 import { baseLanguageTag } from '../../src/shared/languages';
+import {
+  placeSelectionPanel,
+  placeSelectionTrigger,
+  type SelectionPanelPlacement,
+} from '../../src/shared/ui/selectionPanelPlacement';
 import { createShadowHost } from '../../src/shared/ui/shadowHost';
 import { withTimeout } from '../../src/shared/withTimeout';
 import { SelectionPopup } from './SelectionPopup';
 import { SELECTION_POPUP_STYLES } from './selectionPopupStyles';
 
 const HOST_ID = 'prism-selection-popup-host';
+
+/**
+ * How long keyboard-driven selection changes settle before the popup reacts.
+ * A run of Shift+Arrow presses is one gesture, not N — without this, each
+ * keystroke ran its own language detection. Mouse selection needs no
+ * debounce: a mouseup already marks the end of the gesture.
+ */
+const KEYUP_DEBOUNCE_MS = 150;
 
 // Same bound used everywhere else this project calls `i18n.detectLanguage`
 // — real bug, fixed once already (beta.20): Firefox's implementation can
@@ -50,7 +64,6 @@ export interface MountSelectionPopupOptions {
 export function mountSelectionPopup(options: MountSelectionPopupOptions): SelectionPopupController {
   const { host, mountPoint } = createShadowHost(HOST_ID, SELECTION_POPUP_STYLES);
 
-  let dispose: (() => void) | null = null;
   let selectedText = '';
   // Real bug, found via an audit: this popup used to always send
   // `options.getSourceLanguage()` (the global `sourceLanguage` config
@@ -72,57 +85,84 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
   // (e.g. select A, click translate, select B before A resolves — A's
   // stale result must not overwrite B's state).
   let requestId = 0;
-  let state: {
-    buttonVisible: boolean;
-    buttonTop: number;
-    buttonLeft: number;
-    panelOpen: boolean;
-    busy: boolean;
-    translatedText: string;
-    errorMessage: string | null;
-  } = {
+  /**
+   * The selection the user dismissed with Escape. Kept dismissed until the
+   * selection actually changes or the user makes a fresh mouse selection.
+   * Needed because a physical keypress is keydown AND keyup: Escape's
+   * keydown hides the trigger, then its own keyup (and any later incidental
+   * key, like Shift) re-read the still-present selection and brought it
+   * straight back.
+   */
+  let dismissedText: string | null = null;
+  // Speed fix, found via a UI audit: this used to be a plain object that
+  // `renderNow()` fed into a brand-new `render()` after `dispose()`-ing the
+  // old one — on EVERY state change. The popup listens for `keyup` on the
+  // whole document, so typing into any form field on any site tore down and
+  // rebuilt this tree once per keystroke, even though the popup was already
+  // hidden. Rendered once now, from a store: setting a field to the value it
+  // already has notifies nothing, so an already-hidden popup costs nothing.
+  // Same pattern `mountBubble.ts` and `mountHoverTooltip.ts` moved to.
+  const [state, setState] = createStore({
     buttonVisible: false,
     buttonTop: 0,
     buttonLeft: 0,
     panelOpen: false,
+    panel: { left: 0, top: 0, bottom: null, maxWidth: 0, maxHeight: 0 } as SelectionPanelPlacement,
     busy: false,
     translatedText: '',
-    errorMessage: null,
-  };
+    errorMessage: null as string | null,
+  });
 
-  function renderNow(): void {
-    dispose?.();
-    dispose = render(
-      () =>
-        SelectionPopup({
-          ...state,
-          // Security: reject a synthetic click driving the actual translate
-          // request through the user's configured provider — see onMouseUp's
-          // isTrusted comment above for why this matters here too.
-          onTranslateClick: (e) => {
-            if (!e.isTrusted) return;
-            void handleTranslateClick();
-          },
-          // Consistency with onTranslateClick above, NOT a defense: this
-          // path spends nothing, and a page that wants the popup gone has
-          // far better options (it owns the document). The translate guard
-          // exists because a synthetic click there would spend the user's
-          // own provider quota; nothing comparable is at stake here.
-          onCloseClick: (e) => {
-            if (!e.isTrusted) return;
-            state = { ...state, buttonVisible: false, panelOpen: false };
-            renderNow();
-          },
-        }),
-      mountPoint,
-    );
-  }
-  renderNow();
+  const dispose = render(
+    () =>
+      SelectionPopup({
+        get buttonVisible() {
+          return state.buttonVisible;
+        },
+        get buttonTop() {
+          return state.buttonTop;
+        },
+        get buttonLeft() {
+          return state.buttonLeft;
+        },
+        get panelOpen() {
+          return state.panelOpen;
+        },
+        get panel() {
+          return state.panel;
+        },
+        get busy() {
+          return state.busy;
+        },
+        get translatedText() {
+          return state.translatedText;
+        },
+        get errorMessage() {
+          return state.errorMessage;
+        },
+        // Security: reject a synthetic click driving the actual translate
+        // request through the user's configured provider — see onMouseUp's
+        // isTrusted comment below for why this matters here too.
+        onTranslateClick: (e) => {
+          if (!e.isTrusted) return;
+          void handleTranslateClick();
+        },
+        // Consistency with onTranslateClick above, NOT a defense: this
+        // path spends nothing, and a page that wants the popup gone has
+        // far better options (it owns the document). The translate guard
+        // exists because a synthetic click there would spend the user's
+        // own provider quota; nothing comparable is at stake here.
+        onCloseClick: (e) => {
+          if (!e.isTrusted) return;
+          setState({ buttonVisible: false, panelOpen: false });
+        },
+      }),
+    mountPoint,
+  );
 
   async function handleTranslateClick(): Promise<void> {
     const thisRequestId = ++requestId;
-    state = { ...state, panelOpen: true, busy: true, translatedText: '', errorMessage: null };
-    renderNow();
+    setState({ panelOpen: true, busy: true, translatedText: '', errorMessage: null });
     const result = await translateOne(
       options.translator,
       selectedText,
@@ -132,11 +172,10 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
     if (thisRequestId !== requestId) return; // superseded by a newer selection/click — discard
 
     if (result.ok) {
-      state = { ...state, busy: false, translatedText: result.value };
+      setState({ busy: false, translatedText: result.value });
     } else {
-      state = { ...state, busy: false, errorMessage: result.error.message };
+      setState({ busy: false, errorMessage: result.error.message });
     }
-    renderNow();
   }
 
   /**
@@ -152,8 +191,8 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
    * a selection inside a NESTED shadow tree resolves to its own closest
    * root, not an ancestor's.
    */
-  function resolveActiveSelection(e: Event): Selection | null {
-    for (const node of e.composedPath()) {
+  function resolveActiveSelection(path: readonly EventTarget[]): Selection | null {
+    for (const node of path) {
       const shadowRoot = (node as Partial<Element>).shadowRoot as
         | (ShadowRoot & { getSelection?(): Selection | null })
         | null
@@ -167,8 +206,9 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
   }
 
   function hideTrigger(): void {
-    state = { ...state, buttonVisible: false, panelOpen: false };
-    renderNow();
+    // A no-op for the DOM when already hidden — the store only notifies on
+    // an actual change. That's what makes a keystroke in a text field free.
+    setState({ buttonVisible: false, panelOpen: false });
   }
 
   /**
@@ -189,8 +229,8 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
   }
 
   /** Shared by the mouse and keyboard paths below — the trigger's own show/hide logic doesn't care how the selection changed. */
-  async function updateFromCurrentSelection(e: Event): Promise<void> {
-    const info = getSelectionInfo(resolveActiveSelection(e));
+  async function updateFromCurrentSelection(path: readonly EventTarget[]): Promise<void> {
+    const info = getSelectionInfo(resolveActiveSelection(path));
     const thisRequestId = ++requestId;
     if (!info) {
       hideTrigger();
@@ -199,6 +239,13 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
     if ((options.getSkipInvalidText?.() ?? true) && !isValidSelectionText(info.text)) {
       hideTrigger();
       return;
+    }
+    if (dismissedText !== null) {
+      if (info.text === dismissedText) {
+        hideTrigger();
+        return;
+      }
+      dismissedText = null; // the selection changed — that dismissal was for the old one
     }
     // Always detected now (not just when getSkipTargetLanguageText is on)
     // — the result also becomes the source language for the actual
@@ -216,16 +263,21 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
     }
     selectedText = info.text;
     selectedTextLanguage = detected;
-    state = {
+    const viewport = {
+      width: window.visualViewport?.width || window.innerWidth,
+      height: window.visualViewport?.height || window.innerHeight,
+    };
+    const trigger = placeSelectionTrigger(info.rect, viewport);
+    setState({
       buttonVisible: true,
-      buttonTop: info.rect.bottom + 6,
-      buttonLeft: info.rect.left,
+      buttonTop: trigger.top,
+      buttonLeft: trigger.left,
+      panel: placeSelectionPanel(info.rect, viewport),
       panelOpen: false,
       busy: false,
       translatedText: '',
       errorMessage: null,
-    };
-    renderNow();
+    });
   }
 
   function onMouseUp(e: MouseEvent): void {
@@ -238,8 +290,12 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
     if (!e.isTrusted) return;
     // Ignore mouseup inside our own shadow host (e.g. releasing a click
     // on the trigger button) so it doesn't immediately re-hide itself.
-    if (e.composedPath().includes(host)) return;
-    void updateFromCurrentSelection(e);
+    const path = e.composedPath();
+    if (path.includes(host)) return;
+    // A mouse selection is a deliberate new gesture — re-selecting even the
+    // same text should offer the trigger again, unlike an incidental keyup.
+    dismissedText = null;
+    void updateFromCurrentSelection(path);
   }
 
   /**
@@ -251,20 +307,44 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
    * selection, so there's no need to enumerate every selection-extending
    * key combination here.
    */
+  let keyupTimer: ReturnType<typeof setTimeout> | null = null;
   function onKeyUp(e: KeyboardEvent): void {
     if (!e.isTrusted) return;
-    if (e.composedPath().includes(host)) return;
-    void updateFromCurrentSelection(e);
+    // Captured NOW, not inside the timer: `composedPath()` returns an empty
+    // array once the event has finished dispatching, which would silently
+    // lose the shadow-root selection lookup below.
+    const path = e.composedPath();
+    if (path.includes(host)) return;
+    if (keyupTimer) clearTimeout(keyupTimer);
+    keyupTimer = setTimeout(() => {
+      keyupTimer = null;
+      void updateFromCurrentSelection(path);
+    }, KEYUP_DEBOUNCE_MS);
+  }
+
+  /**
+   * Escape dismisses the trigger or the result panel — the standard way to
+   * close a transient popup, and previously the only way to close this one
+   * was a mouse click on its × button.
+   */
+  function onKeyDown(e: KeyboardEvent): void {
+    if (!e.isTrusted || e.key !== 'Escape') return;
+    if (!state.buttonVisible && !state.panelOpen) return;
+    dismissedText = selectedText;
+    hideTrigger();
   }
 
   document.addEventListener('mouseup', onMouseUp);
   document.addEventListener('keyup', onKeyUp);
+  document.addEventListener('keydown', onKeyDown);
 
   return {
     destroy() {
       document.removeEventListener('mouseup', onMouseUp);
       document.removeEventListener('keyup', onKeyUp);
-      dispose?.();
+      document.removeEventListener('keydown', onKeyDown);
+      if (keyupTimer) clearTimeout(keyupTimer);
+      dispose();
       host.remove();
     },
   };
