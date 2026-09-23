@@ -29,9 +29,11 @@ compiled summary, not new information:
   translate-document), **text-to-speech**, **backup export/import UI**,
   **release-notes page**, **toolbar icon state swap** — never scoped into
   any Gen 3 session.
-- **Selection-popup drag/replace-in-place/listen-copy/per-selection
-  pickers** — deliberate Session 6 scope cut, not part of the post-launch
-  UI-depth pass (that pass's scope was limited to the bubble, popup, and
-  settings surfaces — see that section above).
+- **Selection-popup drag/replace-in-place/listen/per-selection pickers**
+  — deliberate Session 6 scope cut, not part of the post-launch UI-depth
+  pass (that pass's scope was limited to the bubble, popup, and settings
+  surfaces — see that section above). **Copy is no longer on this list:**
+  a UI audit added it (beta.70) as the most useful missing action on a
+  translated snippet; the rest of this cut still stands.
 - ~~Floating-bubble drag-to-reposition/edge-docking~~ **Resolved** by the
   post-launch UI-depth pass's Phase 1, see that section above.

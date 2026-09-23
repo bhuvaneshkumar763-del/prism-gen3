@@ -30,6 +30,8 @@ export interface SelectionPopupProps {
   translatedText: string;
   errorMessage: string | null;
   onCloseClick: (e: MouseEvent) => void;
+  onCopyClick: (e: MouseEvent) => void;
+  copyStatus: 'idle' | 'copied' | 'failed';
 }
 
 export function SelectionPopup(props: SelectionPopupProps) {
@@ -73,6 +75,15 @@ export function SelectionPopup(props: SelectionPopupProps) {
           </Show>
           <Show when={!props.busy && props.translatedText}>
             <p class="result">{props.translatedText}</p>
+            <button
+              type="button"
+              class="copy"
+              // Keeps the page's own text selection intact when clicked.
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={props.onCopyClick}
+            >
+              {props.copyStatus === 'copied' ? 'Copied' : props.copyStatus === 'failed' ? 'Copy failed' : 'Copy'}
+            </button>
           </Show>
           <Show when={!props.busy && props.errorMessage}>
             <p class="errorText" role="alert">

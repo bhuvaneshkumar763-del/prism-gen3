@@ -171,6 +171,12 @@ export default defineContentScript({
             pageState: pageTranslator.getState(),
             errorMessage: pageTranslator.getLastError(),
             errorKind: pageTranslator.getLastErrorKind(),
+            originalLanguage: originalLanguageTracker.get(),
+          });
+          // Detection may still be running; start() is shared, so this
+          // doesn't detect a second time — it just waits for the one result.
+          void originalLanguageTracker.start().then(() => {
+            bubble?.update({ originalLanguage: originalLanguageTracker.get() });
           });
         }
       }
@@ -245,21 +251,48 @@ export default defineContentScript({
         }
       }
 
+      /** Whether the mounted selection popup shows its floating button automatically, or only answers explicit requests. */
+      let selectionPopupAuto = false;
+
+      function createSelectionPopup(autoTrigger: boolean): ReturnType<typeof mountSelectionPopup> {
+        return mountSelectionPopup({
+          translator: createRemoteTranslator(),
+          getSourceLanguage: () => configStore.get('sourceLanguage'),
+          getTargetLanguage: () => configStore.get('targetLanguage'),
+          getSkipInvalidText: () => configStore.get('selectionPopupSkipInvalidText'),
+          getSkipTargetLanguageText: () => configStore.get('selectionPopupSkipTargetLanguageText'),
+          autoTrigger,
+        });
+      }
+
       function syncSelectionPopup(): void {
         const enabled = configStore.get('selectionPopupEnabled');
-        if (enabled && !selectionPopup) {
-          selectionPopup = mountSelectionPopup({
-            translator: createRemoteTranslator(),
-            getSourceLanguage: () => configStore.get('sourceLanguage'),
-            getTargetLanguage: () => configStore.get('targetLanguage'),
-            getSkipInvalidText: () => configStore.get('selectionPopupSkipInvalidText'),
-            getSkipTargetLanguageText: () => configStore.get('selectionPopupSkipTargetLanguageText'),
-          });
-        } else if (!enabled && selectionPopup) {
+        if (enabled && (!selectionPopup || !selectionPopupAuto)) {
+          // Replaces an explicit-only popup (mounted by a right-click while the
+          // button was off) with the normal one, so turning the button back on
+          // actually brings the button back.
+          selectionPopup?.destroy();
+          selectionPopup = createSelectionPopup(true);
+          selectionPopupAuto = true;
+        } else if (!enabled && selectionPopup && selectionPopupAuto) {
           selectionPopup.destroy();
           selectionPopup = null;
+          selectionPopupAuto = false;
         }
       }
+
+      // Right-click "Translate selection". Works even with the floating
+      // button turned off: that's an explicit request, so an explicit-only
+      // popup (no selection listeners, zero cost until now) is mounted on
+      // demand rather than quietly turning the button back on.
+      onMessage('translateSelection', (message) => {
+        if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');
+        if (!selectionPopup) {
+          selectionPopup = createSelectionPopup(false);
+          selectionPopupAuto = false;
+        }
+        selectionPopup.translateText(message.data.text);
+      });
 
       configStore.onChanged((name) => {
         if (name === 'hoverTooltipEnabled') syncHoverTooltip();

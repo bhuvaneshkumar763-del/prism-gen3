@@ -27,9 +27,10 @@ description: Deliberate gaps and deferrals in Prism Gen 3 (missing providers, cr
   remembered position and a full From/To/Service/Always/Settings/Hide
   panel, at parity with the pre-rewrite fork.
 - The selection-translation popup has no drag-to-move, editable
-  replace-in-place, listen/copy actions, cross-frame focus arbitration,
-  or per-selection service/language pickers — a deliberate scope cut
-  (see Session 6's writeup), not an oversight. It also only mounts in the
+  replace-in-place, listen action, cross-frame focus arbitration, or
+  per-selection service/language pickers — a deliberate scope cut (see
+  Session 6's writeup), not an oversight. (Copy was added by a UI audit,
+  beta.70.) It also only mounts in the
   main frame, same as every other UI surface in this list. (Not part of
   the bubble/popup/settings UI-depth pass — that pass's scope was
   explicitly limited to the bubble, popup, and settings surfaces.)

@@ -32,6 +32,8 @@ describe('SelectionPopup', () => {
     translatedText: '',
     errorMessage: null,
     onCloseClick: () => {},
+    onCopyClick: () => {},
+    copyStatus: 'idle' as const,
   };
 
   it('renders nothing when the button is not visible and the panel is closed', () => {

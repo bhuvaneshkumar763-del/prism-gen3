@@ -11,6 +11,7 @@ import {
 } from '../../src/shared/ui/selectionPanelPlacement';
 import { createShadowHost } from '../../src/shared/ui/shadowHost';
 import { withTimeout } from '../../src/shared/withTimeout';
+import { copyText } from './copyText';
 import { SelectionPopup } from './SelectionPopup';
 import { SELECTION_POPUP_STYLES } from './selectionPopupStyles';
 
@@ -30,6 +31,12 @@ const KEYUP_DEBOUNCE_MS = 150;
 const DETECT_LANGUAGE_TIMEOUT_MS = 3000;
 
 export interface SelectionPopupController {
+  /**
+   * Translates `text` and shows the result — the right-click "Translate
+   * selection" path. The text comes from the browser's own menu, so this
+   * works even when the selection is somewhere this frame can't see.
+   */
+  translateText(text: string): void;
   destroy(): void;
 }
 
@@ -52,6 +59,13 @@ export interface MountSelectionPopupOptions {
    * omitting this keeps today's behavior unchanged.
    */
   getSkipTargetLanguageText?(): boolean;
+  /**
+   * Show the floating button automatically when text is selected. False
+   * attaches no selection listeners at all — used when the user has turned
+   * the button off, so an explicit right-click can still translate without
+   * quietly turning the button back on. Default true.
+   */
+  autoTrigger?: boolean;
 }
 
 /**
@@ -94,6 +108,15 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
    * straight back.
    */
   let dismissedText: string | null = null;
+  /**
+   * The page selection (as `getSelectionInfo` reads it) that the current
+   * view — the trigger, or an open panel — belongs to. Compared against a
+   * fresh read of the page selection, never against `selectedText`: for a
+   * right-click request `selectedText` is the browser's own `selectionText`,
+   * which normalises whitespace differently from `Selection.toString()`, so
+   * the two can differ for the very same selection.
+   */
+  let shownForSelection: string | null = null;
   // Speed fix, found via a UI audit: this used to be a plain object that
   // `renderNow()` fed into a brand-new `render()` after `dispose()`-ing the
   // old one — on EVERY state change. The popup listens for `keyup` on the
@@ -111,6 +134,7 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
     busy: false,
     translatedText: '',
     errorMessage: null as string | null,
+    copyStatus: 'idle' as 'idle' | 'copied' | 'failed',
   });
 
   const dispose = render(
@@ -140,6 +164,13 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
         get errorMessage() {
           return state.errorMessage;
         },
+        get copyStatus() {
+          return state.copyStatus;
+        },
+        onCopyClick: (e) => {
+          if (!e.isTrusted) return;
+          void handleCopy();
+        },
         // Security: reject a synthetic click driving the actual translate
         // request through the user's configured provider — see onMouseUp's
         // isTrusted comment below for why this matters here too.
@@ -160,9 +191,55 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
     mountPoint,
   );
 
+  /**
+   * Improvement, found via a UI audit: copying the result was the most
+   * useful action a translated snippet was missing. Previously listed as a
+   * v1 scope cut in explicitly-out-of-scope — that doc is updated to match.
+   */
+  let copyResetTimer: ReturnType<typeof setTimeout> | null = null;
+  async function handleCopy(): Promise<void> {
+    const copied = await copyText(state.translatedText);
+    setState({ copyStatus: copied ? 'copied' : 'failed' });
+    if (copyResetTimer) clearTimeout(copyResetTimer);
+    copyResetTimer = setTimeout(() => setState({ copyStatus: 'idle' }), 1500);
+  }
+
+  function currentViewport() {
+    return {
+      width: window.visualViewport?.width || window.innerWidth,
+      height: window.visualViewport?.height || window.innerHeight,
+    };
+  }
+
+  async function translateText(text: string): Promise<void> {
+    // Anchored to the page's own selection when this frame can see it;
+    // otherwise (a selection inside an iframe) to the top-left, on screen.
+    const info = getSelectionInfo(window.getSelection());
+    const anchor = info?.rect ?? { top: 16, bottom: 16, left: 16 };
+    const thisRequestId = ++requestId;
+    dismissedText = null;
+    selectedText = text;
+    shownForSelection = info?.text ?? null;
+    // Open (and busy) straight away, rather than only after language
+    // detection: the user asked for this, and an open panel is what tells a
+    // concurrent selection re-check that this text is already being handled.
+    setState({
+      buttonVisible: false,
+      panelOpen: true,
+      busy: true,
+      translatedText: '',
+      errorMessage: null,
+      copyStatus: 'idle',
+      panel: placeSelectionPanel(anchor, currentViewport()),
+    });
+    selectedTextLanguage = await detectSelectionLanguage(text);
+    if (thisRequestId !== requestId) return; // superseded by a newer selection or request
+    await handleTranslateClick();
+  }
+
   async function handleTranslateClick(): Promise<void> {
     const thisRequestId = ++requestId;
-    setState({ panelOpen: true, busy: true, translatedText: '', errorMessage: null });
+    setState({ panelOpen: true, busy: true, translatedText: '', errorMessage: null, copyStatus: 'idle' });
     const result = await translateOne(
       options.translator,
       selectedText,
@@ -231,6 +308,13 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
   /** Shared by the mouse and keyboard paths below — the trigger's own show/hide logic doesn't care how the selection changed. */
   async function updateFromCurrentSelection(path: readonly EventTarget[]): Promise<void> {
     const info = getSelectionInfo(resolveActiveSelection(path));
+    // Nothing changed: this exact text is already being offered or shown. An
+    // incidental key (Shift, an arrow that doesn't extend it, the key-up of
+    // the key that opened the context menu) must not reset the view. It used
+    // to — closing an open translation on any keystroke, and bumping the
+    // request counter below, which could make an in-flight right-click
+    // translation silently give up. Checked BEFORE that bump for this reason.
+    if (info && info.text === shownForSelection && (state.buttonVisible || state.panelOpen)) return;
     const thisRequestId = ++requestId;
     if (!info) {
       hideTrigger();
@@ -262,11 +346,9 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
       return;
     }
     selectedText = info.text;
+    shownForSelection = info.text;
     selectedTextLanguage = detected;
-    const viewport = {
-      width: window.visualViewport?.width || window.innerWidth,
-      height: window.visualViewport?.height || window.innerHeight,
-    };
+    const viewport = currentViewport();
     const trigger = placeSelectionTrigger(info.rect, viewport);
     setState({
       buttonVisible: true,
@@ -334,16 +416,23 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
     hideTrigger();
   }
 
-  document.addEventListener('mouseup', onMouseUp);
-  document.addEventListener('keyup', onKeyUp);
+  const autoTrigger = options.autoTrigger ?? true;
+  if (autoTrigger) {
+    document.addEventListener('mouseup', onMouseUp);
+    document.addEventListener('keyup', onKeyUp);
+  }
   document.addEventListener('keydown', onKeyDown);
 
   return {
+    translateText(text) {
+      void translateText(text);
+    },
     destroy() {
       document.removeEventListener('mouseup', onMouseUp);
       document.removeEventListener('keyup', onKeyUp);
       document.removeEventListener('keydown', onKeyDown);
       if (keyupTimer) clearTimeout(keyupTimer);
+      if (copyResetTimer) clearTimeout(copyResetTimer);
       dispose();
       host.remove();
     },

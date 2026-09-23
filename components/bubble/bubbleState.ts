@@ -27,6 +27,8 @@ export interface BubbleViewState {
    * `progress === 1`.
    */
   progress: number | null;
+  /** The page's detected language ('und' until known) — for "Vietnamese → English" in the panel title. */
+  originalLanguage: string;
 }
 
 export const DEFAULT_BUBBLE_VIEW_STATE: BubbleViewState = {
@@ -35,6 +37,7 @@ export const DEFAULT_BUBBLE_VIEW_STATE: BubbleViewState = {
   errorMessage: null,
   errorKind: null,
   progress: null,
+  originalLanguage: 'und',
 };
 
 export function createBubbleState(

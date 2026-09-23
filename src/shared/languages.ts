@@ -66,3 +66,15 @@ export function languageName(code: string): string {
 export function baseLanguageTag(code: string): string {
   return code.split('-')[0]?.toLowerCase() ?? code;
 }
+
+/**
+ * "Vietnamese → English" — which way a translated page went, or null when
+ * that can't be said honestly: the source language is unknown, or the page
+ * is already in the target language (where "English → English" would be
+ * noise). Callers fall back to a plain "Translated" in that case.
+ */
+export function translationDirection(originalLanguage: string, targetLanguage: string): string | null {
+  if (!originalLanguage || originalLanguage === 'und' || originalLanguage === 'auto') return null;
+  if (baseLanguageTag(originalLanguage) === baseLanguageTag(targetLanguage)) return null;
+  return `${languageName(originalLanguage)} → ${languageName(targetLanguage)}`;
+}

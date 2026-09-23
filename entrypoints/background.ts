@@ -12,6 +12,8 @@ import { configStore } from '../src/platform/configStore';
 import type { FrameLanguageDecision } from '../src/platform/messaging/protocol';
 import { isTrustedSender, onMessage, sendMessage } from '../src/platform/messaging/protocol';
 import { getActiveTabId } from '../src/platform/messaging/tabTarget';
+import { missingProviderSetup } from '../src/shared/config/providerSetup';
+import { TOGGLE_TRANSLATE_COMMAND } from '../src/shared/shortcut';
 
 /**
  * Session 6: rewired onto the typed messaging protocol
@@ -98,15 +100,24 @@ function endTranslateActivity(): void {
 }
 
 function buildProviderConfig(): ProviderConfig {
-  const llmBaseUrl = configStore.get('llmBaseUrl');
-  const llmApiKey = configStore.get('llmApiKey');
-  const llmModel = configStore.get('llmModel');
-  const googleCloudTranslateApiKey = configStore.get('googleCloudTranslateApiKey');
-
+  const fields = {
+    googleCloudTranslateApiKey: configStore.get('googleCloudTranslateApiKey'),
+    llmBaseUrl: configStore.get('llmBaseUrl'),
+    llmApiKey: configStore.get('llmApiKey'),
+    llmModel: configStore.get('llmModel'),
+  };
+  // "Configured" is decided by the same rule the UI uses to show "needs
+  // setup" (missingProviderSetup), so the two can't disagree.
   return {
     google: {},
-    googleCloudTranslate: googleCloudTranslateApiKey ? { apiKey: googleCloudTranslateApiKey } : undefined,
-    llm: llmBaseUrl && llmApiKey && llmModel ? { baseUrl: llmBaseUrl, apiKey: llmApiKey, model: llmModel } : undefined,
+    googleCloudTranslate:
+      missingProviderSetup('googleCloudTranslate', fields) === null
+        ? { apiKey: fields.googleCloudTranslateApiKey }
+        : undefined,
+    llm:
+      missingProviderSetup('llm', fields) === null
+        ? { baseUrl: fields.llmBaseUrl, apiKey: fields.llmApiKey, model: fields.llmModel }
+        : undefined,
   };
 }
 
@@ -166,6 +177,12 @@ const frameLanguageDecisions = new Map<number, FrameLanguageDecision>();
 
 const TRANSLATE_MENU_ID = 'prism-translate-page';
 const RESTORE_MENU_ID = 'prism-show-original';
+/**
+ * Improvement, found via a UI audit: only page-level menu items existed. A
+ * selection item gives keyboard users (Shift+F10 / the menu key) and anyone
+ * who dismissed the floating button a real way to translate selected text.
+ */
+const TRANSLATE_SELECTION_MENU_ID = 'prism-translate-selection';
 
 async function translateActiveTab(): Promise<void> {
   await configStore.onReady();
@@ -474,19 +491,39 @@ export default defineBackground(() => {
     browser.contextMenus.create({ id: RESTORE_MENU_ID, title: 'Show original text', contexts: ['page'] }, () => {
       void browser.runtime.lastError;
     });
+    // %s is replaced by the browser with the selected text.
+    browser.contextMenus.create(
+      { id: TRANSLATE_SELECTION_MENU_ID, title: 'Translate “%s”', contexts: ['selection'] },
+      () => {
+        void browser.runtime.lastError;
+      },
+    );
   });
-  browser.contextMenus.onClicked.addListener((info) => {
+  browser.contextMenus.onClicked.addListener((info, tab) => {
     if (info.menuItemId === TRANSLATE_MENU_ID) translateActiveTab().catch(showFailureBadge);
     if (info.menuItemId === RESTORE_MENU_ID) restoreActiveTab().catch(showFailureBadge);
+    if (info.menuItemId === TRANSLATE_SELECTION_MENU_ID) {
+      const text = info.selectionText?.trim();
+      if (text && tab?.id !== undefined) {
+        sendMessage('translateSelection', { text }, tab.id).catch(showFailureBadge);
+      }
+    }
   });
 
   browser.commands.onCommand.addListener((command) => {
-    if (command === 'toggle-translate-page') toggleActiveTab().catch(showFailureBadge);
+    if (command === TOGGLE_TRANSLATE_COMMAND) toggleActiveTab().catch(showFailureBadge);
   });
 
   onMessage('openOptionsPage', (message) => {
     if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');
-    void browser.runtime.openOptionsPage();
+    const section = message.data?.section;
+    // openOptionsPage() can't carry a URL fragment, so a specific section
+    // opens as a tab. Restricted to a plain word: it only ever names a tab.
+    if (section && /^[a-z]+$/.test(section)) {
+      void browser.tabs.create({ url: `${browser.runtime.getURL('/options.html')}#${section}` });
+    } else {
+      void browser.runtime.openOptionsPage();
+    }
   });
 
   browser.tabs.onRemoved.addListener((tabId) => {

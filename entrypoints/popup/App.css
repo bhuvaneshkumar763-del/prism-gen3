@@ -307,3 +307,29 @@ body {
 .menuItem:disabled:hover {
   background: none;
 }
+
+/* The live translate/restore key binding — see translateShortcut. */
+.app .shortcutHint {
+  margin: -0.3rem 0 0.6rem;
+  font-size: 11.5px;
+  color: #64748b;
+  text-align: center;
+}
+
+.shortcutHint kbd {
+  font-family: inherit;
+  font-size: 11px;
+  padding: 0.05rem 0.35rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  background: #f8fafc;
+}
+
+:root[data-theme="dark"] .app .shortcutHint {
+  color: #94a3b8;
+}
+
+:root[data-theme="dark"] .shortcutHint kbd {
+  border-color: #475569;
+  background: #1e293b;
+}

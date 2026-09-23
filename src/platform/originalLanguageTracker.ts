@@ -216,7 +216,7 @@ export function createOriginalLanguageTracker() {
    * `sampleBodyText`'s doc comment), a fair price for cutting the shared
    * worst case in half.
    */
-  async function start(): Promise<void> {
+  async function detect(): Promise<void> {
     try {
       await waitUntilVisible();
       const [viaTab, viaText] = await Promise.all([detectViaTab(), detectFromPageText()]);
@@ -225,6 +225,15 @@ export function createOriginalLanguageTracker() {
       console.warn('[prism] original-language tracking failed, continuing as "und"', e);
       language = 'und';
     }
+  }
+
+  // One detection, shared by every caller: the auto-translate decision and
+  // the floating bubble (which shows "Vietnamese → English") both await it,
+  // and each detection costs a browser round trip plus a page-text sample.
+  let started: Promise<void> | null = null;
+  function start(): Promise<void> {
+    started ??= detect();
+    return started;
   }
 
   return {

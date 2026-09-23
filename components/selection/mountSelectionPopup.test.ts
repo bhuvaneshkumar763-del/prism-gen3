@@ -584,6 +584,172 @@ describe('mountSelectionPopup', () => {
     controller.destroy();
   });
 
+  it('copies the translation, not the original, and confirms it', async () => {
+    vi.spyOn(window, 'getSelection').mockReturnValue(fakeSelection('hello'));
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } });
+    const controller = mountSelectionPopup({
+      translator: uppercaseTranslator(),
+      getSourceLanguage: () => 'en',
+      getTargetLanguage: () => 'es',
+    });
+
+    document.dispatchEvent(trusted(new MouseEvent('mouseup', { bubbles: true })));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const trigger = shadowRoot()?.querySelector('.trigger') as HTMLButtonElement;
+    trigger.dispatchEvent(trusted(new MouseEvent('click', { bubbles: true, composed: true })));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const copy = shadowRoot()?.querySelector('.copy') as HTMLButtonElement;
+    expect(copy.textContent).toBe('Copy');
+    copy.dispatchEvent(trusted(new MouseEvent('click', { bubbles: true, composed: true })));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(writeText).toHaveBeenCalledWith('HELLO');
+    expect(copy.textContent).toBe('Copied');
+    controller.destroy();
+    vi.unstubAllGlobals();
+  });
+
+  it('ignores a synthetic Copy click, like the translate button does', async () => {
+    vi.spyOn(window, 'getSelection').mockReturnValue(fakeSelection('hello'));
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } });
+    const controller = mountSelectionPopup({
+      translator: uppercaseTranslator(),
+      getSourceLanguage: () => 'en',
+      getTargetLanguage: () => 'es',
+    });
+    document.dispatchEvent(trusted(new MouseEvent('mouseup', { bubbles: true })));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const trigger = shadowRoot()?.querySelector('.trigger') as HTMLButtonElement;
+    trigger.dispatchEvent(trusted(new MouseEvent('click', { bubbles: true, composed: true })));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const copy = shadowRoot()?.querySelector('.copy') as HTMLButtonElement;
+    copy.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(writeText).not.toHaveBeenCalled();
+    controller.destroy();
+    vi.unstubAllGlobals();
+  });
+
+  it('translates text it is handed directly — the right-click "Translate selection" path — showing the result in the panel', async () => {
+    vi.spyOn(window, 'getSelection').mockReturnValue(fakeSelection('hello'));
+    const controller = mountSelectionPopup({
+      translator: uppercaseTranslator(),
+      getSourceLanguage: () => 'en',
+      getTargetLanguage: () => 'es',
+    });
+
+    controller.translateText('hello world');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(shadowRoot()?.querySelector('.result')?.textContent).toBe('HELLO WORLD');
+    controller.destroy();
+  });
+
+  it('still translates handed-in text when the selection lives somewhere this frame cannot see (e.g. inside an iframe), placing the panel on screen instead of failing', async () => {
+    vi.spyOn(window, 'getSelection').mockReturnValue(null);
+    const controller = mountSelectionPopup({
+      translator: uppercaseTranslator(),
+      getSourceLanguage: () => 'en',
+      getTargetLanguage: () => 'es',
+    });
+
+    controller.translateText('from a frame');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const panel = shadowRoot()?.querySelector('.panel') as HTMLElement;
+    expect(panel.querySelector('.result')?.textContent).toBe('FROM A FRAME');
+    expect(Number.parseFloat(panel.style.left)).toBeGreaterThanOrEqual(0);
+    controller.destroy();
+  });
+
+  it('with autoTrigger off, attaches no selection listeners at all — so the floating button stays off when the user turned it off — but an explicit request still works', async () => {
+    vi.spyOn(window, 'getSelection').mockReturnValue(fakeSelection('hello'));
+    const added = vi.spyOn(document, 'addEventListener');
+    const controller = mountSelectionPopup({
+      translator: uppercaseTranslator(),
+      getSourceLanguage: () => 'en',
+      getTargetLanguage: () => 'es',
+      autoTrigger: false,
+    });
+
+    const listened = added.mock.calls.map(([type]) => type);
+    expect(listened).not.toContain('mouseup');
+    expect(listened).not.toContain('keyup');
+    document.dispatchEvent(trusted(new MouseEvent('mouseup', { bubbles: true })));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(shadowRoot()?.querySelector('.trigger')).toBeNull();
+
+    controller.translateText('hello');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(shadowRoot()?.querySelector('.result')?.textContent).toBe('HELLO');
+    controller.destroy();
+  });
+
+  it("isn't superseded by a stray key-up while a right-click translation is still detecting its language — real race, caught driving the built extension: the key-up's debounced re-check bumped the shared request counter, and the in-flight translation silently gave up", async () => {
+    vi.spyOn(window, 'getSelection').mockReturnValue(fakeSelection('hello'));
+    spyOnDetectLanguage().mockImplementation(
+      () =>
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ isReliable: true, languages: [{ language: 'en', percentage: 100 }] }), 300),
+        ),
+    );
+    const controller = mountSelectionPopup({
+      translator: uppercaseTranslator(),
+      getSourceLanguage: () => 'en',
+      getTargetLanguage: () => 'es',
+    });
+
+    controller.translateText('hello');
+    // e.g. the key-up of the Menu key that opened the context menu
+    document.dispatchEvent(trusted(new KeyboardEvent('keyup', { key: 'ContextMenu', bubbles: true })));
+    await new Promise((resolve) => setTimeout(resolve, 450));
+
+    expect(shadowRoot()?.querySelector('.result')?.textContent).toBe('HELLO');
+    controller.destroy();
+  });
+
+  it("stays open when the right-click text and the page's selection aren't character-for-character identical — the browser's own selectionText normalises whitespace differently from Selection.toString(), which is what let this race through the first fix in a real browser", async () => {
+    vi.spyOn(window, 'getSelection').mockReturnValue(fakeSelection('Good morning,\n my friend.'));
+    const controller = mountSelectionPopup({
+      translator: uppercaseTranslator(),
+      getSourceLanguage: () => 'en',
+      getTargetLanguage: () => 'es',
+    });
+
+    controller.translateText('Good morning, my friend.');
+    document.dispatchEvent(trusted(new KeyboardEvent('keyup', { key: 'Escape', bubbles: true })));
+    await new Promise((resolve) => setTimeout(resolve, KEYUP_SETTLE_MS));
+
+    expect(shadowRoot()?.querySelector('.result')?.textContent).toBe('GOOD MORNING, MY FRIEND.');
+    controller.destroy();
+  });
+
+  it('keeps an open translation open when a key is pressed without changing the selection — it used to close on any keystroke', async () => {
+    vi.spyOn(window, 'getSelection').mockReturnValue(fakeSelection('hello'));
+    const controller = mountSelectionPopup({
+      translator: uppercaseTranslator(),
+      getSourceLanguage: () => 'en',
+      getTargetLanguage: () => 'es',
+    });
+    document.dispatchEvent(trusted(new MouseEvent('mouseup', { bubbles: true })));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const trigger = shadowRoot()?.querySelector('.trigger') as HTMLButtonElement;
+    trigger.dispatchEvent(trusted(new MouseEvent('click', { bubbles: true, composed: true })));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(shadowRoot()?.querySelector('.result')?.textContent).toBe('HELLO');
+
+    document.dispatchEvent(trusted(new KeyboardEvent('keyup', { key: 'Shift', bubbles: true })));
+    await new Promise((resolve) => setTimeout(resolve, KEYUP_SETTLE_MS));
+
+    expect(shadowRoot()?.querySelector('.result')?.textContent).toBe('HELLO');
+    controller.destroy();
+  });
+
   it('destroy() removes the host', () => {
     const controller = mountSelectionPopup({
       translator: uppercaseTranslator(),

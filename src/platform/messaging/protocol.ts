@@ -62,10 +62,17 @@ interface ProtocolMap {
   pageTranslate(data: { targetLanguage: string }): PageLanguageState;
   /** Popup/background → a tab's content script: restore the original (pre-translation) text. */
   pageRestore(): PageLanguageState;
+  /** Background (right-click "Translate selection") → top frame: translate this text in the selection popup. */
+  translateSelection(data: { text: string }): void;
   /** Popup/background → a tab's content script: query the current translate/original state. */
   getPageState(): PageLanguageState;
-  /** Content script (bubble's Settings chip) → background: a content script can't call `browser.runtime.openOptionsPage()` itself. */
-  openOptionsPage(): void;
+  /**
+   * Content script (bubble's Settings chip) or popup → background: a content
+   * script can't call `browser.runtime.openOptionsPage()` itself. `section`
+   * opens a specific Settings tab (e.g. 'page' for the provider fields, when a
+   * provider still needs setup).
+   */
+  openOptionsPage(data: { section?: string } | undefined): void;
   /** Popup → a tab's content script: the detected source language ('und' if not yet resolved), for the "Always translate from {language}" toggle. */
   getOriginalLanguage(): string;
   /** Popup → a tab's content script: non-null once the page translator has confirmed translation is actually failing OR the browser is offline (see translateLoop.ts's `getLastError`/`getLastErrorKind`) — closes the gap where a translate click that fails after the popup already resolved shows nothing wrong. `kind` distinguishes "offline, will resume automatically" from "the provider is actually broken." */

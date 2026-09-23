@@ -1078,6 +1078,16 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     if (/no result for this piece/i.test(raw)) {
       return "Couldn't reach the translation service — retrying automatically.";
     }
+    // A rejection (a bad API key, a refused request) is NOT "couldn't reach
+    // ... retrying": the service was reached and said no, and retrying won't
+    // change its answer. Found via a UI audit, once batchedHttpProvider began
+    // carrying the service's own reason instead of discarding it.
+    const rejected = /rejected \(HTTP (\d+)\)(?::\s*(.+))?$/.exec(raw);
+    if (rejected) {
+      return rejected[2]
+        ? `The translation service rejected the request: ${rejected[2]}`
+        : `The translation service rejected the request (HTTP ${rejected[1]}).`;
+    }
     return raw;
   }
 

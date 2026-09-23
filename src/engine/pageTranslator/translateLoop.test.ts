@@ -1170,6 +1170,42 @@ describe('createPageTranslator', () => {
     });
   });
 
+  async function lastErrorFor(rawMessage: string): Promise<string | null> {
+    document.body.innerHTML = '<p>hello</p>';
+    const pageTranslator = createPageTranslator({
+      translator: {
+        async translateBatch(request) {
+          return request.pieces.map((): PieceOutcome => err({ kind: 'network', message: rawMessage }));
+        },
+      },
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+    vi.useFakeTimers();
+    try {
+      void pageTranslator.translatePage('es');
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(2000);
+      return pageTranslator.getLastError();
+    } finally {
+      pageTranslator.restorePage();
+      vi.useRealTimers();
+    }
+  }
+
+  it('says the service REJECTED the request, and why, instead of "couldn\'t reach… retrying automatically" — real gap, found via a UI audit: a rejected API key reached the user as that message, which is false twice over: the service was reached, and retrying won\'t fix a wrong key', async () => {
+    expect(
+      await lastErrorFor('[googleCloudTranslate] rejected (HTTP 400): API key not valid. Please pass a valid API key.'),
+    ).toBe('The translation service rejected the request: API key not valid. Please pass a valid API key.');
+  });
+
+  it('still names the status when the service gave no usable reason', async () => {
+    expect(await lastErrorFor('[llm] rejected (HTTP 403)')).toBe(
+      'The translation service rejected the request (HTTP 403).',
+    );
+  });
+
   it('shows a plain-language message instead of the raw internal "no result for this piece" string', async () => {
     // Real bug, found via a live user report: the bubble's red panel showed
     // the raw internal string batchedHttpProvider.ts uses for this failure

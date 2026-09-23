@@ -69,6 +69,7 @@
     "three-bugfixes",
     "twitter-non-latin-source-language-echo",
     "ui-audit-fixes",
+    "ui-audit-improvements",
     "unbounded-auth-scrape-fetch",
     "unleakable-concurrency-gate",
     "use-detected-source-language",

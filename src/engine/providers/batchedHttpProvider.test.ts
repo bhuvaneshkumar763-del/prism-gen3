@@ -1055,7 +1055,82 @@ describe('createBatchedHttpProvider — connectivity awareness', () => {
     const results = await provider.translateBatch({ sourceLanguage: 'en', targetLanguage: 'es', pieces: [['hello']] });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(results).toEqual([{ ok: false, error: { kind: 'network', message: '[bad-key] no result for this piece' } }]);
+    // The server's own reason is carried through now, instead of a generic
+    // "no result for this piece" — see the rejection tests below.
+    expect(results).toEqual([
+      { ok: false, error: { kind: 'network', message: '[bad-key] rejected (HTTP 401): bad key' } },
+    ]);
+  });
+
+  describe("carries the service's own reason for a rejection — UI audit", () => {
+    // Real gap: on a non-retryable status the response body — where a
+    // service explains WHY (Google: "API key not valid...") — was never
+    // read, the error was then discarded, and every piece came back as a
+    // generic "no result for this piece". The bubble turns that into
+    // "Couldn't reach the translation service — retrying automatically",
+    // which is false twice over for a rejected key: the service WAS
+    // reached, and retrying won't fix a wrong key. Settings' "Test
+    // translation" had nothing better to show either.
+    async function rejectionMessage(response: Response): Promise<{ kind: string; message: string }> {
+      vi.spyOn(connectivity, 'isOnline').mockReturnValue(true);
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => response),
+      );
+      const provider = createBatchedHttpProvider({
+        name: 'svc',
+        baseUrl: 'https://example.com',
+        method: 'POST',
+        callbacks: { ...plainCallbacks(), getRequestBody: () => '{}' },
+      });
+      const [outcome] = await provider.translateBatch({ sourceLanguage: 'en', targetLanguage: 'es', pieces: [['hi']] });
+      if (!outcome || outcome.ok) throw new Error('expected a failed outcome');
+      return outcome.error;
+    }
+
+    it("surfaces a Google-style JSON error's message", async () => {
+      const error = await rejectionMessage(
+        jsonResponse(
+          {
+            error: {
+              code: 400,
+              message: 'API key not valid. Please pass a valid API key.',
+              status: 'INVALID_ARGUMENT',
+            },
+          },
+          400,
+        ),
+      );
+      expect(error.message).toBe('[svc] rejected (HTTP 400): API key not valid. Please pass a valid API key.');
+    });
+
+    it('keeps the error kind unchanged — the translate loop keys its failure handling off the kind, so only the message improves', async () => {
+      const error = await rejectionMessage(jsonResponse({ error: { message: 'nope' } }, 403));
+      expect(error.kind).toBe('network');
+    });
+
+    it('surfaces a short plain-text body', async () => {
+      const error = await rejectionMessage(new Response('Forbidden', { status: 403 }));
+      expect(error.message).toBe('[svc] rejected (HTTP 403): Forbidden');
+    });
+
+    it('never puts an HTML error page into the message — just the status', async () => {
+      const error = await rejectionMessage(
+        new Response('<!doctype html><html><body><h1>403 Forbidden</h1></body></html>', { status: 403 }),
+      );
+      expect(error.message).toBe('[svc] rejected (HTTP 403)');
+    });
+
+    it('falls back to the status alone when the body is empty', async () => {
+      const error = await rejectionMessage(new Response('', { status: 400 }));
+      expect(error.message).toBe('[svc] rejected (HTTP 400)');
+    });
+
+    it('clips an oversized body and collapses its whitespace', async () => {
+      const error = await rejectionMessage(new Response(`bad\n\n  request ${'x'.repeat(500)}`, { status: 400 }));
+      expect(error.message.startsWith('[svc] rejected (HTTP 400): bad request ')).toBe(true);
+      expect(error.message.length).toBeLessThanOrEqual('[svc] rejected (HTTP 400): '.length + 200);
+    });
   });
 
   it('bounds the whole retry sequence to an overall deadline instead of letting 3 full-length slow attempts add up past a minute', async () => {

@@ -22,12 +22,13 @@ import {
   removeSiteFromAlwaysTranslate,
   siteListIncludesHostname,
 } from '../../src/shared/config/listMutations';
+import { missingProviderSetup, type ProviderSetupFields } from '../../src/shared/config/providerSetup';
 import {
   resolveSourceLanguageForHost,
   setBubbleVisibilityForHost,
   setSourceLanguageForHost,
 } from '../../src/shared/config/siteOverrides';
-import { COMMON_LANGUAGES, languageName } from '../../src/shared/languages';
+import { COMMON_LANGUAGES, languageName, translationDirection } from '../../src/shared/languages';
 import { TRANSLATE_ICON_PATH } from '../../src/shared/ui/icons';
 import type { BubbleViewState } from './bubbleState';
 
@@ -102,6 +103,17 @@ export function FloatingBubble(props: FloatingBubbleProps) {
 
   const [targetLanguage, setTargetLanguageSignal] = createSignal(configStore.get('targetLanguage'));
   const [service, setServiceSignal] = createSignal(configStore.get('pageTranslatorProvider'));
+  function readSetupFields(): ProviderSetupFields {
+    return {
+      googleCloudTranslateApiKey: configStore.get('googleCloudTranslateApiKey'),
+      llmBaseUrl: configStore.get('llmBaseUrl'),
+      llmApiKey: configStore.get('llmApiKey'),
+      llmModel: configStore.get('llmModel'),
+    };
+  }
+  const [setupFields, setSetupFields] = createSignal(readSetupFields());
+  /** What a provider still needs, or null — see missingProviderSetup. */
+  const providerGaps = (id: ProviderId) => missingProviderSetup(id, setupFields());
   const [alwaysOn, setAlwaysOn] = createSignal(
     siteListIncludesHostname(configStore.get('alwaysTranslateSites'), props.hostname),
   );
@@ -365,6 +377,13 @@ export function FloatingBubble(props: FloatingBubbleProps) {
     const unsubConfig = configStore.onChanged((name, value) => {
       if (name === 'targetLanguage') setTargetLanguageSignal(value as string);
       else if (name === 'pageTranslatorProvider') setServiceSignal(value as ProviderId);
+      else if (
+        name === 'googleCloudTranslateApiKey' ||
+        name === 'llmBaseUrl' ||
+        name === 'llmApiKey' ||
+        name === 'llmModel'
+      )
+        setSetupFields(readSetupFields());
       else if (name === 'alwaysTranslateSites')
         setAlwaysOn(siteListIncludesHostname(value as string[], props.hostname));
       else if (name === 'sourceLanguageByHost') {
@@ -494,6 +513,12 @@ export function FloatingBubble(props: FloatingBubbleProps) {
       setServiceSignal(previous);
     });
     setServiceSignal(id);
+    // A provider that still needs setup opens Settings at its fields instead
+    // of retranslating straight into a failure — see missingProviderSetup.
+    if (providerGaps(id)) {
+      void sendMessage('openOptionsPage', { section: 'page' });
+      return;
+    }
     props.onTranslate(targetLanguage());
   }
 
@@ -521,7 +546,11 @@ export function FloatingBubble(props: FloatingBubbleProps) {
   const headTitle = () => {
     if (offline()) return 'Offline';
     if (errored()) return 'Translation failed';
-    return translated() ? 'Page translated' : 'Translate this page';
+    if (!translated()) return 'Translate this page';
+    // A source the user forced with the From picker is what the page was
+    // actually translated from; otherwise the detected language.
+    const from = sourceLanguage() !== 'auto' ? sourceLanguage() : props.state.originalLanguage;
+    return translationDirection(from, targetLanguage()) ?? 'Page translated';
   };
   const primaryLabel = () => {
     // No "Retry" while offline — translateLoop.ts already auto-resumes the
@@ -640,6 +669,7 @@ export function FloatingBubble(props: FloatingBubbleProps) {
                   {(d) => (
                     <option value={d.id} selected={d.id === service()}>
                       {d.displayName}
+                      {providerGaps(d.id) ? ' — needs setup' : ''}
                     </option>
                   )}
                 </For>

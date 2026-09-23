@@ -1,6 +1,6 @@
 import { createMemo, createSignal, For, onCleanup, onMount, Show } from 'solid-js';
 import type { ErrorKind, PageLanguageState } from '../../src/engine/pageTranslator/translateLoop';
-import { providerDescriptors } from '../../src/engine/providers/descriptors';
+import { type ProviderId, providerDescriptors } from '../../src/engine/providers/descriptors';
 import { applyListPatch, readListsSnapshot } from '../../src/platform/configMutations';
 import { configStore } from '../../src/platform/configStore';
 import { sendMessage } from '../../src/platform/messaging/protocol';
@@ -14,9 +14,11 @@ import {
   removeSiteFromNeverTranslate,
   siteListIncludesHostname,
 } from '../../src/shared/config/listMutations';
+import { missingProviderSetup, type ProviderSetupFields } from '../../src/shared/config/providerSetup';
 import { resolveBubbleVisibility, setBubbleVisibilityForHost } from '../../src/shared/config/siteOverrides';
-import { COMMON_LANGUAGES, languageName } from '../../src/shared/languages';
+import { COMMON_LANGUAGES, languageName, translationDirection } from '../../src/shared/languages';
 import { loadPageStatus } from '../../src/shared/pageStatus';
+import { translateShortcut } from '../../src/shared/shortcut';
 import { CANT_TRANSLATE_MESSAGE, describeUnsupportedPage } from '../../src/shared/unsupportedPage';
 import { withTimeout } from '../../src/shared/withTimeout';
 import './App.css';
@@ -72,6 +74,24 @@ function App() {
   const [hoverTooltipEnabled, setHoverTooltipEnabled] = createSignal(true);
   const [selectionPopupEnabled, setSelectionPopupEnabled] = createSignal(true);
   const [showMore, setShowMore] = createSignal(false);
+  /** The live translate/restore key binding, or null — see translateShortcut. */
+  const [shortcut, setShortcut] = createSignal<string | null>(null);
+  const [setupFields, setSetupFields] = createSignal<ProviderSetupFields>({
+    googleCloudTranslateApiKey: '',
+    llmBaseUrl: '',
+    llmApiKey: '',
+    llmModel: '',
+  });
+  /** What each provider still needs, or null — see missingProviderSetup. */
+  const providerGaps = (id: ProviderId) => missingProviderSetup(id, setupFields());
+  function readSetupFields(): ProviderSetupFields {
+    return {
+      googleCloudTranslateApiKey: configStore.get('googleCloudTranslateApiKey'),
+      llmBaseUrl: configStore.get('llmBaseUrl'),
+      llmApiKey: configStore.get('llmApiKey'),
+      llmModel: configStore.get('llmModel'),
+    };
+  }
   /** Set when there's no Prism running in this tab — see `describeUnsupportedPage`. */
   const [unsupportedMessage, setUnsupportedMessage] = createSignal<string | null>(null);
   let tabId: number | null = null;
@@ -103,7 +123,13 @@ function App() {
     setBubbleByHost(configStore.get('bubbleByHost'));
     setHoverTooltipEnabled(configStore.get('hoverTooltipEnabled'));
     setSelectionPopupEnabled(configStore.get('selectionPopupEnabled'));
+    setSetupFields(readSetupFields());
     setReady(true);
+    // Not every browser exposes commands.getAll — no hint is better than a broken one.
+    browser.commands
+      ?.getAll?.()
+      .then((commands) => setShortcut(translateShortcut(commands)))
+      .catch(() => {});
 
     let tab: Awaited<ReturnType<typeof getActiveTab>>;
     try {
@@ -161,6 +187,9 @@ function App() {
     if (name === 'bubbleByHost') setBubbleByHost(value as Record<string, boolean>);
     if (name === 'hoverTooltipEnabled') setHoverTooltipEnabled(value as boolean);
     if (name === 'selectionPopupEnabled') setSelectionPopupEnabled(value as boolean);
+    if (name === 'googleCloudTranslateApiKey' || name === 'llmBaseUrl' || name === 'llmApiKey' || name === 'llmModel') {
+      setSetupFields(readSetupFields());
+    }
   });
   onCleanup(unsubscribe);
 
@@ -206,11 +235,18 @@ function App() {
     if (pageState() === 'translated') await onTranslateClick();
   }
 
-  async function onProviderChange(id: string): Promise<void> {
+  async function onProviderChange(id: ProviderId): Promise<void> {
     setProvider(id);
     // Awaited before retranslating: the provider is read from config by the
     // background at translate time, so the write has to have landed first.
-    await configStore.set('pageTranslatorProvider', id as never);
+    await configStore.set('pageTranslatorProvider', id);
+    // Improvement, found via a UI audit: an unconfigured provider used to be
+    // accepted silently and fail on the next translate. Now it opens Settings
+    // at the fields it still needs, rather than retranslating into an error.
+    if (providerGaps(id)) {
+      void sendMessage('openOptionsPage', { section: 'page' });
+      return;
+    }
     if (pageState() === 'translated') await onTranslateClick();
   }
 
@@ -357,7 +393,7 @@ function App() {
         <h1>Prism</h1>
         <span class="statusPill" classList={{ on: translated() }} role="status">
           {translated()
-            ? 'Translated'
+            ? (translationDirection(originalLanguage(), targetLanguage()) ?? 'Translated')
             : `Original · ${originalLanguage() === 'und' ? '…' : languageName(originalLanguage())}`}
         </span>
       </div>
@@ -397,6 +433,12 @@ function App() {
         </button>
       </Show>
 
+      <Show when={shortcut() && !unsupportedMessage()}>
+        <p class="shortcutHint">
+          Shortcut: <kbd>{shortcut()}</kbd>
+        </p>
+      </Show>
+
       <Show when={quickLanguages().length > 0}>
         <div class="pillRow">
           <For each={quickLanguages().slice(0, MAX_QUICK_LANGUAGES)}>
@@ -424,8 +466,15 @@ function App() {
 
         <label class="quickField">
           <span>Service</span>
-          <select value={provider()} onChange={(e) => void onProviderChange(e.currentTarget.value)}>
-            <For each={providerDescriptors}>{(d) => <option value={d.id}>{d.displayName}</option>}</For>
+          <select value={provider()} onChange={(e) => void onProviderChange(e.currentTarget.value as ProviderId)}>
+            <For each={providerDescriptors}>
+              {(d) => (
+                <option value={d.id}>
+                  {d.displayName}
+                  {providerGaps(d.id) ? ' — needs setup' : ''}
+                </option>
+              )}
+            </For>
           </select>
         </label>
       </Show>

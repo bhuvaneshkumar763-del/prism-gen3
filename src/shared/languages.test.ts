@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { baseLanguageTag, COMMON_LANGUAGES, languageName } from './languages';
+import { baseLanguageTag, COMMON_LANGUAGES, languageName, translationDirection } from './languages';
 
 describe('languageName', () => {
   it('returns the display name for a known code', () => {
@@ -35,5 +35,22 @@ describe('COMMON_LANGUAGES', () => {
   it('has no duplicate codes', () => {
     const codes = COMMON_LANGUAGES.map((l) => l.code);
     expect(new Set(codes).size).toBe(codes.length);
+  });
+});
+
+describe('translationDirection', () => {
+  it('names both languages', () => {
+    expect(translationDirection('vi', 'en')).toBe('Vietnamese → English');
+  });
+
+  it('says nothing when the source language is unknown, rather than guessing', () => {
+    expect(translationDirection('und', 'en')).toBeNull();
+    expect(translationDirection('auto', 'en')).toBeNull();
+    expect(translationDirection('', 'en')).toBeNull();
+  });
+
+  it('says nothing for a page already in the target language — "English → English" is noise', () => {
+    expect(translationDirection('en', 'en')).toBeNull();
+    expect(translationDirection('en-GB', 'en')).toBeNull();
   });
 });

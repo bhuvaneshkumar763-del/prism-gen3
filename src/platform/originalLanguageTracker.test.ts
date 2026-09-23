@@ -51,6 +51,19 @@ describe('createOriginalLanguageTracker', () => {
     expect(tracker.get()).toBe('fr');
   });
 
+  it('detects once no matter how many callers await start() — detection costs a browser round trip plus a page-text sample, and both the auto-translate decision and the floating bubble (to show "Vietnamese → English") need the result', async () => {
+    const detect = spyOnDetectLanguage().mockResolvedValue({
+      isReliable: true,
+      languages: [{ language: 'vi', percentage: 95 }],
+    });
+
+    const tracker = createOriginalLanguageTracker();
+    await Promise.all([tracker.start(), tracker.start(), tracker.start()]);
+
+    expect(tracker.get()).toBe('vi');
+    expect(detect).toHaveBeenCalledTimes(1);
+  });
+
   it('resolves to "und" (never throws) when detectLanguage rejects', async () => {
     spyOnDetectLanguage().mockRejectedValue(new Error('not supported'));
 

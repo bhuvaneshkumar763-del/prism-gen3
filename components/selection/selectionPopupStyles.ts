@@ -81,6 +81,20 @@ export const SELECTION_POPUP_STYLES = `
     margin: 0;
     color: #fca5a5;
   }
+  .copy {
+    margin-top: 8px;
+    padding: 3px 10px;
+    border: 1px solid rgba(255, 255, 255, 0.35);
+    border-radius: 999px;
+    background: transparent;
+    color: #e0e7ff;
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .copy:hover {
+    background: rgba(255, 255, 255, 0.12);
+  }
   .close {
     position: absolute;
     top: 4px;

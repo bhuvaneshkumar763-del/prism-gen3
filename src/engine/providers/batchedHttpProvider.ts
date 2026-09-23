@@ -123,7 +123,51 @@ interface RetryableError extends Error {
  * distinguish this from a transient network/5xx/429 failure at all, so it
  * retried everything uniformly.
  */
-class NonRetryableHttpError extends Error {}
+class NonRetryableHttpError extends Error {
+  constructor(
+    readonly status: number,
+    /** The service's own explanation, if it gave a usable one — see `readRejectionReason`. */
+    readonly reason: string | null,
+  ) {
+    super(`HTTP ${status}`);
+  }
+}
+
+const MAX_REJECTION_REASON_CHARS = 200;
+
+/**
+ * The service's own explanation of a rejection, from the response body —
+ * Google-style `{error: {message}}`, a bare `{message}`/`{error: "..."}`, or a
+ * short plain-text body. Null for an empty body or an HTML error page: markup
+ * is never worth showing a user, and a status code alone is honest.
+ *
+ * Found via a UI audit: this body used to go unread, so a rejected API key
+ * reached the user as a generic "no result for this piece" — which the
+ * bubble renders as "Couldn't reach the translation service — retrying
+ * automatically", false twice over for a key the service reached and
+ * refused.
+ */
+async function readRejectionReason(response: Response): Promise<string | null> {
+  let text: string;
+  try {
+    text = (await response.text()).trim();
+  } catch {
+    return null;
+  }
+  if (!text || text.startsWith('<')) return null;
+  let reason: unknown = text;
+  try {
+    const body = JSON.parse(text) as { error?: unknown; message?: unknown };
+    const nested =
+      typeof body.error === 'object' && body.error !== null ? (body.error as { message?: unknown }).message : undefined;
+    reason = nested ?? body.message ?? body.error ?? null;
+  } catch {
+    // not JSON — the plain text itself is the reason
+  }
+  if (typeof reason !== 'string') return null;
+  const collapsed = reason.replace(/\s+/g, ' ').trim();
+  return collapsed ? collapsed.slice(0, MAX_REJECTION_REASON_CHARS) : null;
+}
 
 interface PendingRequest {
   wireText: string;
@@ -144,7 +188,12 @@ interface PendingRequest {
    * kind doc comment for why this distinction matters. Only meaningful
    * when `result` is null; ignored otherwise.
    */
-  resolve(result: { text: string; detectedLanguage: string | null } | null, wasSuspicious?: boolean): void;
+  resolve(
+    result: { text: string; detectedLanguage: string | null } | null,
+    wasSuspicious?: boolean,
+    /** Why it failed, when that's known — replaces the generic "no result for this piece". */
+    failureMessage?: string,
+  ): void;
 }
 
 const DEFAULT_MAX_BATCH_CHARS = 2000;
@@ -297,6 +346,8 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
   // PendingRequest, so this works regardless of which call's index the
   // promise ends up at.
   const suspiciousPromises = new WeakSet<Promise<{ text: string; detectedLanguage: string | null } | null>>();
+  /** A specific failure reason per piece promise, when one is known — see `readRejectionReason`. */
+  const failureMessages = new WeakMap<Promise<{ text: string; detectedLanguage: string | null } | null>, string>();
 
   // Provider-level (not per-`translateBatch()` call) rolling window of the
   // last SUSPICIOUS_WINDOW_SIZE piece-level classifications — same scope
@@ -397,7 +448,7 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
           }
           if (!response.ok) {
             options.onNonRetryableStatus?.(response.status);
-            throw new NonRetryableHttpError(`HTTP ${response.status}`);
+            throw new NonRetryableHttpError(response.status, await readRejectionReason(response));
           }
           return await response.json();
         })(),
@@ -610,8 +661,12 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
       });
     } catch (e) {
       console.error(`[${options.name}] translation request failed`, e);
+      const failureMessage =
+        e instanceof NonRetryableHttpError
+          ? `[${options.name}] rejected (HTTP ${e.status})${e.reason ? `: ${e.reason}` : ''}`
+          : undefined;
       pending.forEach((p) => {
-        p.resolve(null);
+        p.resolve(null, false, failureMessage);
       });
     }
   }
@@ -657,9 +712,11 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
         let resolveFn!: (
           result: { text: string; detectedLanguage: string | null } | null,
           wasSuspicious?: boolean,
+          failureMessage?: string,
         ) => void;
         const promise = new Promise<{ text: string; detectedLanguage: string | null } | null>((resolve) => {
-          resolveFn = (result, wasSuspicious) => {
+          resolveFn = (result, wasSuspicious, failureMessage) => {
+            if (failureMessage) failureMessages.set(promise, failureMessage);
             // Reliability fix, found via a live incident: recording every
             // piece's final classification here — success and genuine
             // failure count as `false`, a confirmed-suspicious result as
@@ -722,7 +779,10 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
                         kind: 'suspicious',
                         message: `[${options.name}] result kept looking like a silent-echo failure after a repair retry`,
                       }
-                    : { kind: 'network', message: `[${options.name}] no result for this piece` },
+                    : {
+                        kind: 'network',
+                        message: failureMessages.get(resultPromise) ?? `[${options.name}] no result for this piece`,
+                      },
                 )
               : ok(options.callbacks.splitPieceResponse(result.text, dontSortResults));
           outcomes[idx] = outcome;

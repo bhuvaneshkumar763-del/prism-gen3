@@ -35,6 +35,7 @@ describe('FloatingBubble', () => {
         errorMessage: null as string | null,
         errorKind: null as 'offline' | 'provider' | null,
         progress: null as number | null,
+        originalLanguage: 'und',
       },
       hostname: 'example.com',
       shadowHost: container,
@@ -71,7 +72,14 @@ describe('FloatingBubble', () => {
 
   it('shows "Show original" once translated', () => {
     const { el } = mount({
-      state: { pageState: 'translated', busy: false, errorMessage: null, errorKind: null, progress: null },
+      state: {
+        pageState: 'translated',
+        busy: false,
+        errorMessage: null,
+        errorKind: null,
+        progress: null,
+        originalLanguage: 'und',
+      },
     });
     expect(el.querySelector('.primary')?.textContent).toBe('Show original');
   });
@@ -81,7 +89,14 @@ describe('FloatingBubble', () => {
     // looks like, not a restore in progress — see mountBubble.test.ts's
     // matching test for the full explanation.
     const { el } = mount({
-      state: { pageState: 'translated', busy: true, errorMessage: null, errorKind: null, progress: null },
+      state: {
+        pageState: 'translated',
+        busy: true,
+        errorMessage: null,
+        errorKind: null,
+        progress: null,
+        originalLanguage: 'und',
+      },
     });
     const primary = el.querySelector('.primary') as HTMLButtonElement;
     expect(primary.textContent).toBe('Translating…');
@@ -95,7 +110,14 @@ describe('FloatingBubble', () => {
     // while props.state.busy is true used to fire another onTranslate.
     const onTranslate = vi.fn();
     const { el } = mount({
-      state: { pageState: 'original', busy: true, errorMessage: null, errorKind: null, progress: null },
+      state: {
+        pageState: 'original',
+        busy: true,
+        errorMessage: null,
+        errorKind: null,
+        progress: null,
+        originalLanguage: 'und',
+      },
       onTranslate,
     });
     const ball = el.querySelector('.ball') as HTMLButtonElement;
@@ -113,7 +135,14 @@ describe('FloatingBubble', () => {
   it('invokes onRestore when the primary button is clicked while translated', () => {
     const onRestore = vi.fn();
     const { el } = mount({
-      state: { pageState: 'translated', busy: false, errorMessage: null, errorKind: null, progress: null },
+      state: {
+        pageState: 'translated',
+        busy: false,
+        errorMessage: null,
+        errorKind: null,
+        progress: null,
+        originalLanguage: 'und',
+      },
       onRestore,
     });
     (el.querySelector('.primary') as HTMLButtonElement).dispatchEvent(
@@ -133,7 +162,14 @@ describe('FloatingBubble', () => {
 
   it('shows a real error instead of the normal "Translated" success, even in the translated state', () => {
     const { el } = mount({
-      state: { pageState: 'translated', busy: false, errorMessage: 'HTTP 429', errorKind: 'provider', progress: null },
+      state: {
+        pageState: 'translated',
+        busy: false,
+        errorMessage: 'HTTP 429',
+        errorKind: 'provider',
+        progress: null,
+        originalLanguage: 'und',
+      },
     });
     expect(el.querySelector('.htitle')?.textContent).toBe('Translation failed');
     expect(el.querySelector('.errorText')?.textContent).toBe('HTTP 429');
@@ -144,7 +180,14 @@ describe('FloatingBubble', () => {
     const onTranslate = vi.fn();
     const onRestore = vi.fn();
     const { el } = mount({
-      state: { pageState: 'translated', busy: false, errorMessage: 'HTTP 429', errorKind: 'provider', progress: null },
+      state: {
+        pageState: 'translated',
+        busy: false,
+        errorMessage: 'HTTP 429',
+        errorKind: 'provider',
+        progress: null,
+        originalLanguage: 'und',
+      },
       onTranslate,
       onRestore,
     });
@@ -164,6 +207,7 @@ describe('FloatingBubble', () => {
         errorMessage: 'Offline — translation will resume automatically once your connection is back.',
         errorKind: 'offline',
         progress: null,
+        originalLanguage: 'und',
       },
     });
     expect(el.querySelector('.htitle')?.textContent).toBe('Offline');
@@ -182,7 +226,14 @@ describe('FloatingBubble', () => {
     const onTranslate = vi.fn();
     const onRestore = vi.fn();
     const { el } = mount({
-      state: { pageState: 'translated', busy: false, errorMessage: 'offline', errorKind: 'offline', progress: null },
+      state: {
+        pageState: 'translated',
+        busy: false,
+        errorMessage: 'offline',
+        errorKind: 'offline',
+        progress: null,
+        originalLanguage: 'und',
+      },
       onTranslate,
       onRestore,
     });
@@ -333,6 +384,7 @@ describe('FloatingBubble', () => {
         errorMessage: null as string | null,
         errorKind: null as 'offline' | 'provider' | null,
         progress: null as number | null,
+        originalLanguage: 'und',
         ...overrides,
       };
     }
@@ -449,6 +501,79 @@ describe('FloatingBubble', () => {
       await nextFrame();
 
       expect(counter.reads).toBe(1);
+    });
+  });
+
+  describe('provider setup — UI audit', () => {
+    beforeEach(async () => {
+      await configStore.set('googleCloudTranslateApiKey', '');
+      await configStore.set('llmBaseUrl', '');
+      await configStore.set('llmApiKey', '');
+      await configStore.set('llmModel', '');
+    });
+
+    function serviceSelect(el: HTMLElement) {
+      return el.querySelectorAll('.selrow select')[2] as HTMLSelectElement;
+    }
+
+    it('marks providers that still need setup, and only those', () => {
+      const { el } = mount();
+      const labels = Array.from(serviceSelect(el).options).map((o) => [o.value, o.textContent]);
+      expect(labels.find(([id]) => id === 'google')?.[1]).not.toMatch(/needs setup/);
+      expect(labels.find(([id]) => id === 'googleCloudTranslate')?.[1]).toMatch(/needs setup$/);
+    });
+
+    it('clears the mark live once the missing setting is filled in', async () => {
+      const { el } = mount();
+      await configStore.set('googleCloudTranslateApiKey', 'a-real-key');
+      const cloud = Array.from(serviceSelect(el).options).find((o) => o.value === 'googleCloudTranslate');
+      expect(cloud?.textContent).not.toMatch(/needs setup/);
+    });
+
+    it('does not retranslate into a failure when an unconfigured provider is picked — it used to be accepted silently and fail on the next translate', () => {
+      const onTranslate = vi.fn();
+      const { el } = mount({ onTranslate });
+      const select = serviceSelect(el);
+      select.value = 'googleCloudTranslate';
+      select.dispatchEvent(trusted(new Event('change', { bubbles: true })));
+      expect(onTranslate).not.toHaveBeenCalled();
+    });
+
+    it('still retranslates right away for a provider that is ready', async () => {
+      await configStore.set('googleCloudTranslateApiKey', 'a-real-key');
+      const onTranslate = vi.fn();
+      const { el } = mount({ onTranslate });
+      const select = serviceSelect(el);
+      select.value = 'googleCloudTranslate';
+      select.dispatchEvent(trusted(new Event('change', { bubbles: true })));
+      expect(onTranslate).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('translation direction — UI audit', () => {
+    const translatedFrom = (originalLanguage: string) => ({
+      pageState: 'translated' as const,
+      busy: false,
+      errorMessage: null,
+      errorKind: null,
+      progress: null,
+      originalLanguage,
+    });
+
+    it('titles a translated page with where it went — "Page translated" said nothing about which way', () => {
+      const { el } = mount({ state: translatedFrom('vi') });
+      expect(el.querySelector('.htitle')?.textContent).toBe('Vietnamese → Spanish');
+    });
+
+    it('uses the source the user forced with the From picker — that is what the page was actually translated from', async () => {
+      await configStore.set('sourceLanguageByHost', { 'example.com': 'zh' });
+      const { el } = mount({ state: translatedFrom('vi') });
+      expect(el.querySelector('.htitle')?.textContent).toBe('Chinese → Spanish');
+    });
+
+    it('falls back to the plain title while the page language is still unknown', () => {
+      const { el } = mount({ state: translatedFrom('und') });
+      expect(el.querySelector('.htitle')?.textContent).toBe('Page translated');
     });
   });
 });

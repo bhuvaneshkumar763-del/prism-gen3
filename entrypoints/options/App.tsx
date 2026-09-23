@@ -7,6 +7,7 @@ import { providerDescriptors } from '../../src/engine/providers/descriptors';
 import { translationCache } from '../../src/platform/cache/translationCache';
 import { configStore } from '../../src/platform/configStore';
 import { type DiagnosticsReport, runDiagnostics } from '../../src/platform/diagnostics';
+import { sendMessage } from '../../src/platform/messaging/protocol';
 import { parseBackup, serializeBackup } from '../../src/shared/config/backup';
 import {
   addLangToAlwaysTranslate,
@@ -19,10 +20,13 @@ import {
   removeSiteFromAlwaysTranslate,
   removeSiteFromNeverTranslate,
 } from '../../src/shared/config/listMutations';
+import { missingProviderSetup } from '../../src/shared/config/providerSetup';
 import { type Config, type ConfigKey, defaultConfig } from '../../src/shared/config/schema';
 import { clearBubbleOverrideForHost, clearSourceLanguageOverrideForHost } from '../../src/shared/config/siteOverrides';
 import { downloadBlob } from '../../src/shared/downloadBlob';
 import { COMMON_LANGUAGES } from '../../src/shared/languages';
+import { translateShortcut } from '../../src/shared/shortcut';
+import { describeTranslationTest, pickTranslationTestSample } from '../../src/shared/translationTest';
 import './App.css';
 
 /**
@@ -94,7 +98,36 @@ function App() {
   }
 
   const [ready, setReady] = createSignal(false);
-  const [activeTab, setActiveTab] = createSignal('general');
+  // Deep-linkable (options.html#page): the popup and bubble open Settings
+  // straight at the provider fields when you pick a provider that needs setup.
+  const initialTab = TABS.find((t) => `#${t.id}` === location.hash)?.id ?? 'general';
+  const [activeTab, setActiveTab] = createSignal(initialTab);
+  const [testRunning, setTestRunning] = createSignal(false);
+  /** The live translate/restore key binding, or null — see translateShortcut. */
+  const [shortcut, setShortcut] = createSignal<string | null>(null);
+  const [testResult, setTestResult] = createSignal<{ ok: boolean; message: string } | null>(null);
+  const providerGaps = () => missingProviderSetup(settings.pageTranslatorProvider, settings);
+
+  /**
+   * Improvement, found via a UI audit: diagnostics checked storage and API
+   * availability but never actually translated anything, so nothing could
+   * answer "does translation work with my settings right now?". This sends
+   * one short sample through the same background path page translation uses.
+   */
+  async function handleTestTranslation(): Promise<void> {
+    setTestRunning(true);
+    setTestResult(null);
+    const sample = pickTranslationTestSample(settings.targetLanguage);
+    const started = performance.now();
+    try {
+      const result = await sendMessage('translateText', sample);
+      setTestResult(describeTranslationTest(sample, result, performance.now() - started));
+    } catch (e) {
+      setTestResult({ ok: false, message: `Not working: ${describeError(e)}` });
+    } finally {
+      setTestRunning(false);
+    }
+  }
   const [savedField, setSavedField] = createSignal<ConfigKey | null>(null);
   const [diagnostics, setDiagnostics] = createSignal<DiagnosticsReport | null>(null);
   const [diagnosticsRunning, setDiagnosticsRunning] = createSignal(false);
@@ -144,6 +177,13 @@ function App() {
     if (savedTimeout) clearTimeout(savedTimeout);
     savedTimeout = setTimeout(() => setSavedField(null), 1200);
   }
+
+  onMount(() => {
+    browser.commands
+      ?.getAll?.()
+      .then((commands) => setShortcut(translateShortcut(commands)))
+      .catch(() => {});
+  });
 
   onMount(async () => {
     await configStore.onReady();
@@ -275,6 +315,20 @@ function App() {
         <TabPanel id="general" active={activeTab() === 'general'}>
           <section class="section">
             <h2>General</h2>
+            <p class="hint">
+              <Show
+                when={shortcut()}
+                fallback={
+                  <>
+                    No keyboard shortcut is set for translating a page — you can assign one in your browser's extension
+                    shortcuts settings.
+                  </>
+                }
+              >
+                Translate or restore the current page with <kbd>{shortcut()}</kbd>. You can change it in your browser's
+                extension shortcuts settings.
+              </Show>
+            </p>
             <label class="field">
               <span>Theme</span>
               <select value={settings.theme} onChange={(e) => void setField('theme', e.currentTarget.value as never)}>
@@ -429,6 +483,31 @@ function App() {
             <Show when={settings.pageTranslatorProvider === 'google'}>
               <p class="hint">No configuration needed for this provider.</p>
             </Show>
+
+            <Show when={providerGaps()}>
+              {(gaps) => (
+                <p class="setupWarning" role="status">
+                  Needs setup: {gaps().join(', ')}.
+                  <Show when={settings.pageTranslatorProvider === 'llm' && gaps().includes('API key')}>
+                    {' '}
+                    For a local server that doesn't check authentication, any placeholder key works.
+                  </Show>
+                </p>
+              )}
+            </Show>
+
+            <div class="testRow">
+              <button type="button" disabled={testRunning()} onClick={() => void handleTestTranslation()}>
+                {testRunning() ? 'Testing…' : 'Test translation'}
+              </button>
+              <Show when={testResult()}>
+                {(result) => (
+                  <p class="testResult" classList={{ ok: result().ok, bad: !result().ok }} role="status">
+                    {result().message}
+                  </p>
+                )}
+              </Show>
+            </div>
 
             <Show
               when={
