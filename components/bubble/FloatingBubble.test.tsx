@@ -539,6 +539,27 @@ describe('FloatingBubble', () => {
       expect(onTranslate).not.toHaveBeenCalled();
     });
 
+    it("handles a failure to open Settings instead of leaving an unhandled rejection — real bug, caught by CI: the message was fired with `void`, so when nothing answered (here, no background; in real use a restarting service worker or an extension context invalidated by an update) the rejection went unhandled, which on a real page is an 'Uncaught (in promise)' error in the site's own console", async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { el } = mount();
+      const select = serviceSelect(el);
+      select.value = 'googleCloudTranslate';
+      select.dispatchEvent(trusted(new Event('change', { bubbles: true })));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(warn).toHaveBeenCalledWith('[prism] could not open Settings', expect.anything());
+    });
+
+    it('handles the same failure from the Settings chip', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { el } = mount();
+      const settings = Array.from(el.querySelectorAll('.chip')).find((c) => c.textContent?.includes('Settings'));
+      settings?.dispatchEvent(trusted(new MouseEvent('click', { bubbles: true })));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(warn).toHaveBeenCalledWith('[prism] could not open Settings', expect.anything());
+    });
+
     it('still retranslates right away for a provider that is ready', async () => {
       await configStore.set('googleCloudTranslateApiKey', 'a-real-key');
       const onTranslate = vi.fn();

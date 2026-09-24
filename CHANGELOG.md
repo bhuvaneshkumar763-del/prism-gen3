@@ -14,7 +14,9 @@
   - **Copy** on a selection translation, with a fallback for plain-http pages where the modern clipboard API doesn't exist. This reverses a recorded v1 scope cut; that doc is updated.
   - **Right-click "Translate '…'"** on any selection. It gives keyboard users (Shift+F10 / the menu key) a real path to selection translation, and it works even when you've turned the floating selection button off, without turning it back on.
 
-  Found while verifying, in a real browser, after the unit tests passed:
+  Caught by CI before release: opening Settings from the bubble or popup fired its message without handling a failure, so when nothing answered — a restarting background, or an extension reloaded by an update — it left an "Uncaught (in promise)" error in the website's own console. The same flaw existed in the bubble's Settings chip and in the page's frame-language relay, which runs on every page load; all are handled now, and the popup falls back to opening Settings directly.
+
+Found while verifying, in a real browser, after the unit tests passed:
 
   - The right-click translation could silently give up: a stray key-up — the one from the key that opened the menu, say — re-checked the selection and superseded it. The first fix compared the wrong strings: the browser's own selection text normalises whitespace differently from the page's, so they could differ for the very same selection. Fixed properly, and pressing a key no longer closes an open translation either, which it used to.
   - The bad-key check passed a generic message the plan said it shouldn't, because the check itself was too loose. Tightening it is what exposed the swallowed rejection reason above.

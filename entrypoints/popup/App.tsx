@@ -244,7 +244,11 @@ function App() {
     // accepted silently and fail on the next translate. Now it opens Settings
     // at the fields it still needs, rather than retranslating into an error.
     if (providerGaps(id)) {
-      void sendMessage('openOptionsPage', { section: 'page' });
+      // The popup can open Settings itself if the background doesn't answer
+      // — just without jumping to the provider section.
+      sendMessage('openOptionsPage', { section: 'page' }).catch(() => {
+        void browser.runtime.openOptionsPage();
+      });
       return;
     }
     if (pageState() === 'translated') await onTranslateClick();

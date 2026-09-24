@@ -324,11 +324,16 @@ export default defineContentScript({
         // sub-frame needs to know the main frame HAS decided, not just
         // what a positive decision was, so it can stop retrying below
         // instead of waiting the full retry budget out on every load.
-        void sendMessage('reportFrameLanguageDecision', {
+        // Handled rather than `void`: an unanswered message would otherwise be
+        // an unhandled rejection in the page's console. Same-origin frames
+        // just fall back to not inheriting this decision.
+        sendMessage('reportFrameLanguageDecision', {
           shouldTranslate,
           targetLanguage: configStore.get('targetLanguage'),
           originalLanguage: originalLanguageTracker.get(),
           mainFrameOrigin: location.origin,
+        }).catch((e) => {
+          console.warn('[prism] could not share the language decision with frames', e);
         });
         if (shouldTranslate) {
           await pageTranslator.translatePage(configStore.get('targetLanguage'));

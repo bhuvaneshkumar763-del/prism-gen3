@@ -439,10 +439,22 @@ export function FloatingBubble(props: FloatingBubbleProps) {
     setAlwaysOn(!alwaysOn());
   }
 
+  /**
+   * Handled, not fired with `void` — real bug, caught by CI: when nothing
+   * answers (a restarting service worker, an extension context invalidated
+   * by an update) an unhandled rejection surfaces as an "Uncaught (in
+   * promise)" error in the host page's own console.
+   */
+  function openSettings(section?: string): void {
+    sendMessage('openOptionsPage', section ? { section } : undefined).catch((e) => {
+      console.warn('[prism] could not open Settings', e);
+    });
+  }
+
   function onSettingsClick(e: MouseEvent): void {
     if (!e.isTrusted) return;
     e.stopPropagation();
-    void sendMessage('openOptionsPage', undefined);
+    openSettings();
   }
 
   function onHideClick(e: MouseEvent): void {
@@ -516,7 +528,7 @@ export function FloatingBubble(props: FloatingBubbleProps) {
     // A provider that still needs setup opens Settings at its fields instead
     // of retranslating straight into a failure — see missingProviderSetup.
     if (providerGaps(id)) {
-      void sendMessage('openOptionsPage', { section: 'page' });
+      openSettings('page');
       return;
     }
     props.onTranslate(targetLanguage());
