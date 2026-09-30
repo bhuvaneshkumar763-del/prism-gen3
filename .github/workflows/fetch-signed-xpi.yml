@@ -1,0 +1,46 @@
+# Attaches Mozilla's signed .xpi to a GitHub release after the fact.
+#
+# The Release workflow's signing step waits a bounded time for Mozilla to
+# approve, and when that runs out it publishes the UNSIGNED Firefox zip while
+# still reporting success. The version is already submitted by then, so once
+# Mozilla approves it this downloads the signed file and attaches it — no
+# re-submission. Run it by hand from the Actions tab with the release version.
+name: Fetch signed Firefox XPI
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version, e.g. 0.3.0-beta.70'
+        required: true
+        type: string
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # The version reaches the script through env, never interpolated into
+      # the shell command, and the script validates its format before use.
+      - name: Download the approved XPI from Mozilla
+        id: fetch
+        env:
+          AMO_JWT_ISSUER: ${{ secrets.AMO_JWT_ISSUER }}
+          AMO_JWT_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+          VERSION: ${{ inputs.version }}
+          OUT_DIR: signed
+        run: node scripts/fetch-signed-xpi.mjs
+
+      - name: Attach it to the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          XPI: ${{ steps.fetch.outputs.xpi }}
+        run: gh release upload "v$VERSION" "$XPI" --clobber --repo "$GITHUB_REPOSITORY"

@@ -91,11 +91,22 @@ jobs:
         env:
           WEB_EXT_API_KEY: ${{ secrets.AMO_JWT_ISSUER }}
           WEB_EXT_API_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+        # --approval-timeout: 45 min. web-ext's default is 15, and Mozilla's
+        # approval time climbed from ~2 min to past 15 over a few days in
+        # Sept 2026 — beta.69 and beta.70 both timed out and shipped an
+        # UNSIGNED zip while this step still reported success
+        # (continue-on-error). A late approval can still be attached
+        # afterwards with the "Fetch signed Firefox XPI" workflow.
+        #
+        # Pinned: `npx web-ext` would otherwise fetch whatever version is
+        # newest on npm at run time and execute it with the AMO signing
+        # credentials in its environment.
         run: |
-          npx web-ext sign \
+          npx --yes web-ext@10.7.0 sign \
             --source-dir=.output/firefox-mv2 \
             --artifacts-dir=web-ext-artifacts \
-            --channel=unlisted
+            --channel=unlisted \
+            --approval-timeout=2700000
 
       - name: Extract this version's changelog section
         if: steps.check.outputs.exists == 'false'
