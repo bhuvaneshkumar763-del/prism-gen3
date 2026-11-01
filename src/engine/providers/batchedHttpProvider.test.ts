@@ -905,7 +905,7 @@ describe('createBatchedHttpProvider — onNonRetryableStatus hook (auth-key reli
 
     const results = await provider.translateBatch({ sourceLanguage: 'en', targetLanguage: 'es', pieces: [['hello']] });
 
-    expect(onNonRetryableStatus).toHaveBeenCalledExactlyOnceWith(401);
+    expect(onNonRetryableStatus).toHaveBeenCalledExactlyOnceWith(401, 'unauthorized');
     expect(results[0]).toEqual({ ok: false, error: { kind: 'network', message: expect.any(String) } });
   });
 

@@ -94,9 +94,12 @@ export interface BatchedProviderOptions {
    * whatever cache window the provider used. Fired from `sendOnce` the
    * instant `!response.ok` is detected, before the error is thrown, so a
    * provider like `google.ts` can invalidate its cached auth key
-   * immediately instead of waiting out its own cache timer.
+   * immediately instead of waiting out its own cache timer. `reason` is the
+   * service's own explanation (see `readRejectionReason`), since Google
+   * answers a bad key with a 400 that only its message tells apart from a
+   * malformed request.
    */
-  onNonRetryableStatus?(status: number): void;
+  onNonRetryableStatus?(status: number, reason: string | null): void;
   /**
    * Reliability fix, found via a live incident: a real, live-reproduced
    * case where the provider's auth was silently broken and every piece
@@ -139,7 +142,8 @@ const MAX_REJECTION_REASON_CHARS = 200;
 
 /**
  * The service's own explanation of a rejection, from the response body —
- * Google-style `{error: {message}}`, a bare `{message}`/`{error: "..."}`, or a
+ * Google-style `{error: {message}}`, Google's protobuf-JSON `[code, "message",
+ * ...]` (the free endpoint's shape), a bare `{message}`/`{error: "..."}`, or a
  * short plain-text body. Null for an empty body or an HTML error page: markup
  * is never worth showing a user, and a status code alone is honest.
  *
@@ -159,10 +163,17 @@ async function readRejectionReason(response: Response): Promise<string | null> {
   if (!text || text.startsWith('<')) return null;
   let reason: unknown = text;
   try {
-    const body = JSON.parse(text) as { error?: unknown; message?: unknown };
-    const nested =
-      typeof body.error === 'object' && body.error !== null ? (body.error as { message?: unknown }).message : undefined;
-    reason = nested ?? body.message ?? body.error ?? null;
+    const parsed: unknown = JSON.parse(text);
+    if (Array.isArray(parsed)) {
+      reason = parsed[1] ?? null;
+    } else {
+      const body = parsed as { error?: unknown; message?: unknown };
+      const nested =
+        typeof body.error === 'object' && body.error !== null
+          ? (body.error as { message?: unknown }).message
+          : undefined;
+      reason = nested ?? body.message ?? body.error ?? null;
+    }
   } catch {
     // not JSON — the plain text itself is the reason
   }
@@ -449,8 +460,9 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
             throw retryableError;
           }
           if (!response.ok) {
-            options.onNonRetryableStatus?.(response.status);
-            throw new NonRetryableHttpError(response.status, await readRejectionReason(response));
+            const reason = await readRejectionReason(response);
+            options.onNonRetryableStatus?.(response.status, reason);
+            throw new NonRetryableHttpError(response.status, reason);
           }
           return await response.json();
         })(),

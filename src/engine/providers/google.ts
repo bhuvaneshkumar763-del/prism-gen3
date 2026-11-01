@@ -105,6 +105,38 @@ function invalidateAuth(): void {
 }
 
 /**
+ * Whether a rejection is about the key. Checked live: Google answers a bad
+ * key with HTTP 400 "API key not valid" and a missing one with 403, while a
+ * malformed request is also a 400 ("Request contains an invalid argument"),
+ * so only the message tells a dead key apart.
+ */
+function isKeyRejection(status: number, reason: string | null): boolean {
+  return status === 401 || status === 403 || /\bAPI key\b/i.test(reason ?? '');
+}
+
+const NO_AUTH_KEY_MESSAGE = '[google] no auth key available';
+const REJECTED_MESSAGE = /^\[google\] rejected \(HTTP (\d+)\)(?::\s*(.+))?$/;
+
+/**
+ * Rewrites a key failure into a message that names the cause and the way
+ * out. Until now the user only saw "the translation service rejected the
+ * request", with nothing pointing at the free key or the Google Cloud
+ * provider, which is the backup when the free key stops working.
+ */
+function explainKeyFailure(outcome: PieceOutcome): PieceOutcome {
+  if (outcome.ok) return outcome;
+  const rejected = REJECTED_MESSAGE.exec(outcome.error.message);
+  const noKey = outcome.error.message === NO_AUTH_KEY_MESSAGE;
+  if (!noKey && !(rejected && isKeyRejection(Number(rejected[1]), rejected[2] ?? null))) return outcome;
+  const reason = rejected?.[2]?.replace(/\.$/, '');
+  const detail = rejected ? ` (HTTP ${rejected[1]}${reason ? `: ${reason}` : ''})` : '';
+  return err({
+    kind: outcome.error.kind,
+    message: `Google's free translation key isn't working${detail}. Prism keeps retrying with a new key. To translate now, switch to Google Cloud in Settings and add your own API key.`,
+  });
+}
+
+/**
  * Public wrapper around `findAuth` — lets `background.ts` kick the scrape
  * off speculatively at service-worker startup (in parallel with the
  * content script's own startup chain) instead of only lazily on the first
@@ -371,8 +403,8 @@ export function createGoogleProvider(): Translator {
     // immediately rather than resending it for the rest of the cache
     // window. Every other non-retryable status (a malformed request, etc.)
     // is unrelated to the auth key and left alone.
-    onNonRetryableStatus: (status) => {
-      if (status === 401 || status === 403) invalidateAuth();
+    onNonRetryableStatus: (status, reason) => {
+      if (isKeyRejection(status, reason)) invalidateAuth();
     },
     // Reliability fix, found via a live incident: a sustained run of
     // suspicious-looking results is the endpoint's real-world failure mode
@@ -386,7 +418,7 @@ export function createGoogleProvider(): Translator {
     async translateBatch(request: TranslateBatchRequest): Promise<PieceOutcome[]> {
       await findAuth();
       if (!translateAuth) {
-        return request.pieces.map(() => err({ kind: 'network', message: '[google] no auth key available' }));
+        return request.pieces.map(() => explainKeyFailure(err({ kind: 'network', message: NO_AUTH_KEY_MESSAGE })));
       }
       // Same quirk `titleTranslator.ts` works around for the tab title: a
       // piece with only one string is sent bare (no <a i=N> wrapper, see
@@ -577,11 +609,11 @@ export function createGoogleProvider(): Translator {
         onPieceComplete: (index, rawOutcome) => {
           if (needsRepair(index, rawOutcome)) {
             void repair(index).then((repaired) => {
-              request.onPieceComplete?.(index, repaired);
+              request.onPieceComplete?.(index, explainKeyFailure(repaired));
             });
             return;
           }
-          request.onPieceComplete?.(index, rawOutcome);
+          request.onPieceComplete?.(index, explainKeyFailure(rawOutcome));
         },
       });
 
@@ -652,7 +684,7 @@ export function createGoogleProvider(): Translator {
           final[index] = outcome;
         });
       }
-      return final;
+      return final.map(explainKeyFailure);
     },
   };
 

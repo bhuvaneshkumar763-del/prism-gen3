@@ -765,6 +765,79 @@ describe('createGoogleProvider', () => {
       // immediately instead of only reporting the problem after the fact.
       expect(getAuthKeySnapshot()).toBeUndefined();
     });
+
+    // Google's real answer to a bad key, captured live: HTTP 400, not 401/403.
+    const keyNotValid = () =>
+      jsonResponse(
+        [
+          3,
+          'API key not valid. Please pass a valid API key.',
+          [['type.googleapis.com/google.rpc.ErrorInfo', ['API_KEY_INVALID', 'googleapis.com']]],
+        ],
+        400,
+      );
+
+    it('re-scrapes the key when Google answers 400 "API key not valid"', async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(authScrapeResponse())
+        .mockResolvedValueOnce(keyNotValid())
+        .mockResolvedValueOnce(authScrapeResponse())
+        .mockResolvedValueOnce(jsonResponse([['<a i=0>hola</a><a i=1> </a>'], ['en']]));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const { createGoogleProvider, getAuthKeySnapshot } = await import('./google');
+      const provider = createGoogleProvider();
+      const req = { sourceLanguage: 'en', targetLanguage: 'es', pieces: [['hello']] };
+
+      await provider.translateBatch(req);
+      expect(getAuthKeySnapshot()).toBeUndefined();
+
+      expect(await provider.translateBatch(req)).toEqual([{ ok: true, value: ['hola'] }]);
+    });
+
+    it('says the free key failed and points to Google Cloud when the key is rejected', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (url: string) => (String(url).includes('translate_http') ? authScrapeResponse() : keyNotValid())),
+      );
+      const provider = await freshCreateGoogleProvider();
+      const delivered: PieceOutcome[] = [];
+
+      const [outcome] = await provider.translateBatch({
+        sourceLanguage: 'en',
+        targetLanguage: 'es',
+        pieces: [['hello']],
+        onPieceComplete: (_index, o) => delivered.push(o),
+      });
+
+      if (!outcome || outcome.ok) throw new Error('expected a failed outcome');
+      expect(outcome.error.message).toMatch(/free translation key/);
+      expect(outcome.error.message).toMatch(/Google Cloud/);
+      expect(outcome.error.message).toMatch(/API key not valid/);
+      expect(delivered[0]).toEqual(outcome);
+    });
+
+    it('keeps the plain rejection for a 400 that is not about the key, and keeps the key', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (url: string) =>
+          String(url).includes('translate_http')
+            ? authScrapeResponse()
+            : jsonResponse([3, 'Request contains an invalid argument.'], 400),
+        ),
+      );
+      const { createGoogleProvider, getAuthKeySnapshot } = await import('./google');
+      const [outcome] = await createGoogleProvider().translateBatch({
+        sourceLanguage: 'en',
+        targetLanguage: 'es',
+        pieces: [['hello']],
+      });
+
+      if (!outcome || outcome.ok) throw new Error('expected a failed outcome');
+      expect(outcome.error.message).toBe('[google] rejected (HTTP 400): Request contains an invalid argument.');
+      expect(getAuthKeySnapshot()).toBeDefined();
+    });
   });
 
   describe("auth-scrape backstop — real bug this closed: findAuth()'s fetch() had no timeout at all, and memoized its in-flight promise into module scope, only clearing it in a finally that runs after that promise SETTLES — so a fetch that never settles (the same real WebKit gap batchedHttpProvider.ts's sendOnce() backstop was built for) permanently blocked every future translateBatch() call, for the rest of this background context's life, not just the first one", () => {
