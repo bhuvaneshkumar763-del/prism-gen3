@@ -1,27 +1,28 @@
 # Prism fix plan
 
-_2026-11-01 · from Prism 0.3.0-beta.70 (commit fed8806)_
+_2026-11-01 · from Prism 0.3.0-beta.70 (commit fed8806) · cut down for personal use the same day_
 
-**Status: plan only. No code has been changed.** This plan merges the three reports:
+**Status: Release 1 shipped as 0.3.0-beta.71.** The rest of the plan was cut down after Release 1. Prism is for personal use only. There are no other users and no store audience, and no new translation providers are planned. So the original plan's store, launch, branch-protection, i18n, new-provider and LLM-hardening work is dropped (see [Dropped](#dropped)).
+
+The plan came from three reports:
 - [prism-self-audit.md](prism-self-audit.md): the line-by-line read and history, with 13 defects checked by hand
 - [prism-vs-immersive-translate.md](prism-vs-immersive-translate.md)
 - [prism-vs-twp.md](prism-vs-twp.md)
 
-Where the reports disagree, the self-audit wins: it is the only one that read every line, and it moves the comparison reports' "first step" (the cache key) behind the punctuation bug.
+## Rules
 
-## Rules for every release in this plan
-
-1. **One release per batch, not one per fix.** At most one release a week.
+1. **The pages you read decide what gets fixed.** A bug found only by reading code is confirmed in the code before it's fixed. Fix it now if you've hit it; otherwise it waits.
 2. **Every fix ships with a test that fails before it.** The test name says what it guards.
-3. **No new features until 0.3.0 stable.** The comparison reports' features wait until Release 5.
-4. **Before any tag, check it on a real page in a real browser.** Use the pages listed for each fix.
-5. **Fix the class, not just the instance**, where the fix is already a small shared helper (R1-5, R1-8). The larger consolidations wait for Release 4.
+3. **Before a release, check the fix on the page where it broke**, in a real browser.
+4. **Batch fixes into one release.** No same-day bursts of one-fix betas.
+5. **No new providers and no AI audit rounds.**
+6. **Fix the class, not just the instance.** When a fix touches a rule that's copied elsewhere (see [Copied rules](#copied-rules)), fix every copy in the same change.
 
 Sizes: S is under an hour, M is half a day, L is several days.
 
 ---
 
-## Release 1 — beta.71: the confirmed bugs
+## Release 1 — beta.71: the confirmed bugs (shipped)
 
 Every row here was checked against the code by hand. Together they're about one to two days of work.
 
@@ -62,141 +63,77 @@ This changes the strip-and-replace into "restore what Google is known to drop; n
 
 ---
 
-## Release 2 — gates, then 0.3.0 stable
-
-Until this release, every commit went straight to main. This release adds the checks that stop the next 70 betas.
+## Next: your own pages as the test set
 
 | ID | Item | Notes | Size |
 |---|---|---|---|
-| R2-1 | **Branch protection on `main`**: PR only, CI required | A GitHub setting that you have to switch on yourself | S |
-| R2-2 | **Real-page smoke test required before a tag** | Extend the existing Playwright harness (`tests/e2e/run.mjs`) with 3–5 saved pages (es, ja, link-heavy, SPA) and recorded provider responses. This is the seed of the R5-1 corpus. | M |
-| R2-3 | **Coverage includes `entrypoints/` and `components/`** | `vitest.config.ts:27`. Report-only first, then a threshold set from the measured number, not 90%. | S |
-| R2-4 | **Manual translate reaches same-origin iframes** | `entrypoints/content.ts:419-425`: register the `pageTranslate` handler in every frame the way `pageRestore` is. Test on a page with an embedded comments frame. | M |
-| R2-5 | **Make the docs true** | Fix or delete the stale entries in the out-of-scope list (Firefox, iframes, attribute translation, backup UI), known-gaps (shadow-DOM selection) and current-status ("as of beta.64"). Freeze the 164 KB ledger. | S |
-| R2-6 | **Check the store dashboards** | Chrome Web Store and Mozilla add-ons install and uninstall counts. This decides how much Releases 5–6 matter. | S |
-| R2-7 | **Tag 0.3.0 stable** | Only after R2-1 to R2-4 pass. | S |
+| N-1 | **Save pages that translate badly as replay tests** | When a page you read goes wrong, save its HTML and the recorded Google response, and run it in CI through the Playwright harness (`tests/e2e/run.mjs`). Start with the sites from past reports: sangtacviet, novel543, pixiv, bilibili, and one Wikipedia page. This replaces the old smoke-test (R2-2) and replay-corpus (R5-1) items. | M |
+| N-2 | **A clear error when the Google key fails** | When both the scraped key and the fallback key fail, say so: name the key as the cause and point to the Google Cloud provider in Settings as the manual backup. First check what Prism shows today (beta.45 fixed part of this). | S |
+| N-3 | **Make the docs true** | Fix or delete the stale entries in the out-of-scope list (Firefox, iframes, attribute translation, backup UI), known-gaps (shadow-DOM selection) and current-status ("as of beta.64"). Freeze the 164 KB ledger. | S |
 
----
+## Bugs to confirm, then fix when they bite
 
-## Release 3 — 0.3.1: the remaining bugs
+Found by the line-by-line read but not checked by hand. **Confirm each in the code before fixing it**, and drop any that turn out to be wrong. Order them by what you actually hit.
 
-Found by the line-by-line read, but not checked by hand. **Confirm each in the code before fixing it**; drop any that turn out to be wrong.
-
-**Silent-failure chain** (the "says translated but nothing changed" class, which has been fixed 8 times):
+**"Says translated but nothing changed":**
 - `throw undefined` loses the error kind (`batchedHttpProvider.ts:526`).
 - Every mutation cancels the error backoff (`translateLoop.ts:425, 1104, 1168`).
-- Show an error that names the Google key as the cause when both the scrape and the fallback key fail (from the Immersive Translate report).
 
 **Page translation:**
 - `attributeTranslator.ts`: four bugs (stale restore, no `sentText` staleness check, an unhandled rejection, the wrong skip check).
 - `titleTranslator.ts`: no generation guard, so a late response sets a stale title.
 - `google.ts:511-516`: repair reportedly drops the explicit source language. The code at line 512 passes `request.sourceLanguage`, so check what that holds before changing anything.
+- Manual translate doesn't reach same-origin iframes (`entrypoints/content.ts:419-425`). Fix it if your sites put comments or chapters in frames: register the `pageTranslate` handler in every frame, the way `pageRestore` is.
 
 **UI:**
 - Keystrokes leak from the bubble's picker to the page (`FloatingBubble.tsx:326-360`).
 - The selection trigger doesn't follow scroll (`mountSelectionPopup.ts:351-362`).
-- Bubble text contrast is below WCAG AA (3.30:1 on green).
 - `.catch` on `applyListPatch`.
+- Bubble text contrast is 3.30:1 on green, below WCAG AA. Fix it if it bothers you.
 
 **Platform:**
-- Firefox context menus vanish after a browser restart (`background.ts:487-501`).
+- Firefox context menus vanish after a browser restart (`background.ts:487-501`), if you use Firefox.
 - The cache budget falls out of sync after Clear cache (`translationCache.ts:122, 370`).
-- Add a 30-day maximum age to cache entries (from the Immersive Translate report).
+- Add a 30-day maximum age to cache entries.
+
+**Tooling:**
 - Both CI guard scripts pass broken fixtures, so fix the scripts until those fixtures fail.
+- A config flag that turns `groupByBlock` off without a release. Paragraph grouping drives the long reflow-bug chain, so this is the quick way out if it misbehaves on a page you read.
 
-**Grouping kill switch:** a config flag that turns `groupByBlock` off without a release, ready before R5-2 measures whether grouping is worth keeping.
+## Later, only if the saved pages show a need
 
----
+Both need N-1's saved pages first.
+- **Is grouping worth it?** Compare grouped and ungrouped on the saved pages: quality, request count, time to first visible translation, reflow repairs. If the gain is small, turn it off and delete the heuristic stack around it.
+- **Does size cause reflow?** Try zh, ja and ko pages at 500, 1000 and 2000 characters per group. If size matters, lower `maxGroupChars` for those pairs only.
 
-## Release 4 — 0.3.2: one helper per rule
+## Copied rules
 
-Each fix so far landed in one place and missed its sibling. Build one shared helper per rule, move every caller to it, and delete the copies.
+Each earlier fix landed in one place and missed its copy. When a fix touches one of these rules, move every caller to one shared helper in the same change.
 
 | Rule | Has it | Missing it |
 |---|---|---|
 | `sentText` staleness check | translateLoop | attributeTranslator |
 | Generation guard | attributeTranslator | titleTranslator |
-| apex hostname matching | membership | add/remove (done in R1-4) |
-| Base language-tag equality | autoTranslateDecision | popup, outputSanityCheck (done in R1-8) |
-| Response-count check | Google | LLM (done in R1-5) |
 | `.catch` on fire-and-forget | `openSettings` | `applyListPatch` |
+| `isTrustedSender` check | each handler by hand | an `onTrustedMessage` wrapper |
 
-Also add an `onTrustedMessage` wrapper so no handler repeats the `isTrustedSender` check by hand.
+Apex hostname matching, base language-tag equality and the response-count check were unified in Release 1.
 
-Add a short checklist to the PR template for any new async path: generation guard, staleness check, `.catch`, timeout.
+## Dropped
 
----
+Cut on 2026-11-01 because Prism is for personal use and no new providers are planned:
+- Branch protection, store install counts, and 0.3.0 stable as a gated release. Tag it whenever you like.
+- Pushing coverage into `entrypoints/` and `components/`.
+- LLM hardening, LLM prompt features, and an LLM → Google fallback.
+- A second free translation path.
+- i18n, a "this page translated badly" link, a custom dictionary, and hover-to-see-translation.
+- The paragraph-HTML experiment, and mining TWP's issue tracker.
+- Everything the comparison reports already ruled out: Immersive Translate's site rules, 60 providers, header spoofing, OCR or telemetry; TWP's Bing, Yandex and DeepL paths, silent failure and unbounded cache.
 
-## Release 5 — measure, then decide
+## Open question
 
-Nothing here ships to users until a measurement says it helps.
-
-| ID | Item | Source | Size |
-|---|---|---|---|
-| R5-1 | **Replay corpus**: about 20 pages, each saved HTML with recorded provider responses, run in CI. Start from the ~22 live site reports (sangtacviet, novel543, pixiv, bilibili, Wikipedia), and add es `¿`, ja `「」`, RTL, SPA, docs and forum pages. | All three reports | L |
-| R5-2 | **Is grouping worth it?** Compare grouped and ungrouped on the corpus: quality, request count, time to first visible translation, reflow repairs. Grouping drives both the reflow chain and the ReDoS path. If the gain is small, turn it off and delete the heuristic stack around it. | Self-audit | M |
-| R5-3 | **Does size cause reflow?** Try en → zh, ja and ko at 500, 1000 and 2000 characters per group. If size matters, lower `maxGroupChars` for those pairs only. | TWP report | S |
-| R5-4 | **Paragraph-HTML experiment** on `translateHtml` | Immersive Translate report | M |
-| R5-5 | **Mine TWP's issue tracker** for recurring Google-endpoint and real-page breakage, and add the cases to the corpus. | TWP report | S |
-
----
-
-## Release 6 — LLM hardening, then the comparison reports' cheap wins
-
-**LLM hardening first** (deferred across three audit rounds):
-- Validate the base URL (https only, except localhost) and redact it in diagnostics.
-- Strip `<think>…</think>` and other preambles before parsing JSON.
-- Frame page text as data in the prompt to resist prompt injection.
-
-**Then the cheap wins, each with a counter and an off switch:**
-- Page title and an optional glossary in the LLM prompt. Needs R1-7, so the cache key includes the prompt context.
-- Pause translation while the tab is hidden (`visibilityState`).
-- Skip regexes (written fresh, with a counter).
-- Per-piece same-language skip via `i18n.detectLanguage`, with a minimum length.
-- Lazy translation for LLM providers only. Keep the free Google path eager.
-- An LLM → Google fallback with a budget, **opt-in only**: a user who picked an LLM to keep page text away from Google must not be sent there silently (see Decisions).
-
----
-
-## Later, ranked
-
-1. **i18n per ADR 0007**: error messages and the popup first. This was the TWP report's biggest reach item.
-2. **A second free path that isn't another scraped endpoint**: Chrome's on-device Translator as a fallback only, behind an availability check, or a fallback key that can be updated without a store release. The single scraped key is the biggest outside risk, including store takedown.
-3. **A custom dictionary or "never translate these terms" list** for names and brands, tested against the reflow and sanity guards.
-4. **A "this page translated badly" link**, so real users set priorities instead of audits.
-5. **Archive the narrative docs and changelog-style code comments**: git already holds the history.
-6. Hover to see a translation (TWP's `showTranslated`), reusing the tooltip.
-
-**Deferred:** bilingual mode; cross-origin frames (only on a user report, as an opt-in per site).
-
-## Not doing (agreed in the comparison reports)
-
-- Immersive Translate's site rules, 60 providers, header spoofing, OCR or telemetry, or its request rates (ban risk on the shared key).
-- TWP's Bing, Yandex or DeepL tab robot, the trailing space, silent failure, or the unbounded cache.
-- Glossary, pinyin and learner features before stable.
-- More hand-tuning of Google reflow heuristics. R5-2 decides grouping's future instead.
-
-## Stop list
-
-- Numbered AI audit rounds until Release 3 is closed.
-- One fix per beta, and same-day beta bursts.
-- Pushing to main without the real-page check.
-- Growing the ledger.
-- Reading silence as safety.
-
-## Decisions only you can make
-
-1. **Always vs never precedence** (R1-4). The Settings page says always-translate wins; the code makes never-translate win. The plan changes the text to match the code, which is the safer default. Say if you want the opposite.
-2. **LLM → Google fallback** (Release 6). The plan makes it opt-in. Dropping it entirely is also reasonable.
-3. **Branch protection** (R2-1). This is a GitHub setting on your account, so you have to switch it on.
-
-## Dependencies
-
-- R1-7 (cache key) must come before the LLM title and glossary work in Release 6.
-- R2-2 (smoke pages) grows into R5-1 (corpus), and R5-1 must exist before R5-2 to R5-4.
-- The R3 kill switch must exist before R5-2.
-- Release 4 relies on R1-4, R1-5 and R1-8 for three of its six rules.
+Prism already ships an LLM provider and a Google Cloud provider. Google Cloud, with your own key, is the backup if the scraped Google key breaks. If you never use the LLM provider, it can be left alone (its known bugs don't affect you) or removed to cut code.
 
 ## First step
 
-R1-1: the punctuation restore in `translateLoop.ts`, written test-first with the four cases in the design note.
+Use beta.71 on the pages you normally read. The first page that goes wrong becomes the first N-1 replay test, and its fix is the next release.
