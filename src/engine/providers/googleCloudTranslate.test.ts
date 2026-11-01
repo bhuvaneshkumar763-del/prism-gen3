@@ -10,7 +10,7 @@ describe('createGoogleCloudTranslateProvider', () => {
     vi.unstubAllGlobals();
   });
 
-  it('sends the API key in the query string and returns translated text', async () => {
+  it('sends the API key in a header, not the URL, and returns translated text', async () => {
     const fetchMock = vi.fn(async () =>
       jsonResponse({ data: { translations: [{ translatedText: 'hola', detectedSourceLanguage: 'en' }] } }),
     );
@@ -23,9 +23,31 @@ describe('createGoogleCloudTranslateProvider', () => {
     const call = fetchMock.mock.calls[0];
     if (!call) throw new Error('fetch was not called');
     const [url, init] = call as unknown as [string, RequestInit];
-    expect(url).toContain('key=my-key');
+    expect(url).toBe('https://translation.googleapis.com/language/translate/v2');
+    expect(url).not.toContain('key=');
+    const headers = init.headers as Record<string, string>;
+    expect(headers['X-Goog-Api-Key']).toBe('my-key');
     const body = JSON.parse(init.body as string);
     expect(body).toEqual({ q: ['hello'], source: 'en', target: 'es', format: 'text' });
+  });
+
+  it('sends at most 128 segments per request, the documented Google limit, splitting 300 pieces into 128, 128 and 44', async () => {
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      const sent = (JSON.parse(init.body as string) as { q: string[] }).q;
+      return jsonResponse({ data: { translations: sent.map((q) => ({ translatedText: `TRANS ${q}` })) } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const provider = createGoogleCloudTranslateProvider({ apiKey: 'k' });
+    const pieces = Array.from({ length: 300 }, (_, i) => [`piece ${String(i).padStart(3, '0')}`]);
+    const results = await provider.translateBatch({ sourceLanguage: 'en', targetLanguage: 'es', pieces });
+
+    const qCounts = fetchMock.mock.calls.map(
+      ([, init]) => (JSON.parse((init as RequestInit).body as string) as { q: string[] }).q.length,
+    );
+    expect(qCounts).toEqual([128, 128, 44]);
+    expect(results.every((outcome) => outcome.ok)).toBe(true);
+    expect(results[299]).toEqual({ ok: true, value: ['TRANS piece 299'] });
   });
 
   it('omits the source field for auto-detected source language', async () => {

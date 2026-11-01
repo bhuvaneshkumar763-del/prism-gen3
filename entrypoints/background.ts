@@ -7,7 +7,7 @@ import {
 import { createProvider, type ProviderConfig } from '../src/engine/providers/registry';
 import type { PieceOutcome, TranslateBatchRequest, Translator } from '../src/engine/translator';
 import { translateOne } from '../src/engine/translator';
-import { cacheKeyFor, translationCache } from '../src/platform/cache/translationCache';
+import { cacheKeyFor, llmCacheScope, translationCache } from '../src/platform/cache/translationCache';
 import { configStore } from '../src/platform/configStore';
 import type { FrameLanguageDecision } from '../src/platform/messaging/protocol';
 import { isTrustedSender, onMessage, sendMessage } from '../src/platform/messaging/protocol';
@@ -253,6 +253,10 @@ const GOOGLE_AUTH_STORAGE_KEY = 'googleAuthKeySnapshot';
  */
 async function prefetchGoogleAuthKey(): Promise<void> {
   try {
+    // Users on another provider shouldn't contact Google at all.
+    await configStore.onReady();
+    if (configStore.get('pageTranslatorProvider') !== 'google') return;
+
     const stored = await browser.storage.session.get(GOOGLE_AUTH_STORAGE_KEY);
     const snapshot = stored[GOOGLE_AUTH_STORAGE_KEY] as AuthKeySnapshot | undefined;
     // Defensive shape check — this is stored data, not a value this
@@ -354,8 +358,10 @@ export default defineBackground(() => {
     // incognito translate neither leaks into nor benefits from the normal
     // profile's cache.
     const cacheEnabled = configStore.get('translationCacheEnabled') && !sender.tab?.incognito;
+    const cacheScope =
+      providerId === 'llm' ? llmCacheScope(configStore.get('llmBaseUrl'), configStore.get('llmModel')) : providerId;
     const pieceKeys = pieces.map((piece) =>
-      cacheKeyFor(providerId, sourceLanguage, targetLanguage, JSON.stringify(piece)),
+      cacheKeyFor(cacheScope, sourceLanguage, targetLanguage, JSON.stringify(piece)),
     );
     // Caching is purely an optimization — a cache-layer failure (a closed
     // IndexedDB connection, a quota/permission issue, or a corrupt/truncated

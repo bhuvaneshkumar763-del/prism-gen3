@@ -186,7 +186,7 @@ async function findAuth(): Promise<void> {
         clearTimeout(timeout);
         clearTimeout(backstopTimeout);
       }
-      const match = text.length > 1 ? text.match(/['"]x-goog-api-key['"]\s*:\s*['"](\w{39})['"]/i) : null;
+      const match = text.length > 1 ? text.match(/['"]x-goog-api-key['"]\s*:\s*['"]([\w-]{39})['"]/i) : null;
       if (match?.[1]) {
         translateAuth = match[1];
         authNotFound = false;

@@ -66,4 +66,27 @@ describe('isPureTagText', () => {
   it('does not match two tags separated by a real word', () => {
     expect(isPureTagText('#A and #B')).toBe(false);
   });
+
+  it('matches tags separated by slashes', () => {
+    expect(isPureTagText('#tag1/#tag2/#tag3')).toBe(true);
+    expect(isPureTagText('#tag1, #tag2 | @user')).toBe(true);
+  });
+
+  it('rejects a failing slash-joined run quickly (no catastrophic backtracking)', () => {
+    const text = '#a/'.repeat(40) + ' x';
+    const start = performance.now();
+    expect(isPureTagText(text)).toBe(false);
+    expect(performance.now() - start).toBeLessThan(50);
+  });
+
+  it('rejects a longer failing slash-joined run quickly', () => {
+    const text = '#a/'.repeat(150) + ' x';
+    const start = performance.now();
+    expect(isPureTagText(text)).toBe(false);
+    expect(performance.now() - start).toBeLessThan(50);
+  });
+
+  it('rejects text over 500 characters even if it is all tags', () => {
+    expect(isPureTagText('#a '.repeat(200))).toBe(false);
+  });
 });

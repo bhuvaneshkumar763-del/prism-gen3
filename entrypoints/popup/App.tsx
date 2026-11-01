@@ -16,7 +16,7 @@ import {
 } from '../../src/shared/config/listMutations';
 import { missingProviderSetup, type ProviderSetupFields } from '../../src/shared/config/providerSetup';
 import { resolveBubbleVisibility, setBubbleVisibilityForHost } from '../../src/shared/config/siteOverrides';
-import { COMMON_LANGUAGES, languageName, translationDirection } from '../../src/shared/languages';
+import { baseLanguageTag, COMMON_LANGUAGES, languageName, translationDirection } from '../../src/shared/languages';
 import { loadPageStatus } from '../../src/shared/pageStatus';
 import { translateShortcut } from '../../src/shared/shortcut';
 import { CANT_TRANSLATE_MESSAGE, describeUnsupportedPage } from '../../src/shared/unsupportedPage';
@@ -106,7 +106,9 @@ function App() {
   // to make these toggles read OFF while auto-translate fired anyway.
   const alwaysSiteOn = createMemo(() => siteListIncludesHostname(alwaysSites(), hostname()));
   const neverSiteOn = createMemo(() => siteListIncludesHostname(neverSites(), hostname()));
-  const alwaysLangOn = createMemo(() => alwaysLangs().includes(originalLanguage()));
+  const alwaysLangOn = createMemo(() =>
+    alwaysLangs().some((l) => baseLanguageTag(l) === baseLanguageTag(originalLanguage())),
+  );
   const bubbleOnForSite = createMemo(() =>
     resolveBubbleVisibility({ hostname: hostname(), bubbleEnabled: bubbleEnabled(), bubbleByHost: bubbleByHost() }),
   );
@@ -366,7 +368,10 @@ function App() {
     const lang = originalLanguage();
     if (lang === 'und') return;
     if (alwaysLangOn()) {
-      await applyListPatch(configStore, { alwaysTranslateLangs: alwaysLangs().filter((l) => l !== lang) });
+      const langBase = baseLanguageTag(lang);
+      await applyListPatch(configStore, {
+        alwaysTranslateLangs: alwaysLangs().filter((l) => baseLanguageTag(l) !== langBase),
+      });
       return;
     }
     const snapshot = readListsSnapshot(configStore);

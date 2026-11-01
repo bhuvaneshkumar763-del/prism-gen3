@@ -54,6 +54,24 @@ describe('createGoogleProvider', () => {
     expect(payload[0]).toEqual(['<pre><a i=0>hello</a><a i=1> </a></pre>']); // padded to 2 items, so <a i=N> wrapping kicks in
   });
 
+  it('scrapes an auth key that contains a hyphen, instead of silently falling back to the spare key', async () => {
+    const hyphenKey = 'AIzaSyA-bcdefghijklmnopqrstuvwxyz012345';
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(`... "x-goog-api-key": "${hyphenKey}" ...`, { status: 200 }))
+      .mockResolvedValueOnce(jsonResponse([['<a i=0>hola</a><a i=1> </a>'], ['en']]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const provider = await freshCreateGoogleProvider();
+    await provider.translateBatch({ sourceLanguage: 'en', targetLanguage: 'es', pieces: [['hello']] });
+
+    const translateCall = fetchMock.mock.calls[1];
+    if (!translateCall) throw new Error('translate request was not made');
+    const [, init] = translateCall as unknown as [string, RequestInit];
+    const headers = init.headers as Record<string, string>;
+    expect(headers['X-goog-api-key']).toBe(hyphenKey);
+  });
+
   it('reconstructs the full translation when Google reflows content into the padding slot, instead of silently dropping it (real bug, confirmed against the live endpoint)', async () => {
     // Real, confirmed behavior: Google can reflow translated content across
     // piece/tag boundaries (this file's own header comment documents it for

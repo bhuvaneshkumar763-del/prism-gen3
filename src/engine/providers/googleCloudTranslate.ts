@@ -39,8 +39,10 @@ export interface GoogleCloudTranslateOptions {
 export function createGoogleCloudTranslateProvider(options: GoogleCloudTranslateOptions): Translator {
   return createBatchedHttpProvider({
     name: 'googleCloudTranslate',
-    baseUrl: `${API_URL}?key=${encodeURIComponent(options.apiKey)}`,
+    baseUrl: API_URL,
     method: 'POST',
+    // Google's documented per-request segment limit for the v2 translate endpoint.
+    maxBatchPieces: 128,
     callbacks: {
       transformPiece: (strings) => strings.map(escapeSeparator).join(PIECE_PART_SEPARATOR),
       getRequestBody: (sourceLanguage, targetLanguage, pieceWireTexts) =>
@@ -50,7 +52,10 @@ export function createGoogleCloudTranslateProvider(options: GoogleCloudTranslate
           target: targetLanguage,
           format: 'text',
         }),
-      getExtraHeaders: () => [{ name: 'Content-Type', value: 'application/json' }],
+      getExtraHeaders: () => [
+        { name: 'Content-Type', value: 'application/json' },
+        { name: 'X-Goog-Api-Key', value: options.apiKey },
+      ],
       parseResponse: (response) => {
         const body = response as GoogleCloudTranslateResponse;
         if (body.error || !body.data?.translations) return [];

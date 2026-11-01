@@ -237,11 +237,16 @@ export function FloatingBubble(props: FloatingBubbleProps) {
     let ox = 0;
     let oy = 0;
     let longPressTimer: ReturnType<typeof setTimeout> | null = null;
+    let longPressFired = false;
 
     const onPointerDown = (e: PointerEvent) => {
       if (!e.isTrusted) return;
+      // Right-click and other non-primary buttons are not a translate gesture;
+      // touch and pen report button 0, so they still work.
+      if (e.button !== 0) return;
       dragging = true;
       moved = false;
+      longPressFired = false;
       sx = e.clientX;
       sy = e.clientY;
       ox = pos.x;
@@ -252,6 +257,7 @@ export function FloatingBubble(props: FloatingBubbleProps) {
         // ignore — pointer capture is best-effort
       }
       longPressTimer = setTimeout(() => {
+        longPressFired = true;
         positionPanelNow();
         setPinned(true);
       }, LONG_PRESS_MS);
@@ -268,7 +274,7 @@ export function FloatingBubble(props: FloatingBubbleProps) {
       if (moved) pos = previewAt(ox + dx, oy + dy);
     };
     const onPointerUp = (e: PointerEvent) => {
-      if (!e.isTrusted) return;
+      if (!e.isTrusted || e.button !== 0) return;
       dragging = false;
       if (longPressTimer) clearTimeout(longPressTimer);
       try {
@@ -287,7 +293,8 @@ export function FloatingBubble(props: FloatingBubbleProps) {
           dockState = previousDockState;
           pos = applyState();
         });
-      } else {
+      } else if (!longPressFired) {
+        // A long-press already opened the panel; releasing it must not also translate.
         toggleTranslate();
       }
     };

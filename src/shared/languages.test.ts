@@ -29,6 +29,23 @@ describe('baseLanguageTag', () => {
   it('leaves a bare code unchanged', () => {
     expect(baseLanguageTag('fr')).toBe('fr');
   });
+
+  it("maps Google's legacy Hebrew code to the current one, so iw and he compare equal", () => {
+    expect(baseLanguageTag('iw')).toBe('he');
+    expect(baseLanguageTag('iw-IL')).toBe('he');
+  });
+
+  it('maps the other legacy codes Google can report to their current equivalents', () => {
+    expect(baseLanguageTag('ji')).toBe('yi');
+    expect(baseLanguageTag('in')).toBe('id');
+    expect(baseLanguageTag('jw')).toBe('jv');
+  });
+
+  it('treats zh-CN and zh as the same base language', () => {
+    expect(baseLanguageTag('zh-CN')).toBe('zh');
+    expect(baseLanguageTag('pt-BR')).toBe('pt');
+    expect(baseLanguageTag('EN')).toBe('en');
+  });
 });
 
 describe('COMMON_LANGUAGES', () => {
