@@ -78,6 +78,16 @@ describe('addSiteToAlwaysTranslate', () => {
     const patch = addSiteToAlwaysTranslate(snapshot, 'example.com');
     expect(patch.alwaysTranslateSites).toEqual(['example.com']);
   });
+  it('does not duplicate an apex entry when given the www form', () => {
+    const snapshot = { ...emptySnapshot, alwaysTranslateSites: ['example.com'] };
+    const patch = addSiteToAlwaysTranslate(snapshot, 'www.example.com');
+    expect(patch.alwaysTranslateSites).toEqual(['example.com']);
+  });
+  it('removes an apex match from never-translate when given the www form', () => {
+    const snapshot = { ...emptySnapshot, neverTranslateSites: ['example.com', 'other.com'] };
+    const patch = addSiteToAlwaysTranslate(snapshot, 'www.example.com');
+    expect(patch.neverTranslateSites).toEqual(['other.com']);
+  });
 });
 
 describe('addSiteToNeverTranslate', () => {
@@ -87,9 +97,27 @@ describe('addSiteToNeverTranslate', () => {
     expect(patch.neverTranslateSites).toEqual(['example.com']);
     expect(patch.alwaysTranslateSites).toEqual([]);
   });
+  it('does not duplicate an apex entry when given the www form', () => {
+    const snapshot = { ...emptySnapshot, neverTranslateSites: ['example.com'] };
+    const patch = addSiteToNeverTranslate(snapshot, 'www.example.com');
+    expect(patch.neverTranslateSites).toEqual(['example.com']);
+  });
+  it('removes an apex match from always-translate when given the www form', () => {
+    const snapshot = { ...emptySnapshot, alwaysTranslateSites: ['example.com'] };
+    const patch = addSiteToNeverTranslate(snapshot, 'www.example.com');
+    expect(patch.alwaysTranslateSites).toEqual([]);
+  });
 });
 
 describe('removeSiteFromAlwaysTranslate / removeSiteFromNeverTranslate', () => {
+  it('removes a www entry when given the apex form', () => {
+    const snapshot = { ...emptySnapshot, neverTranslateSites: ['www.example.com'] };
+    expect(removeSiteFromNeverTranslate(snapshot, 'example.com').neverTranslateSites).toEqual([]);
+  });
+  it('removes an apex entry when given the www form', () => {
+    const snapshot = { ...emptySnapshot, alwaysTranslateSites: ['example.com'] };
+    expect(removeSiteFromAlwaysTranslate(snapshot, 'www.example.com').alwaysTranslateSites).toEqual([]);
+  });
   it('removes only the matching host', () => {
     const snapshot = { ...emptySnapshot, alwaysTranslateSites: ['a.com', 'b.com'] };
     expect(removeSiteFromAlwaysTranslate(snapshot, 'a.com').alwaysTranslateSites).toEqual(['b.com']);
@@ -110,6 +138,11 @@ describe('addLangToAlwaysTranslate', () => {
   it('with a hostname, also removes that host from never-translate-sites', () => {
     const snapshot = { ...emptySnapshot, neverTranslateSites: ['example.com'] };
     const patch = addLangToAlwaysTranslate(snapshot, 'ja', 'example.com');
+    expect(patch.neverTranslateSites).toEqual([]);
+  });
+  it('with a www hostname, also removes the apex entry from never-translate-sites', () => {
+    const snapshot = { ...emptySnapshot, neverTranslateSites: ['example.com'] };
+    const patch = addLangToAlwaysTranslate(snapshot, 'ja', 'www.example.com');
     expect(patch.neverTranslateSites).toEqual([]);
   });
   it('without a hostname, leaves neverTranslateSites untouched', () => {

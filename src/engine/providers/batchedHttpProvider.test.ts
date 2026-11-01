@@ -238,6 +238,41 @@ describe('createBatchedHttpProvider — batching budget', () => {
     );
     expect(piecesPerCall).toEqual([158, 42]);
   });
+
+  it('never delivers a shifted translation when a batch response has fewer entries than pieces sent', async () => {
+    // A batch request gets back four entries for five pieces, with the first
+    // piece's entry dropped. Each single-piece repair request gets its own
+    // correct translation back.
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      const sent = JSON.parse(init.body as string) as string[];
+      if (sent.length === 1) return jsonResponse({ texts: [`T-${sent[0]}`] });
+      return jsonResponse({ texts: sent.slice(1).map((text) => `T-${text}`) });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const provider = createBatchedHttpProvider({
+      name: 'short-response',
+      baseUrl: 'https://example.com',
+      method: 'POST',
+      callbacks: { ...plainCallbacks(), getRequestBody: (_s, _t, texts) => JSON.stringify(texts) },
+    });
+
+    const results = await provider.translateBatch({
+      sourceLanguage: 'en',
+      targetLanguage: 'es',
+      pieces: [['a'], ['b'], ['c'], ['d'], ['e']],
+    });
+
+    expect(results).toEqual([
+      { ok: true, value: ['T-a'] },
+      { ok: true, value: ['T-b'] },
+      { ok: true, value: ['T-c'] },
+      { ok: true, value: ['T-d'] },
+      { ok: true, value: ['T-e'] },
+    ]);
+    // One short batch request, then one repair request per piece.
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+  });
 });
 
 describe('createBatchedHttpProvider — onPieceComplete (incremental delivery)', () => {
@@ -400,7 +435,8 @@ describe('createBatchedHttpProvider — lifecycle hooks and concurrency', () => 
       pieces: [['a'], ['b'], ['c'], ['d'], ['e'], ['f']],
     });
 
-    expect(fetchMock).toHaveBeenCalledTimes(6);
+    // Three 2-piece batches each return one entry, so all six pieces are repaired individually.
+    expect(fetchMock).toHaveBeenCalledTimes(9);
     expect(maxObservedInFlight).toBeLessThanOrEqual(2);
   });
 
@@ -493,8 +529,8 @@ describe('createBatchedHttpProvider — lifecycle hooks and concurrency', () => 
       await new Promise((resolve) => setTimeout(resolve, 5));
       inFlight--;
       // The one top-level batch (all 8 pieces together) comes back with
-      // only 1 result — the other 7 are "missing" and each becomes its
-      // own individual repair request.
+      // only 1 result, which can't be matched to any piece — so all 8
+      // become individual repair requests.
       if (sent.length > 1) return jsonResponse({ texts: ['only-one-translated'] });
       return jsonResponse({ texts: [`${sent[0]}-translated`] });
     });
@@ -514,9 +550,8 @@ describe('createBatchedHttpProvider — lifecycle hooks and concurrency', () => 
       pieces: [['a'], ['b'], ['c'], ['d'], ['e'], ['f'], ['g'], ['h']],
     });
 
-    // 1 top-level request + 7 individual repair requests (one per
-    // missing piece).
-    expect(fetchMock).toHaveBeenCalledTimes(8);
+    // 1 top-level request + 8 individual repair requests (one per piece).
+    expect(fetchMock).toHaveBeenCalledTimes(9);
     expect(maxObservedInFlight).toBeLessThanOrEqual(3);
   });
 
@@ -551,7 +586,8 @@ describe('createBatchedHttpProvider — lifecycle hooks and concurrency', () => 
       provider.translateBatch({ sourceLanguage: 'en', targetLanguage: 'es', pieces: [['e'], ['f']] }),
     ]);
 
-    expect(fetchMock).toHaveBeenCalledTimes(6);
+    // Three 2-piece batches each return one entry, so all six pieces are repaired individually.
+    expect(fetchMock).toHaveBeenCalledTimes(9);
     expect(maxObservedInFlight).toBeLessThanOrEqual(2);
   });
 
@@ -664,7 +700,8 @@ describe('createBatchedHttpProvider — lifecycle hooks and concurrency', () => 
       pieces: [['a'], ['b'], ['c'], ['d']],
     });
 
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    // Two 2-piece batches each return one entry, so all four pieces are repaired individually.
+    expect(fetchMock).toHaveBeenCalledTimes(6);
     // getAdaptiveConcurrency mocked to 1 overrides the configured 6.
     expect(maxObservedInFlight).toBe(1);
     vi.restoreAllMocks();
@@ -730,7 +767,8 @@ describe('createBatchedHttpProvider — suspicious vs. network failure kind', ()
 
   it("still classifies a genuinely missing result (no data at all for this piece) as kind:'network', unaffected by the suspicious-kind fix", async () => {
     // Echoes back one FEWER text than pieces actually sent in each call's
-    // body — results[idx] is undefined for the last piece, the real "no
+    // body. The short response can't be matched to a piece, so both pieces
+    // fall through to repair, which also comes back empty — the real "no
     // result" case (not the "got a result but it looked suspicious" one).
     const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
       const sent = JSON.parse(init.body as string) as string[];
@@ -751,7 +789,10 @@ describe('createBatchedHttpProvider — suspicious vs. network failure kind', ()
       pieces: [['hello'], ['world']],
     });
 
-    expect(results[0]).toEqual({ ok: true, value: ['hola'] });
+    expect(results[0]).toEqual({
+      ok: false,
+      error: { kind: 'network', message: '[missing-test] no result for this piece' },
+    });
     expect(results[1]).toEqual({
       ok: false,
       error: { kind: 'network', message: '[missing-test] no result for this piece' },
@@ -835,7 +876,8 @@ describe('createBatchedHttpProvider — suspicious vs. network failure kind', ()
       pieces: [['hello'], ['world']],
     });
 
-    expect(sourcesSent).toEqual(['en', 'en']);
+    // One batch, then one repair per piece — every request keeps the declared source.
+    expect(sourcesSent).toEqual(['en', 'en', 'en']);
     expect(results[1]).toEqual({
       ok: false,
       error: { kind: 'network', message: '[missing-not-auto-test] no result for this piece' },

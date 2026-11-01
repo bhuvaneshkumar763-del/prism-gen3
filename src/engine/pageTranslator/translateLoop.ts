@@ -2,6 +2,7 @@ import { connectivity } from '../connectivity';
 import type { BatchingHint } from '../providers/descriptors';
 import type { Translator } from '../translator';
 import { createAttributeTranslator } from './attributeTranslator';
+import { restoreBoundaryText } from './boundaryText';
 import { collectTextNodes, isNoTranslateNode } from './collectTextNodes';
 import { createDedupeTracker } from './dedupe';
 import { groupNodesForBatching, nearestBlockAncestor } from './grouping';
@@ -775,16 +776,9 @@ export function createPageTranslator(options: PageTranslatorOptions) {
         // gets requeued for a FRESH translation, not counted as done yet.
         recordPieceCompleted(node);
         const original = originalWhitespace.get(node);
-        // Strips a leading non-letter/non-digit run (not just whitespace)
-        // from Google's own output before wrapping — Google's behavior at
-        // this boundary is inconsistent (sometimes echoes the original
-        // leading punctuation back, sometimes doesn't — see
-        // `originalWhitespace`'s declaration comment), so the ORIGINAL
-        // captured prefix must always win rather than risk it appearing
-        // twice when Google happened to preserve its own copy.
-        const translated = original
-          ? original.leading + rawTranslated.replace(LEADING_NON_LETTER_OR_DIGIT, '').trimEnd() + original.trailing
-          : rawTranslated;
+        // See `restoreBoundaryText` for how the source's leading mark is
+        // carried without doubling and the translation's own marks are kept.
+        const translated = original ? restoreBoundaryText(original, rawTranslated) : rawTranslated;
         mutationWatcher.noteOwnWrite(node, translated);
         node.data = translated;
         lastSeenText.set(node, translated);

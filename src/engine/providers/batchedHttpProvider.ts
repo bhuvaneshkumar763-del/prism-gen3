@@ -72,6 +72,8 @@ export interface BatchedProviderOptions {
    * doesn't bind this fork once measurement says otherwise.
    */
   maxBatchChars?: number;
+  /** Hard cap on pieces per HTTP request, for endpoints with a documented per-request segment limit. Unset = no piece limit. */
+  maxBatchPieces?: number;
   /** Cap on concurrent in-flight HTTP requests. Default 6 — firing every chunk of a long page at once tends to trip rate limiters. */
   maxConcurrent?: number;
   /**
@@ -557,7 +559,9 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
         pending.map((p) => p.wireText),
         deadline,
       );
-      const results = options.callbacks.parseResponse(response, pending.length);
+      // Results are matched by position; on a count mismatch, treat the whole request as missing.
+      const parsed = options.callbacks.parseResponse(response, pending.length);
+      const results = parsed.length === pending.length ? parsed : [];
       const missing: PendingRequest[] = [];
       // Tracks WHICH of `missing`'s entries got there via the sanity check
       // (a real 200 OK that just looked like a silent echo) rather than
@@ -750,7 +754,11 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
         // separate bounds rather than one.
         currentChars += pending.originalText.length;
         currentWireChars += wireText.length;
-        if (currentChars > maxBatchChars || currentWireChars > HARD_MAX_WIRE_CHARS) {
+        if (
+          currentChars > maxBatchChars ||
+          currentWireChars > HARD_MAX_WIRE_CHARS ||
+          (options.maxBatchPieces !== undefined && currentBatch.length >= options.maxBatchPieces)
+        ) {
           batches.push(currentBatch);
           currentBatch = [];
           currentChars = 0;

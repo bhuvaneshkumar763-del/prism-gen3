@@ -54,6 +54,14 @@ export function languageName(code: string): string {
   return COMMON_LANGUAGES.find((l) => l.code === code)?.name ?? code;
 }
 
+/** Google reports these legacy ISO 639 codes; mapped so they compare equal to the current ones. */
+const LEGACY_BASE_LANGUAGE_CODES = new Map<string, string>([
+  ['iw', 'he'],
+  ['ji', 'yi'],
+  ['in', 'id'],
+  ['jw', 'jv'],
+]);
+
 /**
  * Strips a region/script subtag ('pt-BR' -> 'pt', 'zh-Hans' -> 'zh') so
  * language-equality checks treat a regional variant the same as its base
@@ -64,7 +72,8 @@ export function languageName(code: string): string {
  * ['pt']` rule silently never matches it.
  */
 export function baseLanguageTag(code: string): string {
-  return code.split('-')[0]?.toLowerCase() ?? code;
+  const base = code.split('-')[0]?.toLowerCase() ?? code;
+  return LEGACY_BASE_LANGUAGE_CODES.get(base) ?? base;
 }
 
 /**

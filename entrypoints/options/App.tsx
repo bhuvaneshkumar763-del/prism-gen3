@@ -528,8 +528,8 @@ function App() {
           <section class="section">
             <h2>Automatic translation</h2>
             <p class="hint">
-              One hostname or language code per line (or comma-separated). Always-translate takes priority over
-              never-translate for the same site or language.
+              One hostname or language code per line (or comma-separated). Never-translate takes priority over
+              always-translate for the same site or language.
             </p>
             <StringListEditor
               label="Always translate these sites"

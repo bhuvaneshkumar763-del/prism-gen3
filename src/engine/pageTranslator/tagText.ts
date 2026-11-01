@@ -33,10 +33,13 @@
  * post-launch pass writeup in this repo's CLAUDE.md.
  */
 
-const TAG_TOKEN = "[#@][\\p{L}\\p{N}_+#'&./\\-]+";
+// `/` is only a separator, never a token char: a char in both classes lets the repeats split one run many ways (ReDoS).
+const TAG_TOKEN = "[#@][\\p{L}\\p{N}_+#'&.\\-]+";
 const PURE_TAGS_RE = new RegExp(`^${TAG_TOKEN}(?:[\\s,，、・·|/]+${TAG_TOKEN})*[\\s,，、・·|/.]*$`, 'u');
+// Backstop against long page text; real tag clusters are far shorter.
+const MAX_PURE_TAGS_LENGTH = 500;
 
 /** True if `text` (already trimmed by the caller) is entirely one or more tag tokens — nothing else. */
 export function isPureTagText(text: string): boolean {
-  return text.length > 0 && PURE_TAGS_RE.test(text);
+  return text.length > 0 && text.length <= MAX_PURE_TAGS_LENGTH && PURE_TAGS_RE.test(text);
 }

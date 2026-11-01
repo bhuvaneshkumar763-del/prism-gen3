@@ -29,6 +29,18 @@ function withRemoved(list: string[], value: string): string[] {
   return list.includes(value) ? list.filter((v) => v !== value) : list;
 }
 
+/** Adds `hostname` unless the list already holds the same site, so `www.x.com` never duplicates `x.com`. */
+function withAddedSite(list: string[], hostname: string): string[] {
+  return siteListIncludesHostname(list, hostname) ? list : [...list, normalizeHostname(hostname)];
+}
+
+/** Removes every entry for the same site, whichever of the `www.` or apex forms it was saved under. */
+function withRemovedSite(list: string[], hostname: string): string[] {
+  const target = apexForm(hostname);
+  if (!target) return list;
+  return list.filter((entry) => apexForm(entry) !== target);
+}
+
 /**
  * Every site-list check elsewhere in this codebase (`autoTranslateDecision.ts`,
  * `siteOverrides.ts`) matches against `location.hostname` — always lowercase,
@@ -94,27 +106,25 @@ export function siteListIncludesHostname(list: readonly string[], hostname: stri
 }
 
 export function addSiteToAlwaysTranslate(snapshot: ListsSnapshot, hostname: string): ListsPatch {
-  const normalized = normalizeHostname(hostname);
   return {
-    alwaysTranslateSites: withAdded(snapshot.alwaysTranslateSites, normalized),
-    neverTranslateSites: withRemoved(snapshot.neverTranslateSites, normalized),
+    alwaysTranslateSites: withAddedSite(snapshot.alwaysTranslateSites, hostname),
+    neverTranslateSites: withRemovedSite(snapshot.neverTranslateSites, hostname),
   };
 }
 
 export function addSiteToNeverTranslate(snapshot: ListsSnapshot, hostname: string): ListsPatch {
-  const normalized = normalizeHostname(hostname);
   return {
-    neverTranslateSites: withAdded(snapshot.neverTranslateSites, normalized),
-    alwaysTranslateSites: withRemoved(snapshot.alwaysTranslateSites, normalized),
+    neverTranslateSites: withAddedSite(snapshot.neverTranslateSites, hostname),
+    alwaysTranslateSites: withRemovedSite(snapshot.alwaysTranslateSites, hostname),
   };
 }
 
 export function removeSiteFromAlwaysTranslate(snapshot: ListsSnapshot, hostname: string): ListsPatch {
-  return { alwaysTranslateSites: withRemoved(snapshot.alwaysTranslateSites, normalizeHostname(hostname)) };
+  return { alwaysTranslateSites: withRemovedSite(snapshot.alwaysTranslateSites, hostname) };
 }
 
 export function removeSiteFromNeverTranslate(snapshot: ListsSnapshot, hostname: string): ListsPatch {
-  return { neverTranslateSites: withRemoved(snapshot.neverTranslateSites, normalizeHostname(hostname)) };
+  return { neverTranslateSites: withRemovedSite(snapshot.neverTranslateSites, hostname) };
 }
 
 export function addLangToAlwaysTranslate(snapshot: ListsSnapshot, lang: string, hostname?: string): ListsPatch {
@@ -122,7 +132,7 @@ export function addLangToAlwaysTranslate(snapshot: ListsSnapshot, lang: string, 
     alwaysTranslateLangs: withAdded(snapshot.alwaysTranslateLangs, lang),
     neverTranslateLangs: withRemoved(snapshot.neverTranslateLangs, lang),
   };
-  if (hostname) patch.neverTranslateSites = withRemoved(snapshot.neverTranslateSites, hostname);
+  if (hostname) patch.neverTranslateSites = withRemovedSite(snapshot.neverTranslateSites, hostname);
   return patch;
 }
 
@@ -131,7 +141,7 @@ export function addLangToNeverTranslate(snapshot: ListsSnapshot, lang: string, h
     neverTranslateLangs: withAdded(snapshot.neverTranslateLangs, lang),
     alwaysTranslateLangs: withRemoved(snapshot.alwaysTranslateLangs, lang),
   };
-  if (hostname) patch.alwaysTranslateSites = withRemoved(snapshot.alwaysTranslateSites, hostname);
+  if (hostname) patch.alwaysTranslateSites = withRemovedSite(snapshot.alwaysTranslateSites, hostname);
   return patch;
 }
 

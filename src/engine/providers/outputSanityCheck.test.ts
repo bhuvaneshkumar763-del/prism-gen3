@@ -41,6 +41,22 @@ describe('isSuspiciousOutcome', () => {
     expect(isSuspiciousOutcome(LONG, { text: 'Ceci est une phrase.', detectedLanguage: null }, 'en', 'fr')).toBe(false);
   });
 
+  it('does not flag an identical result when the detected language is a regional variant of the target (zh-CN vs zh)', () => {
+    expect(isSuspiciousOutcome(LONG, { text: LONG, detectedLanguage: 'zh-CN' }, 'auto', 'zh')).toBe(false);
+  });
+
+  it("does not flag an identical result when the detected language is Google's legacy code for the target (iw vs he)", () => {
+    expect(isSuspiciousOutcome(LONG, { text: LONG, detectedLanguage: 'iw' }, 'auto', 'he')).toBe(false);
+  });
+
+  it('does not flag an identical result when the declared source is a regional variant of the target and nothing was detected', () => {
+    expect(isSuspiciousOutcome(LONG, { text: LONG, detectedLanguage: null }, 'pt-BR', 'pt')).toBe(false);
+  });
+
+  it('still flags an identical result when the detected language is a genuinely different language from the target', () => {
+    expect(isSuspiciousOutcome(LONG, { text: LONG, detectedLanguage: 'en' }, 'en', 'zh')).toBe(true);
+  });
+
   describe('script mismatch (real gap this closed — the length-only check above lets through nearly every real silent-echo failure this project has actually hit, since nav labels/buttons/headings are almost always short)', () => {
     it('flags a SHORT non-Latin-script string echoed back unchanged into a Latin-script target', () => {
       // "Login" — real example from this session's own investigation.

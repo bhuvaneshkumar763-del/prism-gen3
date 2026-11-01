@@ -2,6 +2,7 @@
 import { render } from 'solid-js/web';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { configStore } from '../../src/platform/configStore';
+import { LONG_PRESS_MS } from '../../src/shared/bubble/bubblePosition';
 import { trusted } from '../../tests/trustedEvent';
 import { FloatingBubble } from './FloatingBubble';
 
@@ -19,6 +20,7 @@ describe('FloatingBubble', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     dispose?.();
     container?.remove();
     container = undefined;
@@ -595,6 +597,57 @@ describe('FloatingBubble', () => {
     it('falls back to the plain title while the page language is still unknown', () => {
       const { el } = mount({ state: translatedFrom('und') });
       expect(el.querySelector('.htitle')?.textContent).toBe('Page translated');
+    });
+  });
+
+  describe('ball press gestures', () => {
+    it('a short tap without movement toggles translation', () => {
+      const onTranslate = vi.fn();
+      const { el } = mount({ onTranslate });
+      const ball = el.querySelector('.ball') as HTMLButtonElement;
+
+      ball.dispatchEvent(
+        trusted(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1, button: 0, clientX: 10, clientY: 10 })),
+      );
+      ball.dispatchEvent(
+        trusted(new PointerEvent('pointerup', { bubbles: true, pointerId: 1, button: 0, clientX: 10, clientY: 10 })),
+      );
+
+      expect(onTranslate).toHaveBeenCalledWith('es');
+    });
+
+    it('long-press opens the panel without toggling translation', () => {
+      vi.useFakeTimers();
+      const onTranslate = vi.fn();
+      const { el } = mount({ onTranslate });
+      const ball = el.querySelector('.ball') as HTMLButtonElement;
+      const panel = el.querySelector('.panel') as HTMLElement;
+
+      ball.dispatchEvent(
+        trusted(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1, button: 0, clientX: 10, clientY: 10 })),
+      );
+      vi.advanceTimersByTime(LONG_PRESS_MS + 1);
+      ball.dispatchEvent(
+        trusted(new PointerEvent('pointerup', { bubbles: true, pointerId: 1, button: 0, clientX: 10, clientY: 10 })),
+      );
+
+      expect(panel.classList.contains('pinned')).toBe(true);
+      expect(onTranslate).not.toHaveBeenCalled();
+    });
+
+    it('right-click does not toggle translation', () => {
+      const onTranslate = vi.fn();
+      const { el } = mount({ onTranslate });
+      const ball = el.querySelector('.ball') as HTMLButtonElement;
+
+      ball.dispatchEvent(
+        trusted(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1, button: 2, clientX: 10, clientY: 10 })),
+      );
+      ball.dispatchEvent(
+        trusted(new PointerEvent('pointerup', { bubbles: true, pointerId: 1, button: 2, clientX: 10, clientY: 10 })),
+      );
+
+      expect(onTranslate).not.toHaveBeenCalled();
     });
   });
 });

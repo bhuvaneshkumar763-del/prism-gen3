@@ -44,6 +44,7 @@
     "pre-tags-configurable",
     "real-progress-and-honest-errors",
     "reject-untrusted-privileged-ui-events",
+    "release-1-confirmed-fixes",
     "remove-builtin-provider",
     "remove-libretranslate-provider",
     "remove-zod-dependency",

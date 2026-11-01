@@ -82,7 +82,7 @@ export function createLlmProvider(options: LlmProviderOptions): Translator {
       getRequestBody: (sourceLanguage, targetLanguage, pieceWireTexts) =>
         JSON.stringify({
           model: options.model,
-          temperature: 0,
+          // No temperature: OpenAI reasoning models reject any non-default value with HTTP 400.
           messages: [{ role: 'user', content: buildPrompt(sourceLanguage, targetLanguage, pieceWireTexts) }],
         }),
       getExtraHeaders: () => [

@@ -45,6 +45,20 @@ describe('createLlmProvider', () => {
     expect(body.messages[0].content).toContain('[1]: world');
   });
 
+  it('omits the temperature field entirely, since OpenAI reasoning models reject any non-default temperature with HTTP 400', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse(chatResponse(JSON.stringify(['hola']))));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const provider = createLlmProvider({ baseUrl: 'https://example.com', apiKey: 'k', model: 'o3-mini' });
+    await provider.translateBatch({ sourceLanguage: 'en', targetLanguage: 'es', pieces: [['hello']] });
+
+    const call = fetchMock.mock.calls[0];
+    if (!call) throw new Error('fetch was not called');
+    const [, init] = call as unknown as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    expect(body).not.toHaveProperty('temperature');
+  });
+
   it('strips markdown code-fence wrapping before parsing JSON', async () => {
     vi.stubGlobal(
       'fetch',
