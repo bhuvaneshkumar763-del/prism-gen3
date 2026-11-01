@@ -13,7 +13,7 @@ description: Session-by-session history of what each phase of the Gen 3 build la
 > audit found a reader could come away believing this project still ships
 > providers that were deleted.
 >
-> **As of 0.3.0-beta.64 / the round-7 audit:**
+> **As of 0.3.0-beta.71 (Release 1 of `docs/reports/fix-plan.md`):**
 >
 > - **Three providers, not five**: `google.ts` (default, free scraped
 >   endpoint), `googleCloudTranslate.ts` (user's own key), `llm.ts`
@@ -30,6 +30,11 @@ description: Session-by-session history of what each phase of the Gen 3 build la
 >   `value`, `title`, `aria-label` — by `attributeTranslator.ts`.
 > - **Same-origin iframes inherit the main frame's detected language**
 >   (beta.37). Cross-origin frames deliberately do nothing at all (beta.53).
+>   Manual translate still reaches only the main frame.
+> - **Firefox ships**: `release.yml` signs the Firefox add-on through AMO
+>   and attaches it to every release.
+> - **What's next lives in `docs/reports/fix-plan.md`**, not in this file.
+>   Per-release detail is in `CHANGELOG.md`.
 
 **Session 1 (framework/repo bootstrap) and Session 2 (first vertical
 slice) are complete.** What Session 2 landed:

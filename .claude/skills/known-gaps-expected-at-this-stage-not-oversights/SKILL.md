@@ -53,19 +53,18 @@ description: Deliberate gaps and deferrals in Prism Gen 3 (missing providers, cr
   root it encounters. Closed shadow roots remain unreachable from outside
   by design; no fix possible there.
 - Standalone auxiliary windows (improve-translation, translate-text,
-  translate-document), text-to-speech, a backup export/import UI, a
-  release-notes page, and the toolbar icon's translated/original state
+  translate-document), text-to-speech, a release-notes page, and the toolbar icon's translated/original state
   swap were never scoped into any Gen 3 session — see the parity
   checklist above for the full "Deliberately Not Built" list.
 - The LLM provider has real, unfixed gaps — deliberately left as-is per
   the user's own direction during the post-launch audit pass below (the
   free `google` provider is what's actually used; LLM issues are written
   down, not fixed):
-  - `llm.ts`'s `parseResponse` ignores the `pieceCount` argument its own
-    interface passes it. If the model returns fewer/more strings than
-    requested, every piece after the mismatch point gets a different
-    piece's translation, permanently and silently — no test exercises a
-    length-mismatched model response.
+  - ~~`llm.ts`'s `parseResponse` ignores the `pieceCount` argument, so a
+    length-mismatched model response shifts every later piece's
+    translation~~ **Resolved** in Release 1 (beta.71): the shared
+    `batchedHttpProvider.ts` now treats a count mismatch as the whole
+    request missing, for every provider.
   - Whitespace can be lost at the `PIECE_PART_SEPARATOR` join/split
     boundary for a `groupByBlock` piece (LLMs routinely trim whitespace at
     string boundaries), visibly welding two words together
@@ -90,15 +89,12 @@ description: Deliberate gaps and deferrals in Prism Gen 3 (missing providers, cr
     and said it affected the LLM provider only when `descriptors.ts` has
     given `google` — the DEFAULT provider — `groupByBlock: true` since
     Google sentence-context grouping landed.
-- Selection-translation (`getSelectionInfo`/`window.getSelection()`)
-  cannot see text inside an open shadow root — `window.getSelection()`
-  doesn't reach into one, even though page translation itself
-  (`collectTextNodes`) deliberately does. A user can highlight
-  shadow-DOM text but the "translate selection" trigger never appears.
-  Fixing this needs Chromium's non-standard `ShadowRoot.getSelection()`
-  (no cross-browser spec, and `happy-dom` doesn't implement it, so it
-  couldn't be verified automatically) — flagged during the post-launch
-  audit pass below, not fixed.
+- ~~Selection-translation cannot see text inside an open shadow root~~
+  **Resolved on Chromium**: `mountSelectionPopup.ts`'s
+  `resolveActiveSelection` walks the event's `composedPath()` and uses
+  Chromium's non-standard `ShadowRoot.getSelection()`. Firefox and Safari
+  don't have it and fall back to `window.getSelection()`, so the trigger
+  still never appears for shadow-DOM text there.
 - ~~The floating bubble's panel is keyboard-unreachable~~ **Resolved.**
   The two things this entry said a fix would need both landed, but the
   entry was never updated: ArrowDown on the ball opens the panel and moves

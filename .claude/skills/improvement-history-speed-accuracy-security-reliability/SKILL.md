@@ -1,17 +1,21 @@
 ---
 name: improvement-history-speed-accuracy-security-reliability
-description: Running ledger of every speed/accuracy/security/reliability improvement pass made to already-shipped functionality. Read this FIRST whenever asked to "improve" the extension — it exists so an audit doesn't re-discover, re-verify, or contradict something already fixed.
+description: Frozen ledger (up to 0.3.0-beta.71) of every speed/accuracy/security/reliability improvement pass made to already-shipped functionality. Search it before an "improve" pass so an audit doesn't re-discover, re-verify, or contradict something already fixed. Don't add to it.
 ---
 
 # Improvement history: speed, accuracy, security, reliability
 
+> **Frozen at 0.3.0-beta.71 (2026-11-01). Don't add new entries.** It grew
+> to ~164 KB, too big to read whole. Search it (grep a file or function
+> name) before fixing something, to see whether it was already checked.
+> New work is recorded in its changeset (`CHANGELOG.md`), and open work is
+> tracked in `docs/reports/fix-plan.md`.
+
 This is a ledger, not a changelog restatement — `CHANGELOG.md` has the full
 per-release prose. This doc exists so that the next time you're asked to
 **"improve"** this extension, you start from what's already been checked and
-fixed instead of re-deriving it. Read this whole file before starting a new
-audit. When you finish one, add a new dated entry at the top of the relevant
-category (or a new "Audit round N" entry below) — don't let this file go
-stale, it's only useful if kept current.
+fixed instead of re-deriving it. (Before the freeze, every audit added a
+dated entry here.)
 
 **How to use this**: an "improve" request is normally scoped to one or more
 of accuracy / speed / security / reliability. Read the matching category
