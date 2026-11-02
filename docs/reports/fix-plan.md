@@ -48,12 +48,12 @@ Paste:
 > Do step 2 of "The plan from here" in `docs/reports/fix-plan.md`, as one change and one release. Don't fix anything else.
 
 What that session does, all in one batch:
-- [ ] **H-1** Make the `.claude/hooks/` scripts skip themselves when `agora-code` isn't installed, so cloud sessions can run `npm test` and spawn subagents.
-- [ ] **H-2** Point `CLAUDE.md` at this file instead of the `/Users/jb/...` plan path that cloud sessions can't read.
-- [ ] **H-3** Fix `README.md`: lint is a CI gate, and the plan is this file.
-- [ ] **H-4** Update `solid-js` to 1.9.18 (clears the two "critical" advisories; the affected code isn't in the extension, so this is routine).
-- [ ] **H-5** Add a release gate: `release.yml` refuses to publish unless the release's changeset contains a line `Checked on: <page>, <browser>, <date>`. This turns rules 3 and 4 from memory into a check.
-- [ ] Leave beta mode and release **0.3.0** (`changeset pre exit`), with a `Checked on:` line from your step 1.
+- [ ] **H-1** Remove the agora-code hooks (`.claude/hooks/` and the `hooks` block in `.claude/settings.json`); the owner dropped agora-code. **Needs you:** auto mode blocks a session from editing Claude's own config, so either delete them yourself or allow it for one session.
+- [x] **H-2** Point `CLAUDE.md` at this file instead of the `/Users/jb/...` plan path that cloud sessions can't read.
+- [x] **H-3** Fix `README.md`: lint is a CI gate, and the plan is this file.
+- [x] **H-4** Update `solid-js` to 1.9.18 (clears the two "critical" advisories; the affected code isn't in the extension, so this is routine).
+- [x] **H-5** Add a release gate: `release.yml` refuses to publish unless the version's changelog entry has a line starting `Checked on: <page>, <browser>, <date>`. This turns rules 3 and 4 from memory into a check.
+- [x] Leave beta mode and version **0.3.0** (`changeset pre exit`). Its changelog entry holds `Checked on: TODO`, so the gate refuses it until your step 1 result replaces that line.
 
 Then **you** (5 min): install 0.3.0 on the iPhone and read one chapter. If it's fine, 0.3.0 is your stable version. If not, go back to beta.73 and tell a session what broke.
 
