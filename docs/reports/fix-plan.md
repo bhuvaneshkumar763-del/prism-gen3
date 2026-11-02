@@ -33,9 +33,11 @@ Each step says who does it. **You** means you, in a browser. **Session** means a
 ### Step 1 — You, today (15 min): check beta.73 on the iPhone
 
 In Orion, with beta.73 installed:
-- [ ] Read one sangtacviet chapter in Vietnamese mode (the site's own translation off).
-- [ ] Read one chapter in English mode (Bật, English, Google).
-- [ ] Tap the bubble. Its panel should stay closed.
+- [x] Read one sangtacviet chapter in Vietnamese mode (the site's own translation off).
+- [x] Read one chapter in English mode (Bật, English, Google).
+- [x] Tap the bubble. Its panel should stay closed.
+
+_Passed 2026-11-02._
 
 **If all three pass**, go to step 2. **If any fail**, write down the chapter URL and what looked wrong, reinstall beta.72 from GitHub Releases, and give a session this prompt:
 
@@ -53,7 +55,7 @@ What that session does, all in one batch:
 - [x] **H-3** Fix `README.md`: lint is a CI gate, and the plan is this file.
 - [x] **H-4** Update `solid-js` to 1.9.18 (clears the two "critical" advisories; the affected code isn't in the extension, so this is routine).
 - [x] **H-5** Add a release gate: `release.yml` refuses to publish unless the version's changelog entry has a line starting `Checked on: <page>, <browser>, <date>`. This turns rules 3 and 4 from memory into a check.
-- [x] Leave beta mode and version **0.3.0** (`changeset pre exit`). Its changelog entry holds `Checked on: TODO`, so the gate refuses it until your step 1 result replaces that line.
+- [x] Leave beta mode and version **0.3.0** (`changeset pre exit`). Its changelog entry records your step 1 check, so the gate lets it through.
 
 Then **you** (5 min): install 0.3.0 on the iPhone and read one chapter. If it's fine, 0.3.0 is your stable version. If not, go back to beta.73 and tell a session what broke.
 

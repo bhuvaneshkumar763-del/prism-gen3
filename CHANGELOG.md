@@ -422,7 +422,7 @@
   - **Releases now need a real-page check.** A version's changelog entry must say where it was checked (`Checked on: <page>, <browser>, <date>`), or the release workflow refuses to publish it.
   - **Docs point to the real plan.** `CLAUDE.md` and `README.md` now point to `docs/reports/fix-plan.md` instead of a plan file that only existed on a laptop.
 
-  Checked on: TODO
+  Checked on: sangtacviet (Vietnamese mode, English mode, bubble tap), Orion on iPhone, 2026-11-02
 
 - 65b8cd8: Reliability and privacy fix (round-4 audit, item 7): two related same-origin-iframe bugs.
 
