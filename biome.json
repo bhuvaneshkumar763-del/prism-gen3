@@ -6,7 +6,15 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["**", "!**/.output", "!**/.wxt", "!**/public/_locales", "!**/coverage", "!**/safari/Prism"]
+    "includes": [
+      "**",
+      "!**/.output",
+      "!**/.wxt",
+      "!**/public/_locales",
+      "!**/coverage",
+      "!**/safari/Prism",
+      "!**/tests/replay/pages"
+    ]
   },
   "formatter": {
     "enabled": true,

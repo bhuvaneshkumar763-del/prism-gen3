@@ -25,8 +25,15 @@ Run before considering any Gen 3 change done:
 8. `npm run test:e2e` (Session 9) — real-Chrome Playwright smoke test;
    requires step 6 first and a Chromium binary (`npx playwright install
    chromium` if you don't already have one cached).
+9. `npm run test:replay` — replays every saved page in `tests/replay/pages/`
+   with Google's recorded answers and no network; requires step 6 first.
+   A failure is either changed output (compare with the case's
+   `expected.txt`) or a "miss" (the pieces sent changed, so re-record with
+   `npm run replay:record -- <name>`). Add a page that translated badly
+   with `npm run replay:record -- <name> --url <url> --to <lang>`; see
+   `tests/replay/record.mjs`.
 
-All of steps 1-8 run in CI (`.github/workflows/ci.yml`) on every push to
+All of steps 1-9 run in CI (`.github/workflows/ci.yml`) on every push to
 `main` and every PR, in that order, followed by `npm run zip` and an
 artifact upload. Releasing: `npm run changeset` to record a change,
 `npm run version` to apply pending changesets (bumps `package.json`,

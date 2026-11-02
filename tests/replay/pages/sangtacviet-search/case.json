@@ -1,0 +1,18 @@
+{
+  "url": "https://sangtacviet.vip/search/",
+  "to": "en",
+  "savedAt": "2026-11-01",
+  "note": "Reported: the ~1000-button tag cloud scrambled across chips ('System (192673) Fantasy (' / '189348)', beta.66/beta.67), and the site's English UI labels were mistranslated as Vietnamese ('History' -> 'Association', beta.68)",
+  "mustContain": [
+    "System (192673)",
+    "Fantasy (189348)",
+    "History",
+    "Ongoing",
+    "Major category"
+  ],
+  "mustNotContain": [
+    "Association",
+    "On damage",
+    "Major Directory"
+  ]
+}

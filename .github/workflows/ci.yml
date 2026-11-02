@@ -72,6 +72,11 @@ jobs:
       - name: E2E smoke test
         run: npm run test:e2e
 
+      # Fix plan N-1: saved pages translated again with Google's recorded
+      # answers, no network — see tests/replay/run.mjs.
+      - name: Page replay tests
+        run: npm run test:replay
+
       - name: Zip extension
         run: npm run zip
 

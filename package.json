@@ -20,6 +20,8 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:e2e": "node tests/e2e/run.mjs",
+    "test:replay": "node tests/replay/run.mjs",
+    "replay:record": "node tests/replay/record.mjs",
     "guard:engine-purity": "node scripts/check-engine-purity.mjs",
     "guard:solid-reactivity": "node scripts/check-solid-reactivity.mjs",
     "guard:bundle-size": "node scripts/check-bundle-size.mjs",
