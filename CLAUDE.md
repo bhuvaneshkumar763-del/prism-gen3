@@ -4,14 +4,15 @@ This is **Prism, Gen 3** — a ground-up rewrite of a browser extension that
 translates web pages in place. It is a **brand-new repository**, not a
 continuation of the old one at `/Users/jb/Downloads/TWP`.
 
-**Read the plan file first, always**:
-`/Users/jb/.claude/plans/so-whats-the-plan-polished-elephant.md` (the
-section titled "Prism Gen 3 — ground-up rewrite in a new repository" at
-the top — the rest of that file is the old repo's superseded history, kept
-for reference). It has the full session-by-session breakdown, the context
-for why this rewrite exists, and every "keep vs. diverge" decision already
-made. **Read that file's session map before starting any Gen 3 work** — it
-tells you exactly which session you're in and what it depends on.
+**Read the plan first, always**: `docs/reports/fix-plan.md`, section
+"The plan from here". It says what's due now, what's out of scope, and the
+rules every change follows (fix only bugs the owner hit, one batched
+release, a real-page check before tagging, no AI audit rounds).
+`docs/reports/where-prism-stands.md` is the plain-language overview of the
+extension and its health.
+
+The original 10-session Gen 3 build plan lived outside this repo and is
+finished; its history is in the `/current-status` skill.
 
 ## Why this repo exists (short version)
 

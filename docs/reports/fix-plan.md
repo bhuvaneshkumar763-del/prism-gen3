@@ -2,7 +2,7 @@
 
 _2026-11-01 · from Prism 0.3.0-beta.70 (commit fed8806) · cut down for personal use the same day_
 
-**Status: Release 1 shipped as 0.3.0-beta.71; N-1 to N-3 shipped as 0.3.0-beta.72; the sangtacviet fixes, the untranslated warning and the LLM removal shipped as 0.3.0-beta.73.** The rest of the plan was cut down after Release 1. Prism is for personal use only. There are no other users and no store audience, and no new translation providers are planned. So the original plan's store, launch, branch-protection, i18n, new-provider and LLM-hardening work is dropped (see [Dropped](#dropped)).
+**Status: Release 1 shipped as 0.3.0-beta.71; N-1 to N-3 shipped as 0.3.0-beta.72; the sangtacviet fixes, the untranslated warning and the LLM removal shipped as 0.3.0-beta.73. Next: [The plan from here](#the-plan-from-here-2026-11-02).** The rest of the plan was cut down after Release 1. Prism is for personal use only. There are no other users and no store audience, and no new translation providers are planned. So the original plan's store, launch, branch-protection, i18n, new-provider and LLM-hardening work is dropped (see [Dropped](#dropped)).
 
 The plan came from three reports:
 - [prism-self-audit.md](prism-self-audit.md): the line-by-line read and history, with 13 defects checked by hand
@@ -19,6 +19,74 @@ The plan came from three reports:
 6. **Fix the class, not just the instance.** When a fix touches a rule that's copied elsewhere (see [Copied rules](#copied-rules)), fix every copy in the same change.
 
 Sizes: S is under an hour, M is half a day, L is several days.
+
+---
+
+## The plan from here (2026-11-02)
+
+_From [where-prism-stands.md](where-prism-stands.md). This is the current plan; the sections below it are history and a waiting list._
+
+**Goal:** Prism is **done** when it reads sangtacviet on the iPhone, says so when a page fails, and goes two weeks without a bug that stops reading. After that it's maintenance: fix what breaks, nothing else.
+
+Each step says who does it. **You** means you, in a browser. **Session** means an AI coding session; paste the prompt shown.
+
+### Step 1 — You, today (15 min): check beta.73 on the iPhone
+
+In Orion, with beta.73 installed:
+- [x] Read one sangtacviet chapter in Vietnamese mode (the site's own translation off).
+- [x] Read one chapter in English mode (Bật, English, Google).
+- [x] Tap the bubble. Its panel should stay closed.
+
+_Passed 2026-11-02._
+
+**If all three pass**, go to step 2. **If any fail**, write down the chapter URL and what looked wrong, reinstall beta.72 from GitHub Releases, and give a session this prompt:
+
+> Beta.73 failed on the iPhone: <URL, what looked wrong>. Follow `docs/reports/fix-plan.md`: revert only the word-per-word change, save this chapter as a replay case in `tests/replay/`, and don't release until I've checked it.
+
+### Step 2 — Session (about 1 hour): housekeeping, then stable 0.3.0
+
+Paste:
+
+> Do step 2 of "The plan from here" in `docs/reports/fix-plan.md`, as one change and one release. Don't fix anything else.
+
+What that session does, all in one batch:
+- [x] **H-1** Remove the agora-code hooks (`.claude/hooks/` and `.claude/settings.json`, which held only those hooks); the owner dropped agora-code.
+- [x] **H-2** Point `CLAUDE.md` at this file instead of the `/Users/jb/...` plan path that cloud sessions can't read.
+- [x] **H-3** Fix `README.md`: lint is a CI gate, and the plan is this file.
+- [x] **H-4** Update `solid-js` to 1.9.18 (clears the two "critical" advisories; the affected code isn't in the extension, so this is routine).
+- [x] **H-5** Add a release gate: `release.yml` refuses to publish unless the version's changelog entry has a line starting `Checked on: <page>, <browser>, <date>`. This turns rules 3 and 4 from memory into a check.
+- [x] Leave beta mode and version **0.3.0** (`changeset pre exit`). Its changelog entry records your step 1 check, so the gate lets it through.
+
+Then **you** (5 min): install 0.3.0 on the iPhone and read one chapter. If it's fine, 0.3.0 is your stable version. If not, go back to beta.73 and tell a session what broke.
+
+### Step 3 — You, once (10 min): try the backup
+
+- [ ] Settings → Page translation → Translation service → **Google Cloud Translation API**, paste your key, translate one page.
+- [ ] Switch back to Google.
+- [ ] Write down where your key is kept.
+
+Now the day free Google stops working is a two-minute settings change.
+
+### Step 4 — You, two weeks: just read
+
+- [ ] Keep one note (on your phone is fine): date, URL, what looked wrong.
+- [ ] No coding sessions while the note is empty.
+- [ ] One thing to watch: a page that looks untranslated **but the bubble doesn't say so**. That's the silent failure that keeps coming back. Note it right away.
+
+### Step 5 — Session, only when the note has something: one fix batch
+
+Paste:
+
+> Here's what broke while I was reading: <your note>. Follow `docs/reports/fix-plan.md`: confirm each one in the code, fix it with a test, save the page as a replay case, and put all the fixes in one release. I'll check them on the real pages before you tag it.
+
+Then **you** check each fix on its real page, give the `Checked on:` line, and the session releases. At most one release a week.
+
+### Not part of the plan
+
+- AI audits or "find improvements" sessions, including councils over the code.
+- New features (glossary, reading position, pre-translating chapters), until you've gone two quiet weeks and one of them is your biggest annoyance.
+- Anything from "Bugs to confirm" below that hasn't happened to you.
+- New narrative docs. Release notes go in the changeset; nothing else.
 
 ---
 
@@ -135,6 +203,8 @@ Cut on 2026-11-01 because Prism is for personal use and no new providers are pla
 Prism shipped an LLM provider it never used. Decided 2026-11-02: removed. Google Cloud, with your own key, stays as the backup if the scraped Google key breaks.
 
 ## First step
+
+_Superseded by [The plan from here](#the-plan-from-here-2026-11-02), step 1. Kept for its replay-recording command._
 
 **Pending: check beta.73 on the iPhone in Orion.** Its sangtacviet fixes were verified in emulated mobile Chrome against a copy of the site's markup, not on the live site. Read one chapter in Vietnamese mode (the site's translation off) and one in English mode (Bật, English, Google), and tap the bubble to check its panel stays closed. If it fails, reinstall beta.72, revert the word-per-word change alone, and record the chapter as a replay case.
 
