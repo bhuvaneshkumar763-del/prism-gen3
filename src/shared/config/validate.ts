@@ -148,6 +148,7 @@ export const configValidators: { [K in ConfigKey]: Validator<Config[K]> } = {
   theme: enumOf('auto', 'light', 'dark'),
   translationCacheEnabled: bool,
   translatePreTags: bool,
+  groupParagraphs: bool,
   selectionPopupSkipInvalidText: bool,
   selectionPopupSkipTargetLanguageText: bool,
 };
