@@ -111,9 +111,6 @@ export function FloatingBubble(props: FloatingBubbleProps) {
   function readSetupFields(): ProviderSetupFields {
     return {
       googleCloudTranslateApiKey: configStore.get('googleCloudTranslateApiKey'),
-      llmBaseUrl: configStore.get('llmBaseUrl'),
-      llmApiKey: configStore.get('llmApiKey'),
-      llmModel: configStore.get('llmModel'),
     };
   }
   const [setupFields, setSetupFields] = createSignal(readSetupFields());
@@ -389,13 +386,7 @@ export function FloatingBubble(props: FloatingBubbleProps) {
     const unsubConfig = configStore.onChanged((name, value) => {
       if (name === 'targetLanguage') setTargetLanguageSignal(value as string);
       else if (name === 'pageTranslatorProvider') setServiceSignal(value as ProviderId);
-      else if (
-        name === 'googleCloudTranslateApiKey' ||
-        name === 'llmBaseUrl' ||
-        name === 'llmApiKey' ||
-        name === 'llmModel'
-      )
-        setSetupFields(readSetupFields());
+      else if (name === 'googleCloudTranslateApiKey') setSetupFields(readSetupFields());
       else if (name === 'alwaysTranslateSites')
         setAlwaysOn(siteListIncludesHostname(value as string[], props.hostname));
       else if (name === 'sourceLanguageByHost') {

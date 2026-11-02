@@ -3,6 +3,11 @@
 ## Status
 Accepted — 2026-08-01 (Session 4)
 
+Update, 2026-11: of the providers below, only `google` and
+`googleCloudTranslate` remain. `builtin` and `libretranslate` were removed
+post-launch, and `llm` after beta.72 (Prism is personal-use only and it was
+never used). See `src/shared/config/migrations.ts` versions 3-5.
+
 ## Context
 Mid-session, a real question came up: does any of this actually match the
 translation quality users get from Chrome's or Arc's built-in "translate

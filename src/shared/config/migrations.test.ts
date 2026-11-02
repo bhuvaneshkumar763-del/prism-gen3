@@ -122,7 +122,7 @@ describe('applyConfigMigrations', () => {
   });
 
   it('toVersion 3 leaves a non-builtin provider selection untouched', () => {
-    const raw = { pageTranslatorProvider: 'llm', targetLanguage: 'fr' };
+    const raw = { pageTranslatorProvider: 'googleCloudTranslate', targetLanguage: 'fr' };
     expect(applyConfigMigrations(raw, 2)).toEqual(raw);
   });
 
@@ -133,7 +133,23 @@ describe('applyConfigMigrations', () => {
   });
 
   it('toVersion 4 leaves a non-libretranslate provider selection untouched', () => {
-    const raw = { pageTranslatorProvider: 'llm', targetLanguage: 'fr' };
+    const raw = { pageTranslatorProvider: 'googleCloudTranslate', targetLanguage: 'fr' };
     expect(applyConfigMigrations(raw, 3)).toEqual(raw);
+  });
+
+  it('toVersion 5 falls an existing "llm" provider selection back to google and deletes the LLM fields, API key included (removed provider)', () => {
+    const raw = {
+      pageTranslatorProvider: 'llm',
+      llmBaseUrl: 'http://x',
+      llmApiKey: 'k',
+      llmModel: 'm',
+      targetLanguage: 'fr',
+    };
+    expect(applyConfigMigrations(raw, 4)).toEqual({ pageTranslatorProvider: 'google', targetLanguage: 'fr' });
+  });
+
+  it('toVersion 5 leaves a non-llm provider selection untouched', () => {
+    const raw = { pageTranslatorProvider: 'googleCloudTranslate', targetLanguage: 'fr' };
+    expect(applyConfigMigrations(raw, 4)).toEqual(raw);
   });
 });

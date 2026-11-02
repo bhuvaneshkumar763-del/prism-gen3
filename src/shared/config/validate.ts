@@ -129,11 +129,8 @@ export function nullableObject<S extends Record<string, unknown>>(
 export const configValidators: { [K in ConfigKey]: Validator<Config[K]> } = {
   targetLanguage: str,
   sourceLanguage: str,
-  pageTranslatorProvider: enumOf('google', 'googleCloudTranslate', 'llm'),
+  pageTranslatorProvider: enumOf('google', 'googleCloudTranslate'),
   googleCloudTranslateApiKey: str,
-  llmBaseUrl: str,
-  llmApiKey: str,
-  llmModel: str,
   alwaysTranslateSites: strArray,
   neverTranslateSites: strArray,
   alwaysTranslateLangs: strArray,
@@ -148,6 +145,7 @@ export const configValidators: { [K in ConfigKey]: Validator<Config[K]> } = {
   theme: enumOf('auto', 'light', 'dark'),
   translationCacheEnabled: bool,
   translatePreTags: bool,
+  groupParagraphs: bool,
   selectionPopupSkipInvalidText: bool,
   selectionPopupSkipTargetLanguageText: bool,
 };

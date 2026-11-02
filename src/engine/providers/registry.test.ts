@@ -11,13 +11,6 @@ describe('createProvider', () => {
     expect(createProvider('googleCloudTranslate', { googleCloudTranslate: { apiKey: 'k' } })).not.toBeNull();
   });
 
-  it('creates an llm provider only when configured', () => {
-    expect(createProvider('llm', {})).toBeNull();
-    expect(
-      createProvider('llm', { llm: { baseUrl: 'https://example.com', apiKey: 'k', model: 'gpt-4o-mini' } }),
-    ).not.toBeNull();
-  });
-
   it('returns null for an unknown provider id', () => {
     // @ts-expect-error deliberately testing an invalid id at the runtime boundary
     expect(createProvider('not-a-real-provider', {})).toBeNull();

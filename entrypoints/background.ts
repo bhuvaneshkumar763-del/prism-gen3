@@ -7,7 +7,7 @@ import {
 import { createProvider, type ProviderConfig } from '../src/engine/providers/registry';
 import type { PieceOutcome, TranslateBatchRequest, Translator } from '../src/engine/translator';
 import { translateOne } from '../src/engine/translator';
-import { cacheKeyFor, llmCacheScope, translationCache } from '../src/platform/cache/translationCache';
+import { cacheKeyFor, translationCache } from '../src/platform/cache/translationCache';
 import { configStore } from '../src/platform/configStore';
 import type { FrameLanguageDecision } from '../src/platform/messaging/protocol';
 import { isTrustedSender, onMessage, sendMessage } from '../src/platform/messaging/protocol';
@@ -102,9 +102,6 @@ function endTranslateActivity(): void {
 function buildProviderConfig(): ProviderConfig {
   const fields = {
     googleCloudTranslateApiKey: configStore.get('googleCloudTranslateApiKey'),
-    llmBaseUrl: configStore.get('llmBaseUrl'),
-    llmApiKey: configStore.get('llmApiKey'),
-    llmModel: configStore.get('llmModel'),
   };
   // "Configured" is decided by the same rule the UI uses to show "needs
   // setup" (missingProviderSetup), so the two can't disagree.
@@ -113,10 +110,6 @@ function buildProviderConfig(): ProviderConfig {
     googleCloudTranslate:
       missingProviderSetup('googleCloudTranslate', fields) === null
         ? { apiKey: fields.googleCloudTranslateApiKey }
-        : undefined,
-    llm:
-      missingProviderSetup('llm', fields) === null
-        ? { baseUrl: fields.llmBaseUrl, apiKey: fields.llmApiKey, model: fields.llmModel }
         : undefined,
   };
 }
@@ -358,10 +351,8 @@ export default defineBackground(() => {
     // incognito translate neither leaks into nor benefits from the normal
     // profile's cache.
     const cacheEnabled = configStore.get('translationCacheEnabled') && !sender.tab?.incognito;
-    const cacheScope =
-      providerId === 'llm' ? llmCacheScope(configStore.get('llmBaseUrl'), configStore.get('llmModel')) : providerId;
     const pieceKeys = pieces.map((piece) =>
-      cacheKeyFor(cacheScope, sourceLanguage, targetLanguage, JSON.stringify(piece)),
+      cacheKeyFor(providerId, sourceLanguage, targetLanguage, JSON.stringify(piece)),
     );
     // Caching is purely an optimization — a cache-layer failure (a closed
     // IndexedDB connection, a quota/permission issue, or a corrupt/truncated

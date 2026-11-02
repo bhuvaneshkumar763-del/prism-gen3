@@ -42,8 +42,8 @@ export function parseBackup(json: string): Result<Partial<Config>, string> {
   const isWrapped = parsed !== null && typeof parsed === 'object' && 'config' in (parsed as Record<string, unknown>);
   const configCandidate = isWrapped ? (parsed as { config: unknown }).config : parsed;
 
-  // Same fallback migrations.ts applies to stored config (versions 3/4):
-  // a backup exported before the `builtin`/`libretranslate` provider
+  // Same fallback migrations.ts applies to stored config (versions 3-5):
+  // a backup exported before the `builtin`/`libretranslate`/`llm` provider
   // removals still has one of those values here, and unlike the raw-storage
   // load path, nothing else remaps it before schema validation — without
   // this, restoring an old-but-otherwise-valid backup would fail the
@@ -52,10 +52,15 @@ export function parseBackup(json: string): Result<Partial<Config>, string> {
     configCandidate !== null &&
     typeof configCandidate === 'object' &&
     'pageTranslatorProvider' in configCandidate &&
-    ((configCandidate as Record<string, unknown>).pageTranslatorProvider === 'builtin' ||
-      (configCandidate as Record<string, unknown>).pageTranslatorProvider === 'libretranslate')
+    ['builtin', 'libretranslate', 'llm'].includes(
+      String((configCandidate as Record<string, unknown>).pageTranslatorProvider),
+    )
   ) {
     (configCandidate as Record<string, unknown>).pageTranslatorProvider = 'google';
+  }
+  // The removed `llm` provider's fields (one is an API key) aren't settings any more.
+  if (configCandidate !== null && typeof configCandidate === 'object') {
+    for (const key of ['llmBaseUrl', 'llmApiKey', 'llmModel']) delete (configCandidate as Record<string, unknown>)[key];
   }
 
   const result = validatePartialConfig(configCandidate);

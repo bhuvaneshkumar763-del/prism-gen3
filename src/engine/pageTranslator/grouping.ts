@@ -45,15 +45,14 @@ import { isPureTagText } from './tagText';
  * 3. **Isolate tag-cluster text (`#go#be`, `@mention`, ...) into its own
  *    singleton group, never batched with anything else.** A grouped piece
  *    with more than one string goes through provider-specific multi-item
- *    wire markers — Google's `<a i=N>` index tags (`google.ts`), the LLM
- *    provider's `␟`-joined segments (`llm.ts`) — and real traffic has
+ *    wire markers — Google's `<a i=N>` index tags (`google.ts`) — and real traffic has
  *    shown Google's endpoint can reorder/merge those markers when several
  *    short tag tokens sit in one batch, scrambling which translated
  *    fragment maps back to which tag (ported fix, see `tagText.ts`'s
  *    header comment for the full history). A size-1 piece never triggers
  *    either provider's multi-item marker scheme at all, so there's
  *    structurally nothing left to scramble. This only changes behavior
- *    when `hint.groupByBlock` is true (`google`/`llm` today) — providers
+ *    when `hint.groupByBlock` is true (`google` today) — providers
  *    without a `batchingHint` already send one node per piece regardless.
  *
  * 4. **Isolate a tag ANCHOR's text nodes together, even when the tag is

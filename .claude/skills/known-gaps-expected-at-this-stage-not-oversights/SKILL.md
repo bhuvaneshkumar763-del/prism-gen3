@@ -56,39 +56,11 @@ description: Deliberate gaps and deferrals in Prism Gen 3 (missing providers, cr
   translate-document), text-to-speech, a release-notes page, and the toolbar icon's translated/original state
   swap were never scoped into any Gen 3 session — see the parity
   checklist above for the full "Deliberately Not Built" list.
-- The LLM provider has real, unfixed gaps — deliberately left as-is per
-  the user's own direction during the post-launch audit pass below (the
-  free `google` provider is what's actually used; LLM issues are written
-  down, not fixed):
-  - ~~`llm.ts`'s `parseResponse` ignores the `pieceCount` argument, so a
-    length-mismatched model response shifts every later piece's
-    translation~~ **Resolved** in Release 1 (beta.71): the shared
-    `batchedHttpProvider.ts` now treats a count mismatch as the whole
-    request missing, for every provider.
-  - Whitespace can be lost at the `PIECE_PART_SEPARATOR` join/split
-    boundary for a `groupByBlock` piece (LLMs routinely trim whitespace at
-    string boundaries), visibly welding two words together
-    (`Bonjourmonde`).
-  - There are no `host_permissions` in the manifest, and an MV3 service
-    worker's `fetch` is CORS-governed. Google's endpoints evidently send
-    permissive CORS headers (it works today); a user-supplied LLM
-    `baseUrl` (OpenAI, Ollama, LM Studio) generally does not, and this has
-    **only ever been exercised against mocks** (`vi.stubGlobal('fetch')`
-    in unit tests, a localhost mock server in E2E) — never a real
-    third-party endpoint. `docs/decisions/0006-permission-model.md`
-    reasons carefully about content-script injection permissions and
-    never addresses the fetch path.
-  - ~~`translateLoop.ts` slices the queue before `groupNodesForBatching()`
-    runs, so a paragraph straddling a tick boundary loses shared grouping
-    context~~ **Resolved** by the round-7 audit: the tick now pushes a
-    straddling block's trailing nodes back so the whole block groups
-    together next tick (with a starvation guard for a single block larger
-    than one tick — that one still splits, as before). Note this entry was
-    doubly stale before that fix: it said **100** nodes when
-    `MAX_PIECES_PER_TICK` has been **300** since the post-launch speed pass,
-    and said it affected the LLM provider only when `descriptors.ts` has
-    given `google` — the DEFAULT provider — `groupByBlock: true` since
-    Google sentence-context grouping landed.
+- ~~The LLM provider has real, unfixed gaps~~ **Removed**: the OpenAI-
+  compatible `llm` provider was deleted after beta.72 (never used; config
+  migration v5 moves a stored `llm` choice to `google` and deletes its
+  fields). Its gaps (piece-count mismatch, separator whitespace, CORS to a
+  user-supplied URL) went with it.
 - ~~Selection-translation cannot see text inside an open shadow root~~
   **Resolved on Chromium**: `mountSelectionPopup.ts`'s
   `resolveActiveSelection` walks the event's `composedPath()` and uses

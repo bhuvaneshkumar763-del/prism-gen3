@@ -558,9 +558,6 @@ describe('FloatingBubble', () => {
   describe('provider setup — UI audit', () => {
     beforeEach(async () => {
       await configStore.set('googleCloudTranslateApiKey', '');
-      await configStore.set('llmBaseUrl', '');
-      await configStore.set('llmApiKey', '');
-      await configStore.set('llmModel', '');
     });
 
     function serviceSelect(el: HTMLElement) {

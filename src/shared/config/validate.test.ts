@@ -106,7 +106,8 @@ describe('configValidators', () => {
     expect(keys).toContain('targetLanguage');
     expect(keys).toContain('bubblePosition');
     expect(keys).toContain('selectionPopupSkipTargetLanguageText');
-    expect(keys.length).toBe(23);
+    expect(keys).toContain('groupParagraphs');
+    expect(keys.length).toBe(21);
   });
 });
 

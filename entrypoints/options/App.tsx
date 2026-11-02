@@ -387,8 +387,8 @@ function App() {
             {/*
               Product decision, found via a round-6 audit: diagnostics.ts's
               own export already redacts *ApiKey fields, but this settings
-              export never has — it writes googleCloudTranslateApiKey/
-              llmApiKey in plain text, since removing them would silently
+              export never has — it writes googleCloudTranslateApiKey
+              in plain text, since removing them would silently
               break restoring a backup on another device. Warning here
               instead, so the exported file's contents aren't a surprise.
             */}
@@ -449,37 +449,6 @@ function App() {
               </div>
             </Show>
 
-            <Show when={settings.pageTranslatorProvider === 'llm'}>
-              <div class="providerFields">
-                <label class="field">
-                  <span>Base URL</span>
-                  <input
-                    type="text"
-                    value={settings.llmBaseUrl}
-                    onChange={(e) => void setField('llmBaseUrl', e.currentTarget.value)}
-                    placeholder="https://api.openai.com/v1/chat/completions or a local server URL"
-                  />
-                </label>
-                <label class="field">
-                  <span>API key</span>
-                  <input
-                    type="password"
-                    value={settings.llmApiKey}
-                    onChange={(e) => void setField('llmApiKey', e.currentTarget.value)}
-                  />
-                </label>
-                <label class="field">
-                  <span>Model</span>
-                  <input
-                    type="text"
-                    value={settings.llmModel}
-                    onChange={(e) => void setField('llmModel', e.currentTarget.value)}
-                    placeholder="e.g. gpt-4o-mini, llama3"
-                  />
-                </label>
-              </div>
-            </Show>
-
             <Show when={settings.pageTranslatorProvider === 'google'}>
               <p class="hint">No configuration needed for this provider.</p>
             </Show>
@@ -488,10 +457,6 @@ function App() {
               {(gaps) => (
                 <p class="setupWarning" role="status">
                   Needs setup: {gaps().join(', ')}.
-                  <Show when={settings.pageTranslatorProvider === 'llm' && gaps().includes('API key')}>
-                    {' '}
-                    For a local server that doesn't check authentication, any placeholder key works.
-                  </Show>
                 </p>
               )}
             </Show>
@@ -511,14 +476,7 @@ function App() {
 
             <Show
               when={
-                savedField() &&
-                [
-                  'pageTranslatorProvider',
-                  'googleCloudTranslateApiKey',
-                  'llmBaseUrl',
-                  'llmApiKey',
-                  'llmModel',
-                ].includes(savedField() ?? '')
+                savedField() && ['pageTranslatorProvider', 'googleCloudTranslateApiKey'].includes(savedField() ?? '')
               }
             >
               <p class="saved">Saved</p>
@@ -572,6 +530,17 @@ function App() {
               <span>
                 Translate text inside &lt;pre&gt; blocks (off by default to protect code samples — turn this on if a
                 site uses &lt;pre&gt; for plain text instead, and its content isn't being translated)
+              </span>
+            </label>
+            <label class="toggleRow">
+              <input
+                type="checkbox"
+                checked={settings.groupParagraphs}
+                onChange={(e) => void setField('groupParagraphs', e.currentTarget.checked)}
+              />
+              <span>
+                Translate each paragraph as a whole, for better sentence context (turn this off if a page comes out with
+                words moved between links or styled text, or chips and tags run together)
               </span>
             </label>
           </section>

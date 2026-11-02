@@ -749,6 +749,11 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
             // logic to correctly start counting these as real failures.
             const overThreshold = recordSuspiciousSample(!!wasSuspicious);
             if (wasSuspicious && !overThreshold) suspiciousPromises.add(promise);
+            // The service answered; it just kept sending the text back. Saying
+            // so beats the generic "no result", which the bubble words as
+            // "couldn't reach the translation service".
+            else if (wasSuspicious)
+              failureMessages.set(promise, `[${options.name}] kept sending text back untranslated`);
             resolve(result);
           };
         });

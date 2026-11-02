@@ -302,6 +302,8 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     totalPieces = 0;
     completedPieces = 0;
     completedNodes = new WeakSet<Text>();
+    givenUpNodes = new Set<Text>();
+    translatedChars = 0;
     notifyProgress();
   }
 
@@ -316,7 +318,9 @@ export function createPageTranslator(options: PageTranslatorOptions) {
    * true once red has taken over).
    */
   function recomputeWorking(): void {
-    setWorking((queue.length > 0 || inFlightGeneration !== null) && lastErrorMessage === null);
+    setWorking(
+      (queue.length > 0 || inFlightGeneration !== null) && (lastErrorMessage === null || errorIsUntranslatedWarning),
+    );
   }
 
   // Silent-failure guard: a translateBatch() call that throws (network
@@ -343,7 +347,48 @@ export function createPageTranslator(options: PageTranslatorOptions) {
   // provider hasn't actually recovered just because connectivity dropped.
   let surfacedErrorStreak = 0;
 
-  function setError(message: string | null, kind: ErrorKind = message ? 'provider' : null): void {
+  /**
+   * "Says translated but nothing changed" (fix plan follow-up): a piece the
+   * provider keeps echoing back unchanged (`kind: 'suspicious'`) or keeps
+   * leaving out is given up on after 3 tries by `noteMissingResult`, with no
+   * error, because a handful of those is normal (a language list's
+   * endonyms). But when Google's free endpoint degrades, it echoes most of a
+   * page, and the bubble used to show plain success over untranslated text.
+   * So once the text given up on is a large share of the page, by
+   * characters so a page's short leftovers don't weigh like its body text,
+   * it's surfaced through the normal error display. It's a report, not an
+   * outage: it doesn't stop `working` or trigger the error backoff, and any
+   * real error outranks it.
+   */
+  const UNTRANSLATED_SHARE_TO_WARN = 0.25;
+  const MIN_UNTRANSLATED_CHARS_TO_WARN = 200;
+  let givenUpNodes = new Set<Text>();
+  let translatedChars = 0;
+  let errorIsUntranslatedWarning = false;
+
+  function untranslatedWarning(): string | null {
+    let untranslatedChars = 0;
+    for (const node of givenUpNodes) {
+      if (node.isConnected) untranslatedChars += node.data.trim().length;
+      else givenUpNodes.delete(node);
+    }
+    const share = untranslatedChars / (untranslatedChars + translatedChars);
+    if (untranslatedChars < MIN_UNTRANSLATED_CHARS_TO_WARN || share < UNTRANSLATED_SHARE_TO_WARN) return null;
+    return `About ${Math.round(share * 100)}% of this page came back untranslated. Try again; if it keeps happening, switch provider in Settings.`;
+  }
+
+  function refreshUntranslatedWarning(): void {
+    if (lastErrorMessage !== null && !errorIsUntranslatedWarning) return;
+    const message = untranslatedWarning();
+    setError(message, message ? 'provider' : null, message !== null);
+  }
+
+  function setError(
+    message: string | null,
+    kind: ErrorKind = message ? 'provider' : null,
+    isUntranslatedWarning = false,
+  ): void {
+    errorIsUntranslatedWarning = isUntranslatedWarning;
     if (message === lastErrorMessage && kind === lastErrorKind) return;
     lastErrorMessage = message;
     lastErrorKind = kind;
@@ -515,7 +560,12 @@ export function createPageTranslator(options: PageTranslatorOptions) {
       return;
     }
     const attempts = (missingResultAttempts.get(node) ?? 0) + 1;
-    if (attempts > 3) return; // give up after 3 tries — a genuinely untranslatable fragment
+    if (attempts > 3) {
+      // Give up after 3 tries — usually a genuinely untranslatable fragment.
+      givenUpNodes.add(node);
+      refreshUntranslatedWarning();
+      return;
+    }
     missingResultAttempts.set(node, attempts);
     requeueChangedTextNode(node);
   }
@@ -781,7 +831,9 @@ export function createPageTranslator(options: PageTranslatorOptions) {
         // Perceived-speed fix: count exactly once per node here, not in
         // the early-return branch above — a stale/externally-changed node
         // gets requeued for a FRESH translation, not counted as done yet.
+        if (!completedNodes.has(node)) translatedChars += node.data.trim().length;
         recordPieceCompleted(node);
+        givenUpNodes.delete(node);
         const original = originalWhitespace.get(node);
         // See `restoreBoundaryText` for how the source's leading mark is
         // carried without doubling and the translation's own marks are kept.
@@ -984,7 +1036,8 @@ export function createPageTranslator(options: PageTranslatorOptions) {
           if (!hasGenuineFailure) {
             consecutiveBatchFailures = 0;
             surfacedErrorStreak = 0;
-            setError(null);
+            if (!errorIsUntranslatedWarning) setError(null);
+            refreshUntranslatedWarning();
           } else {
             consecutiveBatchFailures++;
             if (consecutiveBatchFailures >= CONSECUTIVE_FAILURES_BEFORE_SURFACING) {
@@ -1069,7 +1122,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     // outage still recovers within one 8s cycle; a long one stops
     // hammering a confirmed-broken provider indefinitely at a fixed rate.
     let nextDelay: number;
-    if (lastErrorMessage !== null) {
+    if (lastErrorMessage !== null && !errorIsUntranslatedWarning) {
       nextDelay = Math.min(30000, 8000 * 1.5 ** (surfacedErrorStreak - 1));
     } else if (consecutiveBatchFailures > 0) {
       // Real bug, found via a live user report: pre-surfacing failures used
@@ -1119,6 +1172,9 @@ export function createPageTranslator(options: PageTranslatorOptions) {
    * signal worth showing.
    */
   function toUserFacingErrorMessage(raw: string): string {
+    if (/kept sending text back untranslated/i.test(raw)) {
+      return 'The translation service keeps sending text back untranslated. Prism keeps retrying; if it keeps happening, switch provider in Settings.';
+    }
     if (/no result for this piece/i.test(raw)) {
       return "Couldn't reach the translation service — retrying automatically.";
     }
@@ -1296,6 +1352,8 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     totalPieces = nodes.length;
     completedPieces = 0;
     completedNodes = new WeakSet<Text>();
+    givenUpNodes = new Set<Text>();
+    translatedChars = 0;
     notifyProgress();
 
     consecutiveBatchFailures = 0;

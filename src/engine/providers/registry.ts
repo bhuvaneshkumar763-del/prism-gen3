@@ -2,7 +2,6 @@ import type { Translator } from '../translator';
 import { isProviderAvailable, type ProviderId } from './descriptors';
 import { createGoogleProvider } from './google';
 import { createGoogleCloudTranslateProvider } from './googleCloudTranslate';
-import { createLlmProvider } from './llm';
 
 /**
  * Config each provider needs to be instantiated — deliberately plain data,
@@ -14,7 +13,6 @@ import { createLlmProvider } from './llm';
 export interface ProviderConfig {
   google?: Record<string, never>;
   googleCloudTranslate?: { apiKey: string };
-  llm?: { baseUrl: string; apiKey: string; model: string };
 }
 
 /**
@@ -30,8 +28,6 @@ export function createProvider(id: ProviderId, config: ProviderConfig): Translat
       return createGoogleProvider();
     case 'googleCloudTranslate':
       return config.googleCloudTranslate ? createGoogleCloudTranslateProvider(config.googleCloudTranslate) : null;
-    case 'llm':
-      return config.llm ? createLlmProvider(config.llm) : null;
     default: {
       const exhaustiveCheck: never = id;
       return exhaustiveCheck;

@@ -58,11 +58,8 @@ export interface Config {
   targetLanguage: string;
   /** ISO 639-1 code, or 'auto' to let the provider detect it. */
   sourceLanguage: string;
-  pageTranslatorProvider: 'google' | 'googleCloudTranslate' | 'llm';
+  pageTranslatorProvider: 'google' | 'googleCloudTranslate';
   googleCloudTranslateApiKey: string;
-  llmBaseUrl: string;
-  llmApiKey: string;
-  llmModel: string;
   /** Hostnames the user has explicitly chosen to always/never auto-translate — takes priority over the language-based decision. */
   alwaysTranslateSites: string[];
   neverTranslateSites: string[];
@@ -99,6 +96,15 @@ export interface Config {
    */
   translatePreTags: boolean;
   /**
+   * Whether a provider that groups a paragraph's text nodes into one request
+   * (Google, for sentence context) gets to. Default `true`. The off switch
+   * exists because grouping drives the longest bug chain this project has
+   * had: Google moving words across a paragraph's links and styled spans.
+   * If a page comes out like that, turning this off sends each piece of text
+   * on its own, with no release needed. Purely additive, same as above.
+   */
+  groupParagraphs: boolean;
+  /**
    * Hide the selection-translate trigger for a selection with nothing
    * translatable in it (a lone character, or only punctuation/digits/
    * whitespace). Default `true` — matches TWP's real default exactly
@@ -130,9 +136,6 @@ export const defaultConfig: Config = {
   // is the only provider that works with zero configuration.
   pageTranslatorProvider: 'google',
   googleCloudTranslateApiKey: '',
-  llmBaseUrl: '',
-  llmApiKey: '',
-  llmModel: '',
   alwaysTranslateSites: [],
   neverTranslateSites: [],
   alwaysTranslateLangs: [],
@@ -147,6 +150,7 @@ export const defaultConfig: Config = {
   theme: 'auto',
   translationCacheEnabled: true,
   translatePreTags: true,
+  groupParagraphs: true,
   selectionPopupSkipInvalidText: true,
   selectionPopupSkipTargetLanguageText: false,
 };
