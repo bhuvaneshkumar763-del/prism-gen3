@@ -50,7 +50,7 @@ Paste:
 > Do step 2 of "The plan from here" in `docs/reports/fix-plan.md`, as one change and one release. Don't fix anything else.
 
 What that session does, all in one batch:
-- [ ] **H-1** Remove the agora-code hooks (`.claude/hooks/` and the `hooks` block in `.claude/settings.json`); the owner dropped agora-code. **Needs you:** auto mode blocks a session from editing Claude's own config, so either delete them yourself or allow it for one session.
+- [x] **H-1** Remove the agora-code hooks (`.claude/hooks/` and `.claude/settings.json`, which held only those hooks); the owner dropped agora-code.
 - [x] **H-2** Point `CLAUDE.md` at this file instead of the `/Users/jb/...` plan path that cloud sessions can't read.
 - [x] **H-3** Fix `README.md`: lint is a CI gate, and the plan is this file.
 - [x] **H-4** Update `solid-js` to 1.9.18 (clears the two "critical" advisories; the affected code isn't in the extension, so this is routine).

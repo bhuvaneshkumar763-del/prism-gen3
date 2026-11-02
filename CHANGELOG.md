@@ -420,6 +420,7 @@
 
   - **solid-js updated to 1.9.18.** Clears two "critical" advisories in its server-side serializer. That code was never in the extension, so this is routine.
   - **Releases now need a real-page check.** A version's changelog entry must say where it was checked (`Checked on: <page>, <browser>, <date>`), or the release workflow refuses to publish it.
+  - **Agora-code hooks removed.** They blocked `npm test`, `npm run build` and subagents wherever agora-code wasn't installed, and the owner no longer uses it.
   - **Docs point to the real plan.** `CLAUDE.md` and `README.md` now point to `docs/reports/fix-plan.md` instead of a plan file that only existed on a laptop.
 
   Checked on: sangtacviet (Vietnamese mode, English mode, bubble tap), Orion on iPhone, 2026-11-02

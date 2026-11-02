@@ -33,6 +33,3 @@ coverage
 xcuserdata/
 DerivedData/
 *.xcuserstate
-
-# Local state written by the agora-code Claude hooks
-.agora-code/
