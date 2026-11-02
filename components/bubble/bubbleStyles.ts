@@ -55,7 +55,10 @@ export const BUBBLE_STYLES = `
     opacity: .55; transition: opacity .2s ease, transform .15s ease, box-shadow .2s ease;
     touch-action: none;
   }
-  .wrap:hover .ball, .wrap:focus-within .ball { opacity: 1; }
+  .wrap:focus-within .ball { opacity: 1; }
+  @media (hover: hover) {
+    .wrap:hover .ball { opacity: 1; }
+  }
   .ball:active { cursor: grabbing; transform: scale(.94); }
   .ball .ic { width: 21px; height: 21px; pointer-events: none; }
   .ball .ic-or { display: none; }
@@ -82,9 +85,15 @@ export const BUBBLE_STYLES = `
     transform-origin: center center;
     transition: opacity .16s ease, transform .16s ease, visibility .16s;
   }
-  .wrap:hover .panel, .panel.pinned, .panel:focus-within {
+  .panel.pinned, .panel:focus-within {
     opacity: 1; visibility: visible; transform: scale(1);
     transition: opacity .16s ease, transform .16s ease, visibility 0s;
+  }
+  @media (hover: hover) {
+    .wrap:hover .panel {
+      opacity: 1; visibility: visible; transform: scale(1);
+      transition: opacity .16s ease, transform .16s ease, visibility 0s;
+    }
   }
 
   .srOnly {

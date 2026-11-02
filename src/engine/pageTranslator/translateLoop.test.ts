@@ -45,6 +45,34 @@ describe('createPageTranslator', () => {
     pageTranslator.restorePage();
   });
 
+  it('translates a word-per-element paragraph as one string, writes it into the first word and empties the rest; Show original puts every word and comma back', async () => {
+    const html =
+      '<div><i>Đường Sanh</i> <i>cố giả</i> <i>bộ trấn</i> <i>định</i>, <i>cố gắng</i>!<br><br><i>một</i> <i>hai</i> <i>ba</i> <i>bốn</i>.<br><i>Đường Sanh</i>: “?!”</div>';
+    document.body.innerHTML = html;
+    const sent: string[][] = [];
+    const pageTranslator = createPageTranslator({
+      translator: {
+        async translateBatch(request) {
+          sent.push(...request.pieces);
+          return request.pieces.map((piece): PieceOutcome => ok(piece.map((s) => `[${s.toUpperCase()}]`)));
+        },
+      },
+      getSourceLanguage: () => 'vi',
+      getBatchingHint: () => ({ groupByBlock: true, maxGroupChars: 2000 }),
+    });
+
+    await pageTranslator.translatePage('en');
+    await waitFor(() => document.body.textContent?.includes('[ĐƯỜNG SANH: “?!”]') ?? false);
+
+    expect(sent).toEqual([['Đường Sanh cố giả bộ trấn định, cố gắng!', 'một hai ba bốn.', 'Đường Sanh: “?!”']]);
+    expect(document.body.textContent).toBe(
+      '[ĐƯỜNG SANH CỐ GIẢ BỘ TRẤN ĐỊNH, CỐ GẮNG!][MỘT HAI BA BỐN.][ĐƯỜNG SANH: “?!”]',
+    );
+
+    pageTranslator.restorePage();
+    expect(document.body.innerHTML).toBe(html);
+  });
+
   it('restorePage() restores the original text and returns to the original state', async () => {
     document.body.innerHTML = '<p>hello</p>';
     const pageTranslator = createPageTranslator({

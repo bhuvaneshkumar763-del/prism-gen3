@@ -5,7 +5,7 @@ import { createAttributeTranslator } from './attributeTranslator';
 import { restoreBoundaryText } from './boundaryText';
 import { collectTextNodes, isNoTranslateNode } from './collectTextNodes';
 import { createDedupeTracker } from './dedupe';
-import { groupNodesForBatching, nearestBlockAncestor } from './grouping';
+import { groupNodesForBatching, nearestBlockAncestor, type PieceSlot, slotsForGroup } from './grouping';
 import { createMutationWatcher } from './mutationWatcher';
 import { createResweepScheduler } from './resweep';
 import { createTitleTranslator } from './titleTranslator';
@@ -724,6 +724,10 @@ export function createPageTranslator(options: PageTranslatorOptions) {
       }
       for (const node of batch) queuedSet.delete(node);
       const groups = groupNodesForBatching(batch, batchingHint);
+      // What is actually sent per group: one string per node, except a
+      // word-per-element run, which goes as one string (see grouping.ts's
+      // `slotsForGroup`). `outcome.value[i]` below indexes these slots.
+      const slotGroups = groups.map(slotsForGroup);
       const requestedUnderGeneration = cycleGeneration;
       inFlightGeneration = requestedUnderGeneration;
       recomputeWorking();
@@ -784,13 +788,16 @@ export function createPageTranslator(options: PageTranslatorOptions) {
        * `pieces` below) and checked in `writeTranslatedNode`.
        */
       const sentText = new Map<Text, string>();
-      groups.forEach((group) => {
-        group.forEach((node) => {
-          const text = node.data;
+      slotGroups.forEach((slots) => {
+        slots.forEach((slot) => {
+          // A run's boundary text is its whole sent string's, kept on the
+          // node the translation is written into.
+          const text = slot.text;
           const leading = text.match(LEADING_NON_LETTER_OR_DIGIT)?.[0] ?? '';
           const trailing = text.slice(text.trimEnd().length);
-          if (leading || trailing) originalWhitespace.set(node, { leading, trailing });
-          sentText.set(node, text);
+          // biome-ignore lint/style/noNonNullAssertion: a slot always has a node
+          if (leading || trailing) originalWhitespace.set(slot.nodes[0]!, { leading, trailing });
+          for (const node of slot.nodes) sentText.set(node, node.data);
         });
       });
 
@@ -846,6 +853,43 @@ export function createPageTranslator(options: PageTranslatorOptions) {
         missingResultAttempts.delete(node);
       }
 
+      /**
+       * Writes one slot's translation. A single-node slot is just
+       * `writeTranslatedNode`. A word run's translation goes into its first
+       * node and the rest of the run — words and the punctuation between
+       * them — is emptied; `nodesToRestore` gets the punctuation too, since
+       * it was never queued, so Show original puts every piece back. If
+       * the page changed any part of the run while it was in flight, the
+       * whole run is skipped and its changed nodes requeued rather than
+       * writing a translation of text that is no longer there.
+       */
+      function writeSlot(slot: PieceSlot, rawTranslated: string): void {
+        const [head, ...tail] = slot.nodes;
+        if (!head) return;
+        if (tail.length === 0 && slot.separators.length === 0) {
+          writeTranslatedNode(head, rawTranslated);
+          return;
+        }
+        if (slot.nodes.some((n) => !n.isConnected || sentText.get(n) !== n.data)) {
+          for (const node of slot.nodes) if (node.isConnected) requeueChangedTextNode(node);
+          return;
+        }
+        writeTranslatedNode(head, rawTranslated);
+        if (head.data !== sentText.get(head)) return;
+        for (const node of [...tail, ...slot.separators]) {
+          if (!node.isConnected || node.data === '') continue;
+          if (!nodesToRestore.has(node)) nodesToRestore.set(node, node.data);
+          mutationWatcher.noteOwnWrite(node, '');
+          node.data = '';
+          lastSeenText.set(node, '');
+          sentText.set(node, '');
+        }
+        for (const node of tail) {
+          recordPieceCompleted(node);
+          missingResultAttempts.delete(node);
+        }
+      }
+
       try {
         const outcomes = await options.translator.translateBatch({
           sourceLanguage: sourceLanguageOverride ?? options.getSourceLanguage(),
@@ -854,7 +898,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
           // source the user picked by hand in the bubble.
           sourceLanguageIsExplicit: sourceLanguageOverride !== null,
           targetLanguage: currentTargetLanguage,
-          pieces: groups.map((group) => group.map((node) => node.data)),
+          pieces: slotGroups.map((slots) => slots.map((slot) => slot.text)),
           dontSortResults: options.getDontSortResults?.() ?? false,
           // Speed fix, found via audit: without this, a whole tick's
           // translated pieces were withheld from the DOM until the
@@ -870,12 +914,12 @@ export function createPageTranslator(options: PageTranslatorOptions) {
           // once this await settles.
           onPieceComplete: (groupIdx, outcome) => {
             if (requestedUnderGeneration !== cycleGeneration) return;
-            const group = groups[groupIdx];
-            if (!group || !outcome.ok) return;
-            group.forEach((node, nodeIdx) => {
-              if (!node.isConnected) return;
-              const raw = outcome.value[nodeIdx];
-              if (raw) writeTranslatedNode(node, raw);
+            const slots = slotGroups[groupIdx];
+            if (!slots || !outcome.ok) return;
+            slots.forEach((slot, slotIdx) => {
+              if (!slot.nodes[0]?.isConnected) return;
+              const raw = outcome.value[slotIdx];
+              if (raw) writeSlot(slot, raw);
             });
           },
         });
@@ -1006,10 +1050,11 @@ export function createPageTranslator(options: PageTranslatorOptions) {
               surfacedErrorStreak++;
             }
           }
-          groups.forEach((group, groupIdx) => {
+          slotGroups.forEach((slots, groupIdx) => {
             const outcome = outcomes[groupIdx];
-            group.forEach((node, nodeIdx) => {
-              if (!node.isConnected) {
+            slots.forEach((slot, slotIdx) => {
+              for (const node of slot.nodes) {
+                if (node.isConnected) continue;
                 // The node left the DOM while its translation was in flight
                 // (routine in virtualized/recycled lists). Forget the text we
                 // last saw for it, so that if it reappears with that same
@@ -1018,9 +1063,14 @@ export function createPageTranslator(options: PageTranslatorOptions) {
                 // considers it tracked and lastSeenText still matches, so it
                 // would sit untranslated forever with no error.
                 lastSeenText.delete(node);
+              }
+              if (!slot.nodes[0]?.isConnected) {
+                // A run that lost its first node has nowhere to write; its
+                // remaining words go back through as a fresh run.
+                for (const node of slot.nodes) if (node.isConnected) requeueChangedTextNode(node);
                 return;
               }
-              const rawTranslated = outcome?.ok ? outcome.value[nodeIdx] : undefined;
+              const rawTranslated = outcome?.ok ? outcome.value[slotIdx] : undefined;
               // Usually already written by `onPieceComplete` above, well
               // before this loop runs — see `writeTranslatedNode`'s doc
               // comment for why redoing it here is safe. Kept unconditional
@@ -1028,9 +1078,9 @@ export function createPageTranslator(options: PageTranslatorOptions) {
               // this loop's behavior doesn't depend on the translator
               // actually supporting incremental delivery.
               if (rawTranslated) {
-                writeTranslatedNode(node, rawTranslated);
+                writeSlot(slot, rawTranslated);
               } else {
-                noteMissingResult(node);
+                for (const node of slot.nodes) if (node.isConnected) noteMissingResult(node);
               }
             });
           });

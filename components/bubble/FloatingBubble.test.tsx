@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { configStore } from '../../src/platform/configStore';
 import { LONG_PRESS_MS } from '../../src/shared/bubble/bubblePosition';
 import { trusted } from '../../tests/trustedEvent';
+import { BUBBLE_STYLES } from './bubbleStyles';
 import { FloatingBubble } from './FloatingBubble';
 
 describe('FloatingBubble', () => {
@@ -21,6 +22,7 @@ describe('FloatingBubble', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllGlobals();
     dispose?.();
     container?.remove();
     container = undefined;
@@ -503,6 +505,53 @@ describe('FloatingBubble', () => {
       await nextFrame();
 
       expect(counter.reads).toBe(1);
+    });
+
+    /**
+     * Stubs the two inputs isPanelOpen() reads for the hover route: whether the
+     * device's primary pointer hovers, and whether the wrap is :hover. A touch
+     * browser after a tap is the first false with the second true (sticky hover).
+     */
+    function stubHover(deviceCanHover: boolean, wrapIsHovered: boolean, wrap: HTMLElement) {
+      vi.stubGlobal('matchMedia', (query: string) => ({
+        matches: query === '(hover: hover)' && deviceCanHover,
+        media: query,
+      }));
+      const realMatches = wrap.matches.bind(wrap);
+      vi.spyOn(wrap, 'matches').mockImplementation((selector: string) =>
+        selector === ':hover' ? wrapIsHovered : realMatches(selector),
+      );
+    }
+
+    it('a stuck :hover on a touch-only device (no hover capability) does not count as open — a tap on the ball used to leave the panel up over the page', async () => {
+      const { el } = mount();
+      const wrap = el.querySelector('.wrap') as HTMLElement;
+      const counter = countPanelMeasurements(el.querySelector('.panel') as HTMLElement);
+      stubHover(false, true, wrap);
+
+      window.dispatchEvent(new Event('resize'));
+      await nextFrame();
+
+      expect(counter.reads).toBe(0);
+    });
+
+    it('a hovered ball on a device that can hover still counts as open, so mouse users keep hover-to-open', async () => {
+      const { el } = mount();
+      const wrap = el.querySelector('.wrap') as HTMLElement;
+      const counter = countPanelMeasurements(el.querySelector('.panel') as HTMLElement);
+      stubHover(true, true, wrap);
+
+      window.dispatchEvent(new Event('resize'));
+      await nextFrame();
+
+      expect(counter.reads).toBe(1);
+    });
+
+    it('the hover-open CSS is gated behind @media (hover: hover) — jsdom cannot evaluate media queries, so the stylesheet itself is asserted', () => {
+      expect(BUBBLE_STYLES).toMatch(/@media \(hover: hover\)\s*\{\s*\.wrap:hover \.panel \{/);
+      expect(BUBBLE_STYLES).toMatch(/@media \(hover: hover\)\s*\{\s*\.wrap:hover \.ball \{/);
+      expect(BUBBLE_STYLES.split('.wrap:hover .panel').length - 1).toBe(1);
+      expect(BUBBLE_STYLES.split('.wrap:hover .ball').length - 1).toBe(1);
     });
   });
 

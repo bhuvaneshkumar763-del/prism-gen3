@@ -94,6 +94,11 @@ function displayLanguageName(code: string): string {
   return code === 'auto' ? 'Detect' : languageName(code);
 }
 
+// Touch browsers keep `:hover` stuck on the last tapped element, so a tap on
+// the ball used to leave the panel open over the page text (mobile Chrome on
+// sangtacviet.vip). Only trust `:hover` on devices whose primary pointer hovers.
+const canHover = () => typeof matchMedia === 'function' && matchMedia('(hover: hover)').matches;
+
 export function FloatingBubble(props: FloatingBubbleProps) {
   let wrap!: HTMLDivElement;
   let ball!: HTMLButtonElement;
@@ -141,7 +146,7 @@ export function FloatingBubble(props: FloatingBubbleProps) {
 
   /** Open by any of its three routes: pinned (long-press/ArrowDown), hovered, or holding keyboard focus. */
   function isPanelOpen(): boolean {
-    return pinned() || wrap.matches(':hover') || panel.matches(':focus-within');
+    return pinned() || (canHover() && wrap.matches(':hover')) || panel.matches(':focus-within');
   }
 
   function applyState(): Point {

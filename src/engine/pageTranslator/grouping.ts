@@ -249,6 +249,160 @@ function endsAtSentenceBoundary(node: Text): boolean {
   return SENTENCE_END.test(node.data);
 }
 
+/**
+ * Word-per-element markup: some reader sites wrap EVERY word (or two-word
+ * chunk) of a chapter in its own inline element, with the punctuation
+ * between them as bare text — sangtacviet.vip's Vietnamese mode renders a
+ * paragraph as `<i>Đường Sanh</i> <i>cố giả</i> <i>bộ trấn</i>, ...`, one
+ * `<i>` per chunk, `<br>` between paragraphs. Sent as one multi-item
+ * piece, that is 100+ `<a i=N>` markers of one or two words each, and
+ * Google moved words across markers and across paragraphs freely (seen
+ * live: the chapter came back scrambled, and `hasBoundaryReflow` had no
+ * signal to catch it). Sent one node per piece instead, every chunk is
+ * translated alone and the page reads as word-by-word gibberish.
+ *
+ * Each paragraph of such a container — its run of word elements, plus the
+ * punctuation before and after it up to the `<br>` — is translated as ONE
+ * string, exactly as the page shows it, and written into the run's first
+ * node; the rest of the run and its punctuation are emptied
+ * (translateLoop.ts records them for Show original). The punctuation goes
+ * with it so Google sees whole sentences and the page doesn't keep a
+ * second copy of the full stop Google already wrote.
+ */
+const WORD_ELEMENT_TAGS = new Set(['I', 'SPAN', 'FONT', 'EM', 'B']);
+/** A word element's own text may be at most this long — a chunk of a sentence, not a phrase someone styled. */
+const WORD_ELEMENT_MAX_CHARS = 24;
+/** How many word elements a container needs before it reads as word-per-element markup rather than inline styling in prose. */
+const WORD_CONTAINER_MIN_ELEMENTS = 4;
+/** Sentence punctuation in the text between word elements — what tells a chapter apart from a row of `<span>` menu items, which has none. */
+const SENTENCE_PUNCTUATION = /[,.!?;:，。！？；：、]/;
+
+/** The element's text when it is a short word wrapper holding only text, otherwise null. */
+function wordElementText(el: Element): string | null {
+  if (!WORD_ELEMENT_TAGS.has(el.tagName) || el.childNodes.length !== 1) return null;
+  const child = el.firstChild;
+  if (!child || child.nodeType !== Node.TEXT_NODE) return null;
+  const text = (child as Text).data.trim();
+  return text.length > 0 && text.length <= WORD_ELEMENT_MAX_CHARS ? text : null;
+}
+
+/**
+ * True when `container`'s own text is all inside word elements: no
+ * letter-bearing text between them (that is prose with some styled words),
+ * enough of them, and sentence punctuation between them.
+ */
+function isWordContainer(container: Element, memo: Map<Element, boolean>): boolean {
+  const cached = memo.get(container);
+  if (cached !== undefined) return cached;
+  let words = 0;
+  let punctuated = false;
+  let result = true;
+  for (const child of Array.from(container.childNodes)) {
+    if (child.nodeType === Node.TEXT_NODE) {
+      const text = child.textContent ?? '';
+      if (HAS_LETTER.test(text)) {
+        result = false;
+        break;
+      }
+      if (SENTENCE_PUNCTUATION.test(text)) punctuated = true;
+    } else if (child.nodeType === Node.ELEMENT_NODE && wordElementText(child as Element) !== null) {
+      words++;
+    }
+  }
+  result = result && punctuated && words >= WORD_CONTAINER_MIN_ELEMENTS;
+  memo.set(container, result);
+  return result;
+}
+
+/** The node's word element when it sits in a word-per-element container (and not inside a link/button), otherwise null. */
+function wordElementOf(node: Text, memo: Map<Element, boolean>): Element | null {
+  const el = node.parentElement;
+  if (!el?.parentElement || nearestTagAnchor(node) || wordElementText(el) === null) return null;
+  return isWordContainer(el.parentElement, memo) ? el : null;
+}
+
+/** True if `b` directly follows `a` with only letterless text (spaces, punctuation) between them — a `<br>` or any other element ends the paragraph. */
+function continuesWordRun(a: Element, b: Element): boolean {
+  if (a.parentElement !== b.parentElement) return false;
+  for (let n = a.nextSibling; n !== b; n = n.nextSibling) {
+    if (!n || n.nodeType !== Node.TEXT_NODE) return false;
+  }
+  return true;
+}
+
+/** The letterless text nodes between `from` and the paragraph edge in one direction, nearest first — empty unless that edge really is a `<br>` or the container's end, so a paragraph split across two groups never claims the same punctuation twice. */
+function edgeText(from: Element, direction: 'previousSibling' | 'nextSibling'): Text[] {
+  const texts: Text[] = [];
+  let n = from[direction];
+  while (n && n.nodeType === Node.TEXT_NODE) {
+    texts.push(n as Text);
+    n = n[direction];
+  }
+  return n === null || (n as Element).tagName === 'BR' ? texts : [];
+}
+
+/** One translation unit within a piece: a single node, or a word-per-element paragraph sent as one string. */
+export interface PieceSlot {
+  nodes: Text[];
+  /** A paragraph's punctuation and spaces, emptied along with the rest of its words. */
+  separators: Text[];
+  text: string;
+}
+
+/**
+ * Splits one group from `groupNodesForBatching` into the strings actually
+ * sent: one slot per node, except that each paragraph of word-per-element
+ * markup (see `WORD_ELEMENT_TAGS`) becomes a single slot whose text is the
+ * paragraph as the page shows it.
+ */
+export function slotsForGroup(group: Text[]): PieceSlot[] {
+  const memo = new Map<Element, boolean>();
+  const slots: PieceSlot[] = [];
+  let run: Text[] = [];
+  let runElements: Element[] = [];
+
+  function closeRun(): void {
+    const first = runElements[0];
+    const last = runElements[runElements.length - 1];
+    if (first && last) {
+      const leading = edgeText(first, 'previousSibling').reverse();
+      const trailing = edgeText(last, 'nextSibling');
+      const separators = [...leading];
+      let text = leading.map((n) => n.data).join('');
+      runElements.forEach((el, i) => {
+        if (i > 0) {
+          // biome-ignore lint/style/noNonNullAssertion: continuesWordRun walked this same chain
+          for (let n = runElements[i - 1]!.nextSibling; n !== el; n = n!.nextSibling) {
+            separators.push(n as Text);
+            text += (n as Text).data;
+          }
+        }
+        text += run[i]?.data ?? '';
+      });
+      separators.push(...trailing);
+      text += trailing.map((n) => n.data).join('');
+      slots.push({ nodes: run, separators, text });
+    }
+    run = [];
+    runElements = [];
+  }
+
+  for (const node of group) {
+    const el = wordElementOf(node, memo);
+    if (!el) {
+      closeRun();
+      slots.push({ nodes: [node], separators: [], text: node.data });
+      continue;
+    }
+    const prev = runElements[runElements.length - 1];
+    if (prev && !continuesWordRun(prev, el)) closeRun();
+    run.push(node);
+    runElements.push(el);
+  }
+  closeRun();
+  return slots;
+}
+
 /** Splits `nodes` into groups suitable for a single translate-request piece each, respecting `hint.maxGroupChars`, block-ancestor boundaries (if `hint.groupByBlock`), and sentence boundaries. Returns one group per node (today's default one-node-per-piece behavior) when `hint` is undefined or `groupByBlock` is false. */
 export function groupNodesForBatching(nodes: Text[], hint: BatchingHint | undefined): Text[][] {
   if (!hint?.groupByBlock) return nodes.map((n) => [n]);
