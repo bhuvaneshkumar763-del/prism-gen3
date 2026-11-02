@@ -15,11 +15,12 @@ description: Session-by-session history of what each phase of the Gen 3 build la
 >
 > **As of 0.3.0-beta.71 (Release 1 of `docs/reports/fix-plan.md`):**
 >
-> - **Three providers, not five**: `google.ts` (default, free scraped
->   endpoint), `googleCloudTranslate.ts` (user's own key), `llm.ts`
->   (OpenAI-compatible). `libretranslate.ts` and `builtin.ts` were both
->   **removed post-launch** and their files no longer exist — see the
->   provider table further down, which is correct.
+> - **Two providers, not five**: `google.ts` (default, free scraped
+>   endpoint) and `googleCloudTranslate.ts` (user's own key, the backup).
+>   `libretranslate.ts` and `builtin.ts` were **removed post-launch**, and
+>   `llm.ts` (OpenAI-compatible) was removed after beta.72 because the owner
+>   never used it (config migration v5). None of those files exist; the
+>   narrative below still describes them as they were.
 > - **Google DOES use block-level grouping.** `descriptors.ts` gives it
 >   `batchingHint: { groupByBlock: true, maxGroupChars: 2000 }`. The
 >   narrative below (and the provider table's Google row) says this hint was

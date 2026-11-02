@@ -4,7 +4,7 @@ import { createBatchedHttpProvider } from './batchedHttpProvider';
 /**
  * The real, official Google Cloud Translation API (v2 REST) —
  * https://cloud.google.com/translate/docs/reference/rest/v2/translate.
- * User's own API key + billing, same trust tier as the LLM provider.
+ * User's own API key + billing.
  * Added specifically because it's the closest available
  * match to what Arc's browser translate feature actually uses (confirmed
  * live — see docs/decisions/0004-provider-scope.md) — unlike
@@ -13,10 +13,10 @@ import { createBatchedHttpProvider } from './batchedHttpProvider';
  */
 
 const API_URL = 'https://translation.googleapis.com/language/translate/v2';
-const PIECE_PART_SEPARATOR = '␟'; // U+241F — same convention as llm.ts
-// Reliability fix, found via a round-6 audit — see llm.ts's own copy of
-// this exact fix for the full reasoning: page text containing a literal
-// separator character misaligned every subsequent node's translation.
+const PIECE_PART_SEPARATOR = '␟'; // U+241F SYMBOL FOR UNIT SEPARATOR
+// Reliability fix, found via a round-6 audit: page text containing a literal
+// separator character misaligned every subsequent node's translation, so a
+// literal one is swapped for a placeholder on the way out and back on return.
 const ESCAPED_SEPARATOR_PLACEHOLDER = '';
 function escapeSeparator(s: string): string {
   return s.replaceAll(PIECE_PART_SEPARATOR, ESCAPED_SEPARATOR_PLACEHOLDER);

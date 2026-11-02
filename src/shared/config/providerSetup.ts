@@ -1,7 +1,7 @@
 import type { ProviderId } from '../../engine/providers/descriptors';
 import type { Config } from './schema';
 
-export type ProviderSetupFields = Pick<Config, 'googleCloudTranslateApiKey' | 'llmBaseUrl' | 'llmApiKey' | 'llmModel'>;
+export type ProviderSetupFields = Pick<Config, 'googleCloudTranslateApiKey'>;
 
 /**
  * What a provider still needs before it can translate, as the labels the
@@ -15,12 +15,6 @@ export type ProviderSetupFields = Pick<Config, 'googleCloudTranslateApiKey' | 'l
  *
  * Deliberately NOT `descriptors.ts`'s `requiresKey` flag, which is a single
  * boolean and can't say which of several fields is missing.
- *
- * The AI provider requires an API key even for a local server, because
- * that's what the provider factory enforces today — a local server that
- * doesn't check authentication accepts any placeholder. Whether it should
- * require one at all is a question for the separately deferred AI-provider
- * round, not something to change silently here.
  */
 export function missingProviderSetup(id: ProviderId, fields: ProviderSetupFields): string[] | null {
   const has = (value: string) => value.trim() !== '';
@@ -30,11 +24,6 @@ export function missingProviderSetup(id: ProviderId, fields: ProviderSetupFields
       return null;
     case 'googleCloudTranslate':
       if (!has(fields.googleCloudTranslateApiKey)) missing.push('API key');
-      break;
-    case 'llm':
-      if (!has(fields.llmBaseUrl)) missing.push('server URL');
-      if (!has(fields.llmApiKey)) missing.push('API key');
-      if (!has(fields.llmModel)) missing.push('model');
       break;
     default: {
       const exhaustiveCheck: never = id;

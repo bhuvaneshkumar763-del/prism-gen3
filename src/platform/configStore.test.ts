@@ -221,7 +221,7 @@ describe('configStore', () => {
   });
 });
 
-describe('configStore — migration (CONFIG_SCHEMA_VERSION 4)', () => {
+describe('configStore — migration (CONFIG_SCHEMA_VERSION 5)', () => {
   beforeEach(() => {
     fakeBrowser.reset();
   });
@@ -243,7 +243,7 @@ describe('configStore — migration (CONFIG_SCHEMA_VERSION 4)', () => {
     const raw = await fakeBrowser.storage.local.get(null);
     expect(raw.libreTranslateBaseUrl).toBe('https://my-instance.example');
     expect(raw.libreTranslateApiKey).toBe('old-key');
-    expect(raw.__configSchemaVersion).toBe(4);
+    expect(raw.__configSchemaVersion).toBe(5);
   });
 
   it('a profile stuck at version 1 (generic providerBaseUrl/providerApiKey) migrates to the provider-specific names', async () => {
@@ -261,14 +261,34 @@ describe('configStore — migration (CONFIG_SCHEMA_VERSION 4)', () => {
     expect(raw.libreTranslateApiKey).toBe('v1-key');
     expect(Object.hasOwn(raw, 'providerBaseUrl')).toBe(false);
     expect(Object.hasOwn(raw, 'providerApiKey')).toBe(false);
-    expect(raw.__configSchemaVersion).toBe(4);
+    expect(raw.__configSchemaVersion).toBe(5);
+  });
+
+  it('a profile on the removed LLM provider moves to google, and its stored fields (API key included) are deleted', async () => {
+    await fakeBrowser.storage.local.set({
+      pageTranslatorProvider: 'llm',
+      llmBaseUrl: 'https://api.example/v1',
+      llmApiKey: 'sk-secret',
+      llmModel: 'm',
+      __configSchemaVersion: 4,
+    });
+
+    const store = await freshStore();
+    await store.onReady();
+
+    expect(store.get('pageTranslatorProvider')).toBe('google');
+    const raw = await fakeBrowser.storage.local.get(null);
+    expect(Object.hasOwn(raw, 'llmApiKey')).toBe(false);
+    expect(Object.hasOwn(raw, 'llmBaseUrl')).toBe(false);
+    expect(Object.hasOwn(raw, 'llmModel')).toBe(false);
+    expect(raw.__configSchemaVersion).toBe(5);
   });
 
   it('is idempotent on a second load', async () => {
     await fakeBrowser.storage.local.set({ libreTranslateBaseUrl: 'https://x.example' });
     const first = await freshStore();
     await first.onReady();
-    expect((await fakeBrowser.storage.local.get(null)).__configSchemaVersion).toBe(4);
+    expect((await fakeBrowser.storage.local.get(null)).__configSchemaVersion).toBe(5);
 
     const second = await freshStore();
     await expect(second.onReady()).resolves.toBeUndefined();

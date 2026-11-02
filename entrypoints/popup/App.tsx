@@ -78,18 +78,12 @@ function App() {
   const [shortcut, setShortcut] = createSignal<string | null>(null);
   const [setupFields, setSetupFields] = createSignal<ProviderSetupFields>({
     googleCloudTranslateApiKey: '',
-    llmBaseUrl: '',
-    llmApiKey: '',
-    llmModel: '',
   });
   /** What each provider still needs, or null — see missingProviderSetup. */
   const providerGaps = (id: ProviderId) => missingProviderSetup(id, setupFields());
   function readSetupFields(): ProviderSetupFields {
     return {
       googleCloudTranslateApiKey: configStore.get('googleCloudTranslateApiKey'),
-      llmBaseUrl: configStore.get('llmBaseUrl'),
-      llmApiKey: configStore.get('llmApiKey'),
-      llmModel: configStore.get('llmModel'),
     };
   }
   /** Set when there's no Prism running in this tab — see `describeUnsupportedPage`. */
@@ -189,9 +183,7 @@ function App() {
     if (name === 'bubbleByHost') setBubbleByHost(value as Record<string, boolean>);
     if (name === 'hoverTooltipEnabled') setHoverTooltipEnabled(value as boolean);
     if (name === 'selectionPopupEnabled') setSelectionPopupEnabled(value as boolean);
-    if (name === 'googleCloudTranslateApiKey' || name === 'llmBaseUrl' || name === 'llmApiKey' || name === 'llmModel') {
-      setSetupFields(readSetupFields());
-    }
+    if (name === 'googleCloudTranslateApiKey') setSetupFields(readSetupFields());
   });
   onCleanup(unsubscribe);
 

@@ -12,7 +12,7 @@
  * synchronously, without a message round trip.
  */
 
-export type ProviderId = 'google' | 'googleCloudTranslate' | 'llm';
+export type ProviderId = 'google' | 'googleCloudTranslate';
 
 /** How a future page-translation engine should batch DOM text nodes for this provider, if it wants something other than one-node-per-piece. */
 export interface BatchingHint {
@@ -64,12 +64,6 @@ export const providerDescriptors: ProviderDescriptor[] = [
   // joined segments, so there's a real (if modest) risk of it translating
   // across the separator inconsistently.
   { id: 'googleCloudTranslate', displayName: 'Google Cloud Translation API', requiresKey: true },
-  {
-    id: 'llm',
-    displayName: 'AI (OpenAI-compatible — cloud or local)',
-    requiresKey: true,
-    batchingHint: { groupByBlock: true, maxGroupChars: 2000 },
-  },
 ];
 
 export function getProviderDescriptor(id: string): ProviderDescriptor | undefined {
