@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, expect, it, vi } from 'vitest';
-import { groupNodesForBatching } from './grouping';
+import { groupNodesForBatching, slotsForGroup } from './grouping';
 
 function textNode(text: string): Text {
   return document.createTextNode(text);
@@ -440,5 +440,67 @@ describe('groupNodesForBatching', () => {
       childNodesSpy.mockRestore();
       expect(containerReads).toBeLessThan(LINK_COUNT);
     });
+  });
+});
+
+describe('slotsForGroup', () => {
+  /** Word-per-element markup as sangtacviet.vip's Vietnamese mode renders it: one `<i>` per chunk, bare punctuation between, `<br>` between paragraphs. */
+  function wordPage(html: string): Text[] {
+    const div = document.createElement('div');
+    div.innerHTML = html;
+    return Array.from(div.querySelectorAll('i, span, a')).map((el) => el.firstChild as Text);
+  }
+
+  it('sends a word-per-element paragraph as one string, punctuation included, real bug: 100+ one-word markers came back scrambled across words and paragraphs', () => {
+    const nodes = wordPage(
+      '“<i>Đường Sanh</i> <i>cố giả</i> <i>bộ trấn</i> <i>định</i>, <i>cố gắng</i> <i>tại đông</i>!”',
+    );
+    const slots = slotsForGroup(nodes);
+    expect(slots).toHaveLength(1);
+    expect(slots[0]?.text).toBe('“Đường Sanh cố giả bộ trấn định, cố gắng tại đông!”');
+    expect(slots[0]?.nodes).toEqual(nodes);
+    expect(slots[0]?.separators.map((n) => n.data)).toEqual(['“', ' ', ' ', ' ', ', ', ' ', '!”']);
+  });
+
+  it('makes each paragraph its own string, however short, real bug: a two-word paragraph sent word by word drifted into its neighbours', () => {
+    const nodes = wordPage(
+      '<i>một</i> <i>hai</i> <i>ba</i> <i>bốn</i>.<br><br><i>Đường Sanh</i>: “?!”<br><i>năm</i> <i>sáu</i>',
+    );
+    expect(slotsForGroup(nodes).map((s) => s.text)).toEqual(['một hai ba bốn.', 'Đường Sanh: “?!”', 'năm sáu']);
+  });
+
+  it('does not take punctuation at a paragraph cut that is not a <br>, so a paragraph split across two groups never claims it twice', () => {
+    const nodes = wordPage('<i>một</i> <i>hai</i>, <i>ba</i> <i>bốn</i>.');
+    const first = slotsForGroup(nodes.slice(0, 2));
+    const second = slotsForGroup(nodes.slice(2));
+    expect(first.map((s) => s.text)).toEqual(['một hai']);
+    expect(second.map((s) => s.text)).toEqual(['ba bốn.']);
+  });
+
+  it('leaves inline styling in prose alone — letter-bearing text between the elements', () => {
+    const nodes = wordPage('<span>one</span>, <span>two</span> and <span>three</span>, <span>four</span>.');
+    expect(slotsForGroup(nodes).map((s) => s.nodes.length)).toEqual([1, 1, 1, 1]);
+  });
+
+  it('leaves a row of <span> menu items alone — no sentence punctuation between them', () => {
+    const nodes = wordPage('<span>Home</span> <span>News</span> | <span>Sports</span> <span>Contact</span>');
+    expect(slotsForGroup(nodes).map((s) => s.nodes.length)).toEqual([1, 1, 1, 1]);
+  });
+
+  it('leaves fewer than four word elements alone', () => {
+    const nodes = wordPage('<i>one</i>, <i>two</i>, <i>three</i>.');
+    expect(slotsForGroup(nodes).map((s) => s.nodes.length)).toEqual([1, 1, 1]);
+  });
+
+  it('never merges link text — link clusters keep their own isolation', () => {
+    const nodes = wordPage('<a>one</a>, <a>two</a>, <a>three</a>, <a>four</a>.');
+    expect(slotsForGroup(nodes).map((s) => s.nodes.length)).toEqual([1, 1, 1, 1]);
+  });
+
+  it('leaves plain prose nodes as one slot each', () => {
+    const p = document.createElement('p');
+    p.innerHTML = 'Hello <b>big wide</b> world.';
+    const nodes = Array.from(p.childNodes).map((n) => (n.nodeType === Node.TEXT_NODE ? n : n.firstChild) as Text);
+    expect(slotsForGroup(nodes).map((s) => s.text)).toEqual(['Hello ', 'big wide', ' world.']);
   });
 });
