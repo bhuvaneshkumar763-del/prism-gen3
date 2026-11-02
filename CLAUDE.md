@@ -49,11 +49,12 @@ _Moved to `.claude/skills/known-gaps-expected-at-this-stage-not-oversights/SKILL
 
 ## Improvement history: speed, accuracy, security, reliability
 
-**Read this before starting any "improve" pass.** A running ledger of every
-speed/accuracy/security/reliability fix made to already-shipped
-functionality, organized by category, plus what's been checked and ruled
-out and what's still open. Exists so a new audit doesn't re-discover,
-re-verify, or contradict something already fixed.
+**Frozen at 0.3.0-beta.71 — search it, don't add to it.** A ledger of
+every speed/accuracy/security/reliability fix made to already-shipped
+functionality up to beta.71, organized by category, plus what was checked
+and ruled out. Grep it before fixing something so you don't re-discover or
+contradict an earlier fix. New work goes in its changeset; open work is in
+`docs/reports/fix-plan.md`.
 
 _Moved to `.claude/skills/improvement-history-speed-accuracy-security-reliability/SKILL.md` — load via `/improvement-history-speed-accuracy-security-reliability`._
 
