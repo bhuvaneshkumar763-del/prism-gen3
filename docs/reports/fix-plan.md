@@ -55,9 +55,9 @@ What that session does, all in one batch:
 - [x] **H-3** Fix `README.md`: lint is a CI gate, and the plan is this file.
 - [x] **H-4** Update `solid-js` to 1.9.18 (clears the two "critical" advisories; the affected code isn't in the extension, so this is routine).
 - [x] **H-5** Add a release gate: `release.yml` refuses to publish unless the version's changelog entry has a line starting `Checked on: <page>, <browser>, <date>`. This turns rules 3 and 4 from memory into a check.
-- [x] Leave beta mode and version **0.3.0** (`changeset pre exit`). Its changelog entry records your step 1 check, so the gate lets it through.
+- [x] Leave beta mode and version the stable release (`changeset pre exit`). Its changelog entry records your step 1 check, so the gate lets it through. It's **0.3.1**, not 0.3.0: the first 0.3.0 release attempt failed because Firefox's add-on site already holds a 0.3.0 from early betas, and 0.3.0 would also count as older than the 0.3.0.N beta builds.
 
-Then **you** (5 min): install 0.3.0 on the iPhone and read one chapter. If it's fine, 0.3.0 is your stable version. If not, go back to beta.73 and tell a session what broke.
+Then **you** (5 min): install 0.3.1 on the iPhone and read one chapter. If it's fine, 0.3.1 is your stable version. If not, go back to beta.73 and tell a session what broke.
 
 ### Step 3 — You, once (10 min): try the backup
 

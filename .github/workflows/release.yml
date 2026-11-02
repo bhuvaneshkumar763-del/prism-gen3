@@ -81,6 +81,22 @@ jobs:
             exit 1
           fi
 
+      # GitHub rejects a release body over 125,000 characters (0.3.0's
+      # entry, which repeated all 73 betas, hit this and failed the
+      # release). Trim long notes and link to the full changelog instead.
+      - name: Fit release notes to GitHub's size limit
+        if: steps.check.outputs.exists == 'false'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if [ "$(wc -c < release-notes.md)" -gt 120000 ]; then
+            head -c 118000 release-notes.md > release-notes.trimmed
+            printf '\n\n…\n\nNotes trimmed to fit GitHub. Full notes: https://github.com/%s/blob/v%s/CHANGELOG.md\n' \
+              "${{ github.repository }}" "$VERSION" >> release-notes.trimmed
+            mv release-notes.trimmed release-notes.md
+            echo "::warning::Release notes for v$VERSION were trimmed to fit GitHub's size limit."
+          fi
+
       - uses: actions/setup-node@v4
         if: steps.check.outputs.exists == 'false'
         with:
