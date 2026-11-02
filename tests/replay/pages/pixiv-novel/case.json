@@ -1,0 +1,6 @@
+{
+  "url": "https://www.pixiv.net/novel/show.php?id=28299885",
+  "to": "en",
+  "savedAt": "2026-11-01",
+  "note": "Reported: <html lang=en> is pixiv's UI language, not the novel's; an old lang check skipped the whole page when the target was en (beta.25)"
+}
