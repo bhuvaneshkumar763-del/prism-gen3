@@ -133,7 +133,8 @@ export default defineContentScript({
         const detected = originalLanguageTracker.get();
         return detected === 'und' ? 'auto' : detected;
       },
-      getBatchingHint: () => getBatchingHint(configStore.get('pageTranslatorProvider')),
+      getBatchingHint: () =>
+        getBatchingHint(configStore.get('pageTranslatorProvider'), configStore.get('groupParagraphs')),
       getTranslatePreTags: () => configStore.get('translatePreTags'),
     });
 
