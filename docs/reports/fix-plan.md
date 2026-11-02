@@ -2,7 +2,7 @@
 
 _2026-11-01 · from Prism 0.3.0-beta.70 (commit fed8806) · cut down for personal use the same day_
 
-**Status: Release 1 shipped as 0.3.0-beta.71; N-1 to N-3 shipped as 0.3.0-beta.72.** The rest of the plan was cut down after Release 1. Prism is for personal use only. There are no other users and no store audience, and no new translation providers are planned. So the original plan's store, launch, branch-protection, i18n, new-provider and LLM-hardening work is dropped (see [Dropped](#dropped)).
+**Status: Release 1 shipped as 0.3.0-beta.71; N-1 to N-3 shipped as 0.3.0-beta.72; the sangtacviet fixes, the untranslated warning and the LLM removal shipped as 0.3.0-beta.73.** The rest of the plan was cut down after Release 1. Prism is for personal use only. There are no other users and no store audience, and no new translation providers are planned. So the original plan's store, launch, branch-protection, i18n, new-provider and LLM-hardening work is dropped (see [Dropped](#dropped)).
 
 The plan came from three reports:
 - [prism-self-audit.md](prism-self-audit.md): the line-by-line read and history, with 13 defects checked by hand
@@ -98,7 +98,7 @@ Found by the line-by-line read but not checked by hand. **Confirm each in the co
 
 **Tooling:**
 - Both CI guard scripts pass broken fixtures, so fix the scripts until those fixtures fail.
-- A config flag that turns `groupByBlock` off without a release. Paragraph grouping drives the long reflow-bug chain, so this is the quick way out if it misbehaves on a page you read.
+- ~~A config flag that turns `groupByBlock` off without a release.~~ Shipped in beta.73 as Settings → Page translation → "translate each paragraph as a whole". Turning it off also turns off beta.73's word-per-word chapter fix, so it is not a fix for sangtacviet's Vietnamese mode.
 
 ## Later, only if the saved pages show a need
 
@@ -136,4 +136,6 @@ Prism shipped an LLM provider it never used. Decided 2026-11-02: removed. Google
 
 ## First step
 
-Use beta.72 on the pages you normally read. When one goes wrong, save it with `npm run replay:record -- <name> --url <url> --to <lang>`, add a check to its `case.json` that fails, and fix it; that's the next release.
+**Pending: check beta.73 on the iPhone in Orion.** Its sangtacviet fixes were verified in emulated mobile Chrome against a copy of the site's markup, not on the live site. Read one chapter in Vietnamese mode (the site's translation off) and one in English mode (Bật, English, Google), and tap the bubble to check its panel stays closed. If it fails, reinstall beta.72, revert the word-per-word change alone, and record the chapter as a replay case.
+
+Then use beta.73 on the pages you normally read. When one goes wrong, save it with `npm run replay:record -- <name> --url <url> --to <lang>`, add a check to its `case.json` that fails, and fix it; that's the next release.

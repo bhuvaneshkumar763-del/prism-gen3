@@ -1,5 +1,20 @@
 # prism-gen3
 
+## 0.3.0-beta.73
+
+### Patch Changes
+
+- 03d223a: **The unused AI (OpenAI-compatible) provider is gone.** Prism now offers the free Google provider (default) and Google Cloud with your own key. If the AI provider was selected, Prism switches to Google, and its saved settings, including the API key, are deleted from storage. Old settings backups still import.
+- c04548b: **A page that came back untranslated now says so.**
+
+  - **A few untranslated paragraphs no longer pass as success.** When Google sends text back unchanged, Prism retries each piece three times and then gives up. It used to give up silently, which is right for a handful of language names, but when the text given up on is a quarter or more of the page (and at least 200 characters) the bubble now says "About N% of this page came back untranslated". It doesn't slow or stop translation.
+  - **A run of echoed text is named correctly.** When so much text comes back unchanged that Prism decides the service is failing, the bubble used to say "Couldn't reach the translation service". The service was reached; it now says it keeps sending text back untranslated.
+  - **New Settings switch: translate each paragraph as a whole.** On by default, as before. Turn it off (Settings → Page translation → Content handling) if a page comes out with words moved between links or styled text, or chips and tags run together; each piece of text is then sent on its own, with no update needed.
+
+- 312536c: **Word-per-word chapters come out as real sentences.** Some reader sites (sangtacviet.vip in Vietnamese mode) wrap every word of a chapter in its own `<i>`, with the punctuation between them as bare text. Prism sent those 100+ fragments to Google as one multi-item piece, and Google moved words across fragments and paragraphs, so the chapter came back scrambled. Each paragraph of such a block is now sent as one string, punctuation included, written into its first word, and the rest of the paragraph is emptied; Show original puts every word and comma back. Only blocks of four or more short word elements with sentence punctuation and no other letters are treated this way, so prose, links and menu rows are unchanged.
+
+  **Tapping the bubble on a phone no longer leaves its panel open.** Touch browsers keep `:hover` stuck on the last tapped element, and the panel opened on hover. Hover now only opens the panel on devices that really hover; long-press still pins it on touch.
+
 ## 0.3.0-beta.72
 
 ### Patch Changes
