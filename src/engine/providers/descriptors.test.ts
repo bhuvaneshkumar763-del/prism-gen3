@@ -21,6 +21,12 @@ describe('descriptors', () => {
     expect(getBatchingHint('nope')).toBeUndefined();
   });
 
+  it("getBatchingHint turns grouping off when Settings' paragraph-grouping switch is off, keeping the rest of the hint", () => {
+    expect(getBatchingHint('google', false)).toEqual({ groupByBlock: false, maxGroupChars: 2000 });
+    expect(getBatchingHint('google', true)).toEqual({ groupByBlock: true, maxGroupChars: 2000 });
+    expect(getBatchingHint('googleCloudTranslate', false)).toBeUndefined();
+  });
+
   it('isProviderAvailable is true for providers with no isAvailable check', () => {
     expect(isProviderAvailable('google')).toBe(true);
   });

@@ -532,6 +532,17 @@ function App() {
                 site uses &lt;pre&gt; for plain text instead, and its content isn't being translated)
               </span>
             </label>
+            <label class="toggleRow">
+              <input
+                type="checkbox"
+                checked={settings.groupParagraphs}
+                onChange={(e) => void setField('groupParagraphs', e.currentTarget.checked)}
+              />
+              <span>
+                Translate each paragraph as a whole, for better sentence context (turn this off if a page comes out with
+                words moved between links or styled text, or chips and tags run together)
+              </span>
+            </label>
           </section>
         </TabPanel>
 

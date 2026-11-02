@@ -70,8 +70,10 @@ export function getProviderDescriptor(id: string): ProviderDescriptor | undefine
   return providerDescriptors.find((d) => d.id === id);
 }
 
-export function getBatchingHint(id: string): BatchingHint | undefined {
-  return getProviderDescriptor(id)?.batchingHint;
+/** `groupParagraphs` is Settings' off switch for grouping — see `Config.groupParagraphs`. */
+export function getBatchingHint(id: string, groupParagraphs = true): BatchingHint | undefined {
+  const hint = getProviderDescriptor(id)?.batchingHint;
+  return hint && !groupParagraphs ? { ...hint, groupByBlock: false } : hint;
 }
 
 export function isProviderAvailable(id: string): boolean {

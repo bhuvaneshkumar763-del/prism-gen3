@@ -891,6 +891,77 @@ describe('createPageTranslator', () => {
     }
   });
 
+  // Fix plan follow-up ("says translated but nothing changed"): giving up on
+  // a few endonyms is right, but giving up on most of a page's text left the
+  // bubble showing success. Measured by characters, so a page's short
+  // leftovers don't count the same as its body text.
+  describe('untranslated-share warning', () => {
+    const long = (word: string) => `${word} `.repeat(30).trim();
+
+    async function translateWithEchoes(html: string, echoes: (text: string) => boolean) {
+      document.body.innerHTML = html;
+      const translateBatch = vi.fn(
+        async (request: { pieces: string[][] }): Promise<PieceOutcome[]> =>
+          request.pieces.map((piece): PieceOutcome => {
+            if (echoes(piece[0] ?? '')) return err({ kind: 'suspicious', message: 'echoed back unchanged' });
+            return ok(piece.map((s) => s.toUpperCase()));
+          }),
+      );
+      const pageTranslator = createPageTranslator({
+        translator: { translateBatch },
+        getSourceLanguage: () => 'ja',
+        getBatchingHint: () => undefined,
+      });
+      vi.useFakeTimers();
+      try {
+        void pageTranslator.translatePage('en');
+        for (let i = 0; i < 8; i++) await vi.advanceTimersByTimeAsync(1600);
+      } finally {
+        vi.useRealTimers();
+      }
+      return { pageTranslator, translateBatch };
+    }
+
+    it('says so when most of the page came back untranslated', async () => {
+      const { pageTranslator, translateBatch } = await translateWithEchoes(
+        `<p>${long('echoed')}</p><p>${long('echoed')}</p><p>${long('echoed')}</p><p>${long('fine')}</p>`,
+        (text) => text.startsWith('echoed'),
+      );
+      expect(pageTranslator.getLastError()).toMatch(/^About 81% of this page came back untranslated/);
+      expect(pageTranslator.getLastErrorKind()).toBe('provider');
+      expect(pageTranslator.isWorking()).toBe(false);
+      // Still bounded: the warning doesn't restart the give-up retries.
+      const calls = translateBatch.mock.calls.length;
+      vi.useFakeTimers();
+      try {
+        await vi.advanceTimersByTimeAsync(20_000);
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(translateBatch.mock.calls.length).toBe(calls);
+      pageTranslator.restorePage();
+      expect(pageTranslator.getLastError()).toBeNull();
+    });
+
+    it('stays quiet when only a small share is left, like a list of language names', async () => {
+      const endonyms = ['日本語', '中文', '한국어', 'Русский', 'العربية', 'Ελληνικά', 'עברית', 'हिन्दी'];
+      const { pageTranslator } = await translateWithEchoes(
+        `<p>${long('fine')}</p><p>${long('fine')}</p><ul>${endonyms.map((e) => `<li>${e}</li>`).join('')}</ul>`,
+        (text) => endonyms.includes(text),
+      );
+      expect(pageTranslator.getLastError()).toBeNull();
+      pageTranslator.restorePage();
+    });
+
+    it('stays quiet when the untranslated share is large but tiny in absolute terms', async () => {
+      const { pageTranslator } = await translateWithEchoes('<p>echoed one</p><p>ok</p>', (text) =>
+        text.startsWith('echoed'),
+      );
+      expect(pageTranslator.getLastError()).toBeNull();
+      pageTranslator.restorePage();
+    });
+  });
+
   // Contrast case, same fix: a batch failing for a REAL reason (not just
   // "confirmed suspicious") must keep taking the unconditional-retry-forever
   // `allFailed` branch exactly as before — this is the behavior a genuinely
@@ -1203,6 +1274,12 @@ describe('createPageTranslator', () => {
   it('still names the status when the service gave no usable reason', async () => {
     expect(await lastErrorFor('[llm] rejected (HTTP 403)')).toBe(
       'The translation service rejected the request (HTTP 403).',
+    );
+  });
+
+  it("says the text came back untranslated, not that the service couldn't be reached, when the provider gave up on a run of echoes", async () => {
+    expect(await lastErrorFor('[google] kept sending text back untranslated')).toBe(
+      'The translation service keeps sending text back untranslated. Prism keeps retrying; if it keeps happening, switch provider in Settings.',
     );
   });
 

@@ -980,7 +980,10 @@ describe('createBatchedHttpProvider — suspicious-ratio window (auth-key reliab
     }
     // The 30th sample fills the window at a 100% suspicious ratio, well
     // over the threshold — reclassified, and the streak hook fires.
-    expect(outcomes[29]).toMatchObject({ ok: false, error: { kind: 'network' } });
+    expect(outcomes[29]).toMatchObject({
+      ok: false,
+      error: { kind: 'network', message: '[streak-test] kept sending text back untranslated' },
+    });
     expect(onSuspiciousStreak).toHaveBeenCalledTimes(1);
   });
 

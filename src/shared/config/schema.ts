@@ -96,6 +96,15 @@ export interface Config {
    */
   translatePreTags: boolean;
   /**
+   * Whether a provider that groups a paragraph's text nodes into one request
+   * (Google, for sentence context) gets to. Default `true`. The off switch
+   * exists because grouping drives the longest bug chain this project has
+   * had: Google moving words across a paragraph's links and styled spans.
+   * If a page comes out like that, turning this off sends each piece of text
+   * on its own, with no release needed. Purely additive, same as above.
+   */
+  groupParagraphs: boolean;
+  /**
    * Hide the selection-translate trigger for a selection with nothing
    * translatable in it (a lone character, or only punctuation/digits/
    * whitespace). Default `true` — matches TWP's real default exactly
@@ -141,6 +150,7 @@ export const defaultConfig: Config = {
   theme: 'auto',
   translationCacheEnabled: true,
   translatePreTags: true,
+  groupParagraphs: true,
   selectionPopupSkipInvalidText: true,
   selectionPopupSkipTargetLanguageText: false,
 };
