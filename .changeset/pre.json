@@ -48,6 +48,7 @@
     "release-1-confirmed-fixes",
     "remove-builtin-provider",
     "remove-libretranslate-provider",
+    "remove-llm-provider",
     "remove-zod-dependency",
     "restore-vs-cooldown-timer-race",
     "revert-hover-fix",
@@ -74,8 +75,10 @@
     "ui-audit-improvements",
     "unbounded-auth-scrape-fetch",
     "unleakable-concurrency-gate",
+    "untranslated-warning",
     "use-detected-source-language",
     "verify-amo-signing-again",
-    "verify-amo-signing"
+    "verify-amo-signing",
+    "word-runs-touch-panel"
   ]
 }
