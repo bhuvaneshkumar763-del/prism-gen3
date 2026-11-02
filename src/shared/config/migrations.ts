@@ -48,6 +48,12 @@
  * present in `defaultConfig` (see configStore.ts), so removing them from
  * the schema already makes them inert; deleting the raw storage entries
  * too would be pure tidiness with no correctness benefit.
+ *
+ * Version 5: the OpenAI-compatible `llm` provider was removed (fix plan,
+ * 2026-11: Prism is personal-use only and the owner never used it). Same
+ * fallback as versions 3/4, but its fields ARE deleted from storage this
+ * time, unlike version 4's, because one of them is an API key: there's no
+ * reason to keep a credential on disk for a provider that no longer exists.
  */
 
 export interface ConfigMigration {
@@ -62,7 +68,7 @@ export interface ConfigMigration {
   migrate(rawEntries: Record<string, unknown>): Record<string, unknown>;
 }
 
-export const CONFIG_SCHEMA_VERSION = 4;
+export const CONFIG_SCHEMA_VERSION = 5;
 
 export const configMigrations: ConfigMigration[] = [
   {
@@ -112,6 +118,19 @@ export const configMigrations: ConfigMigration[] = [
       if (next.pageTranslatorProvider === 'libretranslate') {
         next.pageTranslatorProvider = 'google';
       }
+      return next;
+    },
+  },
+  {
+    toVersion: 5,
+    migrate(rawEntries) {
+      const next = { ...rawEntries };
+      if (next.pageTranslatorProvider === 'llm') {
+        next.pageTranslatorProvider = 'google';
+      }
+      delete next.llmBaseUrl;
+      delete next.llmApiKey;
+      delete next.llmModel;
       return next;
     },
   },

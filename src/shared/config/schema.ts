@@ -58,11 +58,8 @@ export interface Config {
   targetLanguage: string;
   /** ISO 639-1 code, or 'auto' to let the provider detect it. */
   sourceLanguage: string;
-  pageTranslatorProvider: 'google' | 'googleCloudTranslate' | 'llm';
+  pageTranslatorProvider: 'google' | 'googleCloudTranslate';
   googleCloudTranslateApiKey: string;
-  llmBaseUrl: string;
-  llmApiKey: string;
-  llmModel: string;
   /** Hostnames the user has explicitly chosen to always/never auto-translate — takes priority over the language-based decision. */
   alwaysTranslateSites: string[];
   neverTranslateSites: string[];
@@ -139,9 +136,6 @@ export const defaultConfig: Config = {
   // is the only provider that works with zero configuration.
   pageTranslatorProvider: 'google',
   googleCloudTranslateApiKey: '',
-  llmBaseUrl: '',
-  llmApiKey: '',
-  llmModel: '',
   alwaysTranslateSites: [],
   neverTranslateSites: [],
   alwaysTranslateLangs: [],

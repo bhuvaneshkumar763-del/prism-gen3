@@ -71,4 +71,20 @@ describe('parseBackup', () => {
       if (result.ok) expect(result.value.pageTranslatorProvider).toBe('google');
     }
   });
+
+  it('restores a backup from before the LLM provider was removed: provider falls back to google, its fields are dropped', () => {
+    const old = {
+      ...defaultConfig,
+      pageTranslatorProvider: 'llm',
+      llmBaseUrl: 'http://x',
+      llmApiKey: 'k',
+      llmModel: 'm',
+    };
+    const result = parseBackup(JSON.stringify(old));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.pageTranslatorProvider).toBe('google');
+      expect(result.value).not.toHaveProperty('llmApiKey');
+    }
+  });
 });

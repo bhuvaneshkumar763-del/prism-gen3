@@ -47,10 +47,9 @@ describe('runDiagnostics', () => {
   });
 
   it('includes the effective config snapshot with API key fields redacted', async () => {
-    await fakeBrowser.storage.local.set({ llmApiKey: 'sk-real-secret', targetLanguage: 'fr' });
+    await fakeBrowser.storage.local.set({ googleCloudTranslateApiKey: 'real-secret', targetLanguage: 'fr' });
     const runDiagnostics = await freshRunDiagnostics();
     const report = await runDiagnostics();
-    expect(report.effectiveConfig.llmApiKey).toBe('(redacted)');
     expect(report.effectiveConfig.googleCloudTranslateApiKey).toBe('(redacted)');
     expect(report.effectiveConfig.targetLanguage).toBe('fr');
   });

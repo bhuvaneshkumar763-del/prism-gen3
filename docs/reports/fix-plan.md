@@ -130,9 +130,9 @@ Cut on 2026-11-01 because Prism is for personal use and no new providers are pla
 - The paragraph-HTML experiment, and mining TWP's issue tracker.
 - Everything the comparison reports already ruled out: Immersive Translate's site rules, 60 providers, header spoofing, OCR or telemetry; TWP's Bing, Yandex and DeepL paths, silent failure and unbounded cache.
 
-## Open question
+## Open question (answered)
 
-Prism already ships an LLM provider and a Google Cloud provider. Google Cloud, with your own key, is the backup if the scraped Google key breaks. If you never use the LLM provider, it can be left alone (its known bugs don't affect you) or removed to cut code.
+Prism shipped an LLM provider it never used. Decided 2026-11-02: removed. Google Cloud, with your own key, stays as the backup if the scraped Google key breaks.
 
 ## First step
 

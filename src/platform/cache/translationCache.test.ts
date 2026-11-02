@@ -1,6 +1,6 @@
 import { IDBFactory } from 'fake-indexeddb';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { cacheKeyFor, createTranslationCache, llmCacheScope } from './translationCache';
+import { cacheKeyFor, createTranslationCache } from './translationCache';
 
 describe('translationCache', () => {
   beforeEach(() => {
@@ -460,30 +460,5 @@ describe('cacheKeyFor', () => {
     const c = cacheKeyFor('llm', 'en', 'fr', 'hello');
     expect(a).not.toBe(b);
     expect(a).not.toBe(c);
-  });
-});
-
-describe('llmCacheScope', () => {
-  it('gives different scopes for different models on the same endpoint', () => {
-    expect(llmCacheScope('https://example.com/v1', 'gpt-a')).not.toBe(llmCacheScope('https://example.com/v1', 'gpt-b'));
-  });
-
-  it('gives different scopes for different base URLs with the same model', () => {
-    expect(llmCacheScope('https://a.example.com/v1', 'gpt-a')).not.toBe(
-      llmCacheScope('https://b.example.com/v1', 'gpt-a'),
-    );
-  });
-
-  it('is stable for the same inputs and starts with "llm#"', () => {
-    const scope = llmCacheScope('https://example.com/v1', 'gpt-a');
-    expect(scope).toBe(llmCacheScope('https://example.com/v1', 'gpt-a'));
-    expect(scope.startsWith('llm#')).toBe(true);
-  });
-
-  it('does not expose the base URL (which may embed credentials) or the model name in the scope', () => {
-    const scope = llmCacheScope('https://user:secret@example.com/v1', 'gpt-x');
-    expect(scope).not.toContain('secret');
-    expect(scope).not.toContain('example.com');
-    expect(scope).not.toContain('gpt-x');
   });
 });
