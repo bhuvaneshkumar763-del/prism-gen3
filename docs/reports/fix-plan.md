@@ -2,7 +2,7 @@
 
 _2026-11-01 · from Prism 0.3.0-beta.70 (commit fed8806) · cut down for personal use the same day_
 
-**Status: Release 1 shipped as 0.3.0-beta.71.** The rest of the plan was cut down after Release 1. Prism is for personal use only. There are no other users and no store audience, and no new translation providers are planned. So the original plan's store, launch, branch-protection, i18n, new-provider and LLM-hardening work is dropped (see [Dropped](#dropped)).
+**Status: Release 1 shipped as 0.3.0-beta.71; N-1 to N-3 shipped as 0.3.0-beta.72.** The rest of the plan was cut down after Release 1. Prism is for personal use only. There are no other users and no store audience, and no new translation providers are planned. So the original plan's store, launch, branch-protection, i18n, new-provider and LLM-hardening work is dropped (see [Dropped](#dropped)).
 
 The plan came from three reports:
 - [prism-self-audit.md](prism-self-audit.md): the line-by-line read and history, with 13 defects checked by hand
@@ -63,13 +63,13 @@ This changes the strip-and-replace into "restore what Google is known to drop; n
 
 ---
 
-## Next: your own pages as the test set
+## Next: your own pages as the test set (shipped in beta.72)
 
 | ID | Item | Notes | Size |
 |---|---|---|---|
-| N-1 | **Save pages that translate badly as replay tests** | When a page you read goes wrong, save its HTML and the recorded Google response, and run it in CI through the Playwright harness (`tests/e2e/run.mjs`). Start with the sites from past reports: sangtacviet, novel543, pixiv, bilibili, and one Wikipedia page. This replaces the old smoke-test (R2-2) and replay-corpus (R5-1) items. | M |
-| N-2 | **A clear error when the Google key fails** | When both the scraped key and the fallback key fail, say so: name the key as the cause and point to the Google Cloud provider in Settings as the manual backup. First check what Prism shows today (beta.45 fixed part of this). | S |
-| N-3 | **Make the docs true** | Fix or delete the stale entries in the out-of-scope list (Firefox, iframes, attribute translation, backup UI), known-gaps (shadow-DOM selection) and current-status ("as of beta.64"). Freeze the 164 KB ledger. | S |
+| N-1 | **Save pages that translate badly as replay tests** (done: `tests/replay/`, with Wikipedia, sangtacviet and pixiv cases; novel543 and bilibili need a page saved from your browser, `--html`) | When a page you read goes wrong, save its HTML and the recorded Google response, and run it in CI through the Playwright harness (`tests/e2e/run.mjs`). Start with the sites from past reports: sangtacviet, novel543, pixiv, bilibili, and one Wikipedia page. This replaces the old smoke-test (R2-2) and replay-corpus (R5-1) items. | M |
+| N-2 | **A clear error when the Google key fails** (done: Google rejects a dead key with HTTP 400, which now fetches a new key and names the cause) | When both the scraped key and the fallback key fail, say so: name the key as the cause and point to the Google Cloud provider in Settings as the manual backup. First check what Prism shows today (beta.45 fixed part of this). | S |
+| N-3 | **Make the docs true** (done) | Fix or delete the stale entries in the out-of-scope list (Firefox, iframes, attribute translation, backup UI), known-gaps (shadow-DOM selection) and current-status ("as of beta.64"). Freeze the 164 KB ledger. | S |
 
 ## Bugs to confirm, then fix when they bite
 
@@ -136,4 +136,4 @@ Prism already ships an LLM provider and a Google Cloud provider. Google Cloud, w
 
 ## First step
 
-Use beta.71 on the pages you normally read. The first page that goes wrong becomes the first N-1 replay test, and its fix is the next release.
+Use beta.72 on the pages you normally read. When one goes wrong, save it with `npm run replay:record -- <name> --url <url> --to <lang>`, add a check to its `case.json` that fails, and fix it; that's the next release.
