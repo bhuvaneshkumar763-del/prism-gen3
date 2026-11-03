@@ -1,4 +1,7 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { unescapeHTML } from './htmlEscape';
 import { isSuspiciousOutcome } from './outputSanityCheck';
 
 const LONG = 'This is a genuinely long sentence that exceeds the forty character threshold.';
@@ -102,5 +105,70 @@ describe('isSuspiciousOutcome', () => {
       const bengali = 'কেন্দ্রীয় সরকার কৃষকদের ভর্তুকি মূল্যে সরবরাহ করা ইউরিয়া ব্যাগ অবৈধভাবে';
       expect(isSuspiciousOutcome(bengali, { text: bengali, detectedLanguage: null }, 'en', 'en')).toBe(true);
     });
+  });
+
+  describe('short Vietnamese lines echoed back unchanged', () => {
+    const echo = (text: string, detectedLanguage: string | null, targetLanguage = 'en') =>
+      isSuspiciousOutcome(text, { text, detectedLanguage }, 'auto', targetLanguage);
+
+    it('flags dialogue Google sent back untranslated', () => {
+      expect(echo('Ngươi muốn chết sao?', 'vi')).toBe(true);
+      expect(echo('Hắn cười lạnh một tiếng.', null)).toBe(true);
+      expect(echo('“Đi thôi!”', 'vi')).toBe(true);
+    });
+
+    it('flags a short lowercase phrase with no sentence mark', () => {
+      expect(echo('Nút tìm kiếm', 'vi')).toBe(true);
+    });
+
+    it('flags a line without a Vietnamese-only letter when Google itself detected Vietnamese', () => {
+      expect(echo('Cái gì?', 'vi')).toBe(true);
+      expect(echo('Cái gì?', null)).toBe(false);
+    });
+
+    it('does not flag a Title Case label Google rightly leaves alone', () => {
+      expect(echo('Kỳ Môn Bí Thuật(359)', 'vi')).toBe(false);
+      expect(echo('Kỳ Môn Bí Thuật', 'vi')).toBe(false);
+    });
+
+    it('does not flag English Google misdetects as another language', () => {
+      expect(echo('iPad drawing app Pastela', 'tl')).toBe(false);
+    });
+
+    it('does not flag names or a single word', () => {
+      expect(echo('Đường Sanh', 'vi')).toBe(false);
+      expect(echo('Nguyễn Văn An', 'vi')).toBe(false);
+      expect(echo('Được.', 'vi')).toBe(false);
+    });
+
+    it('does not flag mostly-English text carrying a Vietnamese name', () => {
+      expect(echo('Nguyễn Văn An said hello.', null)).toBe(false);
+      expect(echo('SearchCuộn Endless scroll', null)).toBe(false);
+    });
+
+    it('does not flag when Google detected the target language or the target is Vietnamese', () => {
+      expect(echo('Ngươi muốn chết sao?', 'en')).toBe(false);
+      expect(echo('Ngươi muốn chết sao?', 'vi', 'vi')).toBe(false);
+    });
+  });
+
+  it('flags nothing Google left unchanged on the saved real pages', () => {
+    const flagged: string[] = [];
+    for (const page of ['pixiv-novel', 'sangtacviet-search', 'wikipedia-es-faq']) {
+      const path = join(process.cwd(), 'tests/replay/pages', page, 'google.json');
+      const recording = JSON.parse(readFileSync(path, 'utf8')) as Record<string, [string, string | null][]>;
+      for (const [key, answers] of Object.entries(recording)) {
+        const [source, target, wire] = JSON.parse(key) as [string, string, string];
+        const text = (raw: string) =>
+          unescapeHTML([...raw.matchAll(/<a i=\d+>([^<]*)<\/a>/g)].map((m) => m[1] ?? '').join(''));
+        for (const [answer, detectedLanguage] of answers) {
+          if (text(wire).trim() !== text(answer).trim()) continue;
+          if (isSuspiciousOutcome(text(wire), { text: text(answer), detectedLanguage }, source, target)) {
+            flagged.push(text(wire));
+          }
+        }
+      }
+    }
+    expect(flagged).toEqual([]);
   });
 });
