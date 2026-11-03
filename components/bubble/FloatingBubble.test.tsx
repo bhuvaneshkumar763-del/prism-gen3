@@ -271,6 +271,27 @@ describe('FloatingBubble', () => {
     expect(onTranslate).toHaveBeenCalledWith('es');
   });
 
+  it('rolls the Always chip back and warns when saving the site list fails, instead of showing a saved state that was never stored', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const setMany = vi.spyOn(configStore, 'setMany').mockRejectedValue(new Error('quota'));
+    const unhandled = vi.fn();
+    process.on('unhandledRejection', unhandled);
+    try {
+      const { el } = mount();
+      const always = Array.from(el.querySelectorAll('.chip')).find((c) => c.textContent?.includes('Always'));
+      always?.dispatchEvent(trusted(new MouseEvent('click', { bubbles: true })));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(always?.getAttribute('aria-pressed')).toBe('false');
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/^\[prism\] /), expect.any(Error));
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off('unhandledRejection', unhandled);
+      setMany.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
   it('ArrowDown on the ball opens the panel and moves focus into it, real gap: the panel had no keyboard-open path at all (hover/long-press only)', () => {
     const { el } = mount();
     const ball = el.querySelector('.ball') as HTMLButtonElement;

@@ -45,6 +45,10 @@ function dispatchRetargetedMouseEvent(
 }
 
 /** Mirrors the page translator's real lookup (translateLoop.ts's findOriginalTextForElement) so the mock behaves like the real thing. */
+function stubCanHover(canHover: boolean): void {
+  vi.stubGlobal('matchMedia', (query: string) => ({ matches: query === '(hover: hover)' && canHover, media: query }));
+}
+
 function makeSource(entries: Array<{ node: Text; original: string }>): TranslatedNodesSource {
   return {
     findOriginalTextForElement: (target) => {
@@ -66,22 +70,26 @@ describe('mountHoverTooltip', () => {
       value: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) DesktopBrowser',
       configurable: true,
     });
+    stubCanHover(true);
     document.body.innerHTML = '<p id="target">Hola</p>';
   });
 
   afterEach(() => {
     document.getElementById('prism-hover-tooltip-host')?.remove();
     Object.defineProperty(navigator, 'userAgent', { value: originalUserAgent, configurable: true });
+    vi.unstubAllGlobals();
     vi.useRealTimers();
   });
 
-  it('is a no-op on a mobile user agent', () => {
-    Object.defineProperty(navigator, 'userAgent', {
-      value: 'Mozilla/5.0 (Linux; Android 10)',
-      configurable: true,
-    });
-    const source: TranslatedNodesSource = makeSource([]);
-    mountHoverTooltip(source);
+  it('is a no-op where the primary pointer cannot hover, even with a desktop user agent (an iPad or iPhone in desktop mode)', () => {
+    stubCanHover(false);
+    const p = document.getElementById('target') as HTMLParagraphElement;
+    const text = p.firstChild as Text;
+    text.data = 'Hello';
+    mountHoverTooltip(makeSource([{ node: text, original: 'Hola' }]));
+
+    dispatchMouseEvent('mouseover', p);
+    vi.advanceTimersByTime(1000);
 
     expect(document.getElementById('prism-hover-tooltip-host')).toBeNull();
   });

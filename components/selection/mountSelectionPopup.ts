@@ -10,6 +10,7 @@ import {
   type SelectionPanelPlacement,
 } from '../../src/shared/ui/selectionPanelPlacement';
 import { createShadowHost } from '../../src/shared/ui/shadowHost';
+import { viewportSize } from '../../src/shared/ui/viewport';
 import { withTimeout } from '../../src/shared/withTimeout';
 import { copyText } from './copyText';
 import { SelectionPopup } from './SelectionPopup';
@@ -154,13 +155,6 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
     copyResetTimer = setTimeout(() => setState({ copyStatus: 'idle' }), 1500);
   }
 
-  function currentViewport() {
-    return {
-      width: window.visualViewport?.width || window.innerWidth,
-      height: window.visualViewport?.height || window.innerHeight,
-    };
-  }
-
   async function translateText(text: string): Promise<void> {
     // Anchored to the page's own selection when this frame can see it;
     // otherwise (a selection inside an iframe) to the top-left, on screen.
@@ -180,7 +174,7 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
       translatedText: '',
       errorMessage: null,
       copyStatus: 'idle',
-      panel: placeSelectionPanel(anchor, currentViewport()),
+      panel: placeSelectionPanel(anchor, viewportSize()),
     });
     selectedTextLanguage = await detectSelectionLanguage(text);
     if (thisRequestId !== requestId) return; // superseded by a newer selection or request
@@ -281,7 +275,7 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
     selectedText = info.text;
     shownForSelection = info.text;
     selectedTextLanguage = detected;
-    const viewport = currentViewport();
+    const viewport = viewportSize();
     const trigger = placeSelectionTrigger(info.rect, viewport);
     setState({
       buttonVisible: true,

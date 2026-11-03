@@ -1,12 +1,12 @@
 import { createSignal } from 'solid-js';
 import { render } from 'solid-js/web';
+import { canHover } from '../../src/shared/ui/pointer';
 import { createShadowHost } from '../../src/shared/ui/shadowHost';
 import { HoverTooltip } from './HoverTooltip';
 import { HOVER_TOOLTIP_STYLES } from './hoverTooltipStyles';
 
 const HOST_ID = 'prism-hover-tooltip-host';
 const SHOW_DELAY_MS = 350;
-const MOBILE_USER_AGENT = /Android|iPhone|iPad|iPod|BlackBerry|Opera Mini|IEMobile|WPDesktop/i;
 
 export interface HoverTooltipController {
   destroy(): void;
@@ -33,12 +33,13 @@ function resolveEventTarget(e: Event): EventTarget | null {
 }
 
 /**
- * Hover over translated text to see the original. Desktop only (touch has no
- * hover); debounced so sweeping the mouse doesn't flicker, then follows the
- * cursor. `pageTranslator` is queried live, so no observer is needed.
+ * Hover over translated text to see the original. Only where the primary
+ * pointer hovers (touch has no hover); debounced so sweeping the mouse
+ * doesn't flicker, then follows the cursor. `pageTranslator` is queried live,
+ * so no observer is needed.
  */
 export function mountHoverTooltip(pageTranslator: TranslatedNodesSource): HoverTooltipController {
-  if (MOBILE_USER_AGENT.test(navigator.userAgent)) {
+  if (!canHover()) {
     return { destroy() {} };
   }
 

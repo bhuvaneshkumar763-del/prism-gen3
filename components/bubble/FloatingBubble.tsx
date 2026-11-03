@@ -30,6 +30,8 @@ import {
 } from '../../src/shared/config/siteOverrides';
 import { COMMON_LANGUAGES, languageName, translationDirection } from '../../src/shared/languages';
 import { TRANSLATE_ICON_PATH } from '../../src/shared/ui/icons';
+import { canHover } from '../../src/shared/ui/pointer';
+import { viewportSize } from '../../src/shared/ui/viewport';
 import type { BubbleViewState } from './bubbleState';
 
 /**
@@ -56,16 +58,6 @@ export interface FloatingBubbleProps {
   onClose(): void;
 }
 
-function vw(): number {
-  return window.visualViewport?.width || window.innerWidth;
-}
-function vh(): number {
-  return window.visualViewport?.height || window.innerHeight;
-}
-function viewport() {
-  return { width: vw(), height: vh() };
-}
-
 function uniq(codes: Array<string | null | undefined>): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -81,10 +73,6 @@ function uniq(codes: Array<string | null | undefined>): string[] {
 function displayLanguageName(code: string): string {
   return code === 'auto' ? 'Detect' : languageName(code);
 }
-
-// Touch browsers keep `:hover` stuck on the last tapped element, which would
-// leave the panel open. Only trust `:hover` where the primary pointer hovers.
-const canHover = () => typeof matchMedia === 'function' && matchMedia('(hover: hover)').matches;
 
 export function FloatingBubble(props: FloatingBubbleProps) {
   let wrap!: HTMLDivElement;
@@ -125,7 +113,7 @@ export function FloatingBubble(props: FloatingBubbleProps) {
     const point = computePanelPosition({
       ballRect: { left: r.left, top: r.top, width: r.width, height: r.height },
       panelSize: { width: panel.offsetWidth, height: panel.offsetHeight },
-      viewport: viewport(),
+      viewport: viewportSize(),
     });
     panel.style.left = `${point.x}px`;
     panel.style.top = `${point.y}px`;
@@ -137,10 +125,10 @@ export function FloatingBubble(props: FloatingBubbleProps) {
   }
 
   function applyState(): Point {
-    const point = resolveDockedPoint(dockState, viewport(), BALL_SIZE);
+    const point = resolveDockedPoint(dockState, viewportSize(), BALL_SIZE);
     wrap.style.left = `${point.x}px`;
     wrap.style.top = `${point.y}px`;
-    wrap.classList.toggle('right', isRightEdge(point.x, vw(), BALL_SIZE));
+    wrap.classList.toggle('right', isRightEdge(point.x, viewportSize().width, BALL_SIZE));
     // Measuring the panel forces layout, so only do it while it's showing;
     // every way of opening it re-measures right before it appears.
     if (isPanelOpen()) positionPanelNow();
@@ -148,10 +136,10 @@ export function FloatingBubble(props: FloatingBubbleProps) {
   }
 
   function previewAt(x: number, y: number): Point {
-    const point = clampDragPoint({ x, y }, viewport(), BALL_SIZE);
+    const point = clampDragPoint({ x, y }, viewportSize(), BALL_SIZE);
     wrap.style.left = `${point.x}px`;
     wrap.style.top = `${point.y}px`;
-    wrap.classList.toggle('right', isRightEdge(point.x, vw(), BALL_SIZE));
+    wrap.classList.toggle('right', isRightEdge(point.x, viewportSize().width, BALL_SIZE));
     positionPanelNow();
     return point;
   }
@@ -262,7 +250,7 @@ export function FloatingBubble(props: FloatingBubbleProps) {
       }
       if (moved) {
         const previousDockState = dockState;
-        dockState = positionFromDragPoint(pos, viewport(), BALL_SIZE);
+        dockState = positionFromDragPoint(pos, viewportSize(), BALL_SIZE);
         pos = applyState();
         configStore.set('bubblePosition', dockState).catch(() => {
           // Save failed: revert to the last persisted position rather than
@@ -391,13 +379,16 @@ export function FloatingBubble(props: FloatingBubbleProps) {
     if (!e.isTrusted) return;
     e.stopPropagation();
     const snapshot = readListsSnapshot(configStore);
-    if (!alwaysOn()) {
-      void applyListPatch(configStore, addSiteToAlwaysTranslate(snapshot, props.hostname));
-      if (props.state.pageState !== 'translated') props.onTranslate(targetLanguage());
-    } else {
-      void applyListPatch(configStore, removeSiteFromAlwaysTranslate(snapshot, props.hostname));
-    }
-    setAlwaysOn(!alwaysOn());
+    const previous = alwaysOn();
+    const patch = previous
+      ? removeSiteFromAlwaysTranslate(snapshot, props.hostname)
+      : addSiteToAlwaysTranslate(snapshot, props.hostname);
+    applyListPatch(configStore, patch).catch((e2) => {
+      console.warn('[prism] failed to save always-translate site', e2);
+      setAlwaysOn(previous);
+    });
+    if (!previous && props.state.pageState !== 'translated') props.onTranslate(targetLanguage());
+    setAlwaysOn(!previous);
   }
 
   /**

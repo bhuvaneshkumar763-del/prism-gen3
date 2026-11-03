@@ -10,6 +10,7 @@ import {
   addRecentTargetLanguage,
   addSiteToAlwaysTranslate,
   addSiteToNeverTranslate,
+  type ListsPatch,
   removeSiteFromAlwaysTranslate,
   removeSiteFromNeverTranslate,
   siteListIncludesHostname,
@@ -281,14 +282,32 @@ function App() {
     }
   }
 
-  async function onToggleAlwaysSite(): Promise<void> {
+  /**
+   * Applies a list patch; on failure shows the error and flips `input` back,
+   * since the saved value never changed and Solid won't re-render it.
+   */
+  async function saveListPatch(patch: ListsPatch, input?: HTMLInputElement): Promise<boolean> {
+    try {
+      await applyListPatch(configStore, patch);
+      return true;
+    } catch (e) {
+      console.warn('[prism] failed to save site/language list', e);
+      if (input) input.checked = !input.checked;
+      setErrorMessage(`Could not save the setting (${e instanceof Error ? e.message : String(e)})`);
+      setErrorKind('provider');
+      setStatus('error');
+      return false;
+    }
+  }
+
+  async function onToggleAlwaysSite(input: HTMLInputElement): Promise<void> {
     const host = hostname();
     if (!host) return;
     const snapshot = readListsSnapshot(configStore);
     const patch = alwaysSiteOn()
       ? removeSiteFromAlwaysTranslate(snapshot, host)
       : addSiteToAlwaysTranslate(snapshot, host);
-    await applyListPatch(configStore, patch);
+    await saveListPatch(patch, input);
   }
 
   async function onToggleNeverSite(): Promise<void> {
@@ -296,10 +315,10 @@ function App() {
     if (!host) return;
     const snapshot = readListsSnapshot(configStore);
     if (neverSiteOn()) {
-      await applyListPatch(configStore, removeSiteFromNeverTranslate(snapshot, host));
+      await saveListPatch(removeSiteFromNeverTranslate(snapshot, host));
       return;
     }
-    await applyListPatch(configStore, addSiteToNeverTranslate(snapshot, host));
+    if (!(await saveListPatch(addSiteToNeverTranslate(snapshot, host)))) return;
     if (tabId !== null && pageState() === 'translated') {
       try {
         const state = await withTimeout(sendMessage('pageRestore', undefined, tabId), CONTENT_SCRIPT_TIMEOUT_MS);
@@ -311,19 +330,20 @@ function App() {
     }
   }
 
-  async function onToggleAlwaysLang(): Promise<void> {
+  async function onToggleAlwaysLang(input: HTMLInputElement): Promise<void> {
     const host = hostname();
     const lang = originalLanguage();
     if (lang === 'und') return;
     if (alwaysLangOn()) {
       const langBase = baseLanguageTag(lang);
-      await applyListPatch(configStore, {
-        alwaysTranslateLangs: alwaysLangs().filter((l) => baseLanguageTag(l) !== langBase),
-      });
+      await saveListPatch(
+        { alwaysTranslateLangs: alwaysLangs().filter((l) => baseLanguageTag(l) !== langBase) },
+        input,
+      );
       return;
     }
     const snapshot = readListsSnapshot(configStore);
-    await applyListPatch(configStore, addLangToAlwaysTranslate(snapshot, lang, host || undefined));
+    await saveListPatch(addLangToAlwaysTranslate(snapshot, lang, host || undefined), input);
   }
 
   async function onToggleBubbleForSite(): Promise<void> {
@@ -436,7 +456,11 @@ function App() {
       <div class="toggleList">
         <Show when={originalLanguage() !== 'und' && originalLanguage() !== targetLanguage()}>
           <label class="toggleRow">
-            <input type="checkbox" checked={alwaysLangOn()} onChange={() => void onToggleAlwaysLang()} />
+            <input
+              type="checkbox"
+              checked={alwaysLangOn()}
+              onChange={(e) => void onToggleAlwaysLang(e.currentTarget)}
+            />
             <span>Always translate from {languageName(originalLanguage())}</span>
           </label>
         </Show>
@@ -447,7 +471,7 @@ function App() {
             type="checkbox"
             checked={alwaysSiteOn()}
             disabled={!hostname()}
-            onChange={() => void onToggleAlwaysSite()}
+            onChange={(e) => void onToggleAlwaysSite(e.currentTarget)}
           />
           <span>Always translate this site</span>
         </label>
