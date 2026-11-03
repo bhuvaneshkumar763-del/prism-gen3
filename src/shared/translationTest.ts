@@ -1,3 +1,4 @@
+import { describeOneOffTranslateError } from '../engine/pageTranslator/errorState';
 import type { TranslateError } from '../engine/translator';
 import { baseLanguageTag } from './languages';
 import type { Result } from './result';
@@ -35,7 +36,7 @@ export function describeTranslationTest(
   elapsedMs: number,
 ): { ok: boolean; message: string } {
   if (!result.ok) {
-    return { ok: false, message: `Not working: ${result.error.message}` };
+    return { ok: false, message: `Not working: ${describeOneOffTranslateError(result.error)}` };
   }
   if (result.value.trim() === sample.text.trim()) {
     return {

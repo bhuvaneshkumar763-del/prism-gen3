@@ -1,17 +1,10 @@
-import { describeTranslateError } from '../../src/engine/pageTranslator/errorState';
+import { describeOneOffTranslateError } from '../../src/engine/pageTranslator/errorState';
 import type { TranslateError } from '../../src/engine/translator';
 import { TimeoutError } from '../../src/shared/withTimeout';
 
-/**
- * The selection popup's wording for a failed translation: the page
- * translator's plain-language message, minus its promise of an automatic
- * retry, since a one-off selection translation is never retried.
- */
+/** The selection popup's wording for a failed translation; it is never retried. */
 export function describeSelectionError(error: TranslateError): string {
-  if (error.kind === 'suspicious' || error.kind === 'untranslated') {
-    return 'The translation service sent this text back untranslated. Try again; if it keeps happening, switch provider in Settings.';
-  }
-  return describeTranslateError(error).replace(/\s*(?:—|;)\s*(?:retrying|Prism will retry) automatically\.$/, '.');
+  return describeOneOffTranslateError(error);
 }
 
 /**
