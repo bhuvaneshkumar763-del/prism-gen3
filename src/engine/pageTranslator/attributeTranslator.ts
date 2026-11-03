@@ -1,3 +1,4 @@
+import { hasLetter } from '../../shared/text';
 import type { Translator } from '../translator';
 import {
   type AttributeTarget,
@@ -51,8 +52,9 @@ const WATCHED_ATTRIBUTES: AttributeTarget['attribute'][] = [...TRANSLATABLE_ATTR
 
 export function createAttributeTranslator(options: AttributeTranslatorOptions) {
   /**
-   * Element -> attribute -> pre-translation value, for `restore()`. A `Map`
-   * because restore must enumerate it; `pruneDisconnected` bounds its growth.
+   * Element -> attribute -> pre-translation value, for `restore()`, kept only
+   * while the attribute holds our write. A `Map` because restore must
+   * enumerate it; `pruneDisconnected` bounds its growth.
    */
   const originals = new Map<Element, Map<string, string>>();
   const disconnectedLastTick = new WeakSet<Element>();
@@ -79,8 +81,20 @@ export function createAttributeTranslator(options: AttributeTranslatorOptions) {
       perEl = new Map();
       originals.set(el, perEl);
     }
-    // Only the first-seen value is the original; a later one may be our translation.
-    if (!perEl.has(attribute)) perEl.set(attribute, value);
+    perEl.set(attribute, value);
+  }
+
+  function isOwnWrite(el: Element, attribute: string): boolean {
+    return lastWritten.get(el)?.get(attribute) === el.getAttribute(attribute);
+  }
+
+  /**
+   * The page replaced our write with its own value, so that value is what
+   * restore() must leave in place, even if re-translating it fails.
+   */
+  function forgetOriginalIfPageChanged(el: Element, attribute: string): void {
+    if (isOwnWrite(el, attribute)) return;
+    originals.get(el)?.delete(attribute);
   }
 
   function noteWritten(el: Element, attribute: string, value: string): void {
@@ -92,32 +106,47 @@ export function createAttributeTranslator(options: AttributeTranslatorOptions) {
     perEl.set(attribute, value);
   }
 
+  /** Never rejects: callers `void` it, and start() must still install the observer. */
   async function translateTargets(targets: AttributeTarget[]): Promise<void> {
     if (targets.length === 0) return;
     // A restore() during the await must win: writing back would re-translate
     // a restored page and record translated text in `originals`.
     const myGeneration = generation;
-    const outcomes = await options.translator.translateBatch({
-      sourceLanguage: options.getSourceLanguage(),
-      sourceLanguageIsExplicit: options.isSourceLanguageExplicit?.() ?? false,
-      targetLanguage: currentTargetLanguage,
-      pieces: targets.map((t) => [t.element.getAttribute(t.attribute) ?? '']),
-      dontSortResults: false,
-    });
+    const sentValues = targets.map((t) => t.element.getAttribute(t.attribute) ?? '');
+    let outcomes: Awaited<ReturnType<Translator['translateBatch']>>;
+    try {
+      outcomes = await options.translator.translateBatch({
+        sourceLanguage: options.getSourceLanguage(),
+        sourceLanguageIsExplicit: options.isSourceLanguageExplicit?.() ?? false,
+        targetLanguage: currentTargetLanguage,
+        pieces: sentValues.map((value) => [value]),
+        dontSortResults: false,
+      });
+    } catch (e) {
+      console.error('[prism] attribute translation request failed', e);
+      return;
+    }
     if (myGeneration !== generation) return;
+    const changedInFlight: AttributeTarget[] = [];
     targets.forEach((target, index) => {
+      const { element, attribute } = target;
+      if (!element.isConnected) return;
+      const current = element.getAttribute(attribute);
+      if (current === null) return;
+      // The page changed it while in flight: translate its new value instead.
+      if (current !== sentValues[index]) {
+        if (!isOwnWrite(element, attribute) && hasLetter(current)) changedInFlight.push(target);
+        return;
+      }
       const outcome = outcomes[index];
       if (!outcome?.ok) return;
       const translated = outcome.value[0];
       if (!translated) return;
-      // The element may have been removed, or the attribute changed again,
-      // while this request was in flight.
-      const current = target.element.getAttribute(target.attribute);
-      if (current === null || !target.element.isConnected) return;
-      noteOriginal(target.element, target.attribute, current);
-      noteWritten(target.element, target.attribute, translated);
-      target.element.setAttribute(target.attribute, translated);
+      noteOriginal(element, attribute, current);
+      noteWritten(element, attribute, translated);
+      element.setAttribute(attribute, translated);
     });
+    scheduleTranslate(changedInFlight);
   }
 
   function startWatching(): void {
@@ -128,6 +157,7 @@ export function createAttributeTranslator(options: AttributeTranslatorOptions) {
       for (const mutation of mutations) {
         if (mutation.type === 'attributes') {
           const el = mutation.target as Element;
+          if (mutation.attributeName) forgetOriginalIfPageChanged(el, mutation.attributeName);
           changedElements.add(el);
         } else {
           mutation.addedNodes.forEach((node) => {
@@ -137,9 +167,9 @@ export function createAttributeTranslator(options: AttributeTranslatorOptions) {
             // own-write check stops a recycled row re-sending its translations.
             if (hasNoTranslateAncestor(node, isNoTranslateNode)) return;
             for (const target of collectAttributeTargets(node)) {
-              const written = lastWritten.get(target.element)?.get(target.attribute);
-              const current = target.element.getAttribute(target.attribute);
-              if (written === current) continue; // our own write
+              if (isOwnWrite(target.element, target.attribute)) continue;
+              // Changed while detached (a recycled row), with no attribute record.
+              forgetOriginalIfPageChanged(target.element, target.attribute);
               newTargets.push(target);
             }
           });
@@ -147,13 +177,13 @@ export function createAttributeTranslator(options: AttributeTranslatorOptions) {
       }
 
       for (const el of changedElements) {
-        if (isNoTranslateNode(el)) continue;
+        // Same rule as the initial walk: an element's own attributes count even
+        // on a skip tag (a textarea placeholder), but nothing below a skip node does.
+        if (hasNoTranslateAncestor(el, isNoTranslateNode)) continue;
         // Re-collect so the collector's rules decide whether the changed
         // attribute is still translatable (e.g. a non-button input's `value`).
         for (const target of collectAttributeTargets(el)) {
-          const written = lastWritten.get(target.element)?.get(target.attribute);
-          const current = target.element.getAttribute(target.attribute);
-          if (written === current) continue; // our own write
+          if (isOwnWrite(target.element, target.attribute)) continue;
           newTargets.push(target);
         }
       }
@@ -178,7 +208,7 @@ export function createAttributeTranslator(options: AttributeTranslatorOptions) {
   async function drainPending(): Promise<void> {
     if (pendingTargets.length === 0) return;
     translateInFlight = true;
-    const batch = pendingTargets;
+    const batch = uniqueTargets(pendingTargets);
     pendingTargets = [];
     try {
       await translateTargets(batch);
@@ -187,6 +217,21 @@ export function createAttributeTranslator(options: AttributeTranslatorOptions) {
       // Drain what arrived meanwhile rather than wait for the next mutation.
       if (pendingTargets.length > 0) void drainPending();
     }
+  }
+
+  // An in-flight change can be queued twice: by the observer and by the write-back's requeue.
+  function uniqueTargets(targets: AttributeTarget[]): AttributeTarget[] {
+    const seen = new Map<Element, Set<string>>();
+    return targets.filter(({ element, attribute }) => {
+      let attrs = seen.get(element);
+      if (!attrs) {
+        attrs = new Set();
+        seen.set(element, attrs);
+      }
+      if (attrs.has(attribute)) return false;
+      attrs.add(attribute);
+      return true;
+    });
   }
 
   function stopWatching(): void {

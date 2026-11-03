@@ -1,3 +1,4 @@
+import { HAS_LETTER } from '../../shared/text';
 import type { BatchingHint } from '../providers/descriptors';
 import { isPureTagText } from './tagText';
 
@@ -80,7 +81,6 @@ const LINK_CLUSTER_MIN_LINKS = 2;
 
 /** Max connector length between items (` | `, `»`); connectors must be letterless, as letters mean prose. */
 const LINK_CLUSTER_MAX_CONNECTOR_CHARS = 10;
-const HAS_LETTER = /\p{L}/u;
 
 function isClusterConnectorText(text: string): boolean {
   const trimmed = text.trim();

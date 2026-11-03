@@ -1,3 +1,5 @@
+import { HAS_LETTER } from '../../shared/text';
+
 /**
  * Reads the current text selection into a plain, testable shape (text +
  * bounding rect). Standard Web APIs only (`Selection`, `Range`) — lives in
@@ -47,7 +49,6 @@ export function getSelectionInfo(selection: Selection | null): SelectionInfo | n
  * characters and at least one Unicode letter, so a stray character or a
  * punctuation/digit-only selection (a double-clicked bullet) is ignored.
  */
-const HAS_LETTER = /\p{L}/u;
 export function isValidSelectionText(text: string): boolean {
   return text.length >= 2 && HAS_LETTER.test(text);
 }

@@ -36,6 +36,11 @@ export function createTitleTranslator(options: TitleTranslatorOptions) {
   let originalPageTitle: string | null = null;
   let translatedPageTitle: string | null = null;
   let active = false;
+  // Bumped by start()/restore(); a start() resuming under a stale cycle must not install the watcher.
+  let cycle = 0;
+  // Bumped per new title and by start()/restore(); a response from an older
+  // generation is dropped, so a slow chapter-1 reply can't overwrite chapter 2.
+  let titleGeneration = 0;
   // One title change can fire the observer several times before the first
   // request resolves (the cache fills only then); this stops duplicates.
   let inFlightKey: string | null = null;
@@ -137,8 +142,9 @@ export function createTitleTranslator(options: TitleTranslatorOptions) {
     if (!current || current.trim().length < 1) return;
 
     originalPageTitle = current;
+    const myGeneration = ++titleGeneration;
     const result = await translateTitleString(current);
-    if (!active) return; // restored/torn down while the request was in flight
+    if (myGeneration !== titleGeneration) return;
     if (result.status === 'translated' && result.text !== current) {
       translatedPageTitle = result.text;
       applyTabTitle(result.text);
@@ -152,9 +158,12 @@ export function createTitleTranslator(options: TitleTranslatorOptions) {
     if (!current || current.trim().length < 1) return;
     if (current === translatedPageTitle) return;
 
+    // The same title again (a duplicate observer/poll tick) keeps its generation.
+    if (current !== originalPageTitle) titleGeneration++;
     originalPageTitle = current;
+    const myGeneration = titleGeneration;
     const result = await translateTitleString(current);
-    if (!active) return;
+    if (myGeneration !== titleGeneration) return;
 
     if (result.status === 'failed') {
       pollDelay = Math.min(POLL_MAX_MS, Math.round(pollDelay * POLL_BACKOFF_FACTOR));
@@ -210,7 +219,9 @@ export function createTitleTranslator(options: TitleTranslatorOptions) {
 
   /** Called on translatePage() — starts translating the title and watching for changes. */
   async function start(targetLanguage: string): Promise<void> {
+    const myCycle = ++cycle;
     await translate(targetLanguage);
+    if (myCycle !== cycle) return; // restored, or started again, during the await
     startWatching();
   }
 
@@ -218,6 +229,8 @@ export function createTitleTranslator(options: TitleTranslatorOptions) {
   function restore(): void {
     stopWatching();
     active = false;
+    cycle++;
+    titleGeneration++;
     if (originalPageTitle !== null) {
       applyTabTitle(originalPageTitle);
     }

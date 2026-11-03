@@ -1,3 +1,4 @@
+import { HAS_LETTER } from '../../shared/text';
 import { connectivity } from '../connectivity';
 import type { BatchingHint } from '../providers/descriptors';
 import type { Translator } from '../translator';
@@ -34,7 +35,6 @@ const MAX_NODES_PER_BLOCK_TICK = 5000;
 // on a churning page `viewportDirty` stays set every tick, and each reorder
 // forces layout reads across the whole queue.
 const LARGE_QUEUE_REORDER_THROTTLE_MS = 500;
-const HAS_LETTER = /\p{L}/u;
 /** See `originalWhitespace` in `runTranslationTick` for why this is punctuation-aware. */
 const LEADING_NON_LETTER_OR_DIGIT = /^[^\p{L}\p{N}]+/u;
 

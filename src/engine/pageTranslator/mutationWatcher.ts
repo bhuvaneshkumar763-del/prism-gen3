@@ -9,6 +9,7 @@
  * owned by resweep.ts alone; this module must not force-bump it.
  */
 
+import { HAS_LETTER } from '../../shared/text';
 import { hasNoTranslateAncestor } from './collectTextNodes';
 
 export interface MutationWatcherOptions {
@@ -17,8 +18,6 @@ export interface MutationWatcherOptions {
   onNewRoot(root: Node): void;
   onChangedTextNode(node: Text): void;
 }
-
-const HAS_LETTER = /\p{L}/u;
 
 export function createMutationWatcher(options: MutationWatcherOptions) {
   const lastWritten = new WeakMap<Text, string>();

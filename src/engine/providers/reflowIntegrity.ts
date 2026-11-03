@@ -1,3 +1,5 @@
+import { HAS_LETTER } from '../../shared/text';
+
 /**
  * Detects a SAME-COUNT reflow in a grouped multi-node piece: the right number
  * of entries and no leaked markers, but content shifted across node
@@ -9,7 +11,6 @@
  * lean toward catching a real reflow.
  */
 
-const HAS_LETTER = /\p{L}/u;
 /**
  * Four or more consecutive ASCII digits: long enough to read as an
  * identifier, count, or year that a translator carries across verbatim,
