@@ -2,7 +2,7 @@ import { mountBubble } from '../components/bubble/mountBubble';
 import { mountHoverTooltip } from '../components/hoverTooltip/mountHoverTooltip';
 import { mountSelectionPopup } from '../components/selection/mountSelectionPopup';
 import { shouldAutoTranslateOnLoad } from '../src/engine/pageTranslator/autoTranslateDecision';
-import { createPageTranslator } from '../src/engine/pageTranslator/translateLoop';
+import { createPageTranslator, type PageLanguageState } from '../src/engine/pageTranslator/translateLoop';
 import { getBatchingHint } from '../src/engine/providers/descriptors';
 import { configStore } from '../src/platform/configStore';
 import { onTrustedMessage, sendMessage } from '../src/platform/messaging/protocol';
@@ -10,6 +10,13 @@ import {
   createOriginalLanguageTracker,
   MAIN_FRAME_DECISION_WORST_CASE_MS,
 } from '../src/platform/originalLanguageTracker';
+import {
+  classifyFrame,
+  type FollowerState,
+  followTopFrame,
+  type PageControl,
+  pageCommandRoute,
+} from '../src/platform/pageFrames';
 import { createRemoteTranslator } from '../src/platform/remoteTranslator';
 import { resolveBubbleVisibility } from '../src/shared/config/siteOverrides';
 
@@ -17,31 +24,46 @@ import { resolveBubbleVisibility } from '../src/shared/config/siteOverrides';
 const SKIP_UI_PROTOCOLS = ['chrome-extension:', 'moz-extension:', 'about:'];
 
 /**
- * Runs the page-translation engine in every frame, reaching the background
- * through `createRemoteTranslator()` (the engine never touches `browser.*`).
- * The top frame also mounts the bubble, hover tooltip and selection popup,
- * makes the auto-translate-on-load decision and answers popup messages.
+ * Posted by the top frame to its sub-frames after publishing a new frame
+ * decision. It carries no command: a frame that gets it re-reads the decision
+ * from the background, so a page posting it itself changes nothing.
+ */
+const FRAME_SYNC_KEY = 'prismFrameSync';
+
+type PageCommand = { kind: 'translate'; targetLanguage: string; sourceLanguage?: string } | { kind: 'restore' };
+
+/**
+ * Runs the page-translation engine in the top frame and every same-origin
+ * sub-frame, reaching the background through `createRemoteTranslator()` (the
+ * engine never touches `browser.*`). The top frame is the page controller:
+ * every control (bubble, popup, menu, shortcut, auto-translate) goes through
+ * its `runPageCommand`, which applies the command and publishes it to the
+ * sub-frames (see `pageFrames.ts`). It also mounts the bubble, hover tooltip
+ * and selection popup and answers popup messages.
  */
 export default defineContentScript({
   matches: ['*://*/*'],
-  // Every frame gets a page translator; UI and popup-facing handlers stay
-  // top-frame only (the `window.self === window.top` checks below).
+  // Same-origin sub-frames get a page translator that follows the top frame;
+  // UI and popup-facing handlers are top-frame only.
   allFrames: true,
   // document_end, not the default document_idle: config load, the
   // auto-translate decision and the mutation observer shouldn't wait on slow
   // subresources, and nothing here needs them.
   runAt: 'document_end',
   main() {
-    // Cross-origin sub-frames (most ad/embed iframes) can never inherit an
-    // auto-translate decision or receive `pageTranslate`, so skip all setup
-    // there; `pageRestore` would be a no-op for them anyway.
-    if (window.self !== window.top) {
+    const isTop = window.self === window.top;
+    let canReadTopLocation = true;
+    if (!isTop) {
       try {
         void window.top?.location.href;
       } catch {
-        return;
+        canReadTopLocation = false;
       }
     }
+    // Cross-origin sub-frames (most ad/embed iframes) can't read the top
+    // frame's decision, so they get no setup at all.
+    const frameKind = classifyFrame(isTop, canReadTopLocation);
+    if (frameKind === 'crossOriginSubFrame') return;
 
     void configStore.onReady();
 
@@ -63,7 +85,71 @@ export default defineContentScript({
       getTranslatePreTags: () => configStore.get('translatePreTags'),
     });
 
-    if (window.self === window.top && !SKIP_UI_PROTOCOLS.includes(location.protocol)) {
+    /** Set once any control has translated or restored; the on-load decision then no longer applies. */
+    let pageCommandSeen = false;
+    /** The From pick sticks for the page load, as in the page translator, so sub-frames keep using it too. */
+    let pickedSourceLanguage: string | undefined;
+    let publishing: Promise<void> = Promise.resolve();
+
+    /** The one entry point for translate/restore in the top frame, whichever control sent it. */
+    async function runPageCommand(command: PageCommand, control: PageControl): Promise<PageLanguageState> {
+      if (control !== 'autoTranslate') pageCommandSeen = true;
+      const route = pageCommandRoute(frameKind, control);
+      if (command.kind === 'translate') {
+        await configStore.onReady();
+        if (command.sourceLanguage !== undefined) pickedSourceLanguage = command.sourceLanguage;
+        if (route.runHere) await pageTranslator.translatePage(command.targetLanguage, command.sourceLanguage);
+      } else if (route.runHere) {
+        pageTranslator.restorePage();
+      }
+      if (route.forwardToSameOriginSubFrames) publishToSubFrames(command);
+      return pageTranslator.getState();
+    }
+
+    /**
+     * Stores the command as the tab's frame decision in the background (what
+     * sub-frames read, including ones that load later), then tells loaded
+     * sub-frames to re-read it. Chained so decisions land in command order.
+     */
+    function publishToSubFrames(command: PageCommand): void {
+      const shouldTranslate = command.kind === 'translate';
+      const targetLanguage = shouldTranslate ? command.targetLanguage : configStore.get('targetLanguage');
+      const pickedSource = pickedSourceLanguage;
+      publishing = publishing
+        .then(async () => {
+          // Shared with the bubble and the auto-translate decision, so this
+          // waits for the one detection rather than starting another.
+          await originalLanguageTracker.start();
+          await sendMessage('reportFrameLanguageDecision', {
+            shouldTranslate,
+            targetLanguage,
+            originalLanguage: pickedSource ?? originalLanguageTracker.get(),
+            mainFrameOrigin: location.origin,
+          });
+          notifySubFrames(window);
+        })
+        .catch((e) => {
+          // Handled, not `void`, to keep it out of the page's console as an
+          // unhandled rejection; sub-frames then just keep their last state.
+          console.warn('[prism] could not share the page command with frames', e);
+        });
+    }
+
+    /** Walks the whole frame tree; the target origin keeps cross-origin frames from receiving it. */
+    function notifySubFrames(parent: Window): void {
+      for (let i = 0; i < parent.frames.length; i++) {
+        const child = parent.frames[i];
+        if (!child) continue;
+        try {
+          child.postMessage({ [FRAME_SYNC_KEY]: true }, location.origin);
+        } catch {
+          // A frame that went away mid-walk.
+        }
+        notifySubFrames(child);
+      }
+    }
+
+    if (isTop && !SKIP_UI_PROTOCOLS.includes(location.protocol)) {
       let bubble: ReturnType<typeof mountBubble> | null = null;
 
       function bubbleShouldShow(): boolean {
@@ -85,8 +171,9 @@ export default defineContentScript({
         if (!bubble) {
           bubble = mountBubble({
             hostname: location.hostname,
-            onTranslate: (targetLanguage, sourceLanguage) => void handleTranslateClick(targetLanguage, sourceLanguage),
-            onRestore: () => pageTranslator.restorePage(),
+            onTranslate: (targetLanguage, sourceLanguage) =>
+              void runPageCommand({ kind: 'translate', targetLanguage, sourceLanguage }, 'bubble'),
+            onRestore: () => void runPageCommand({ kind: 'restore' }, 'bubble'),
             onClose: () => {
               bubble = null;
             },
@@ -103,11 +190,6 @@ export default defineContentScript({
             bubble?.update({ originalLanguage: originalLanguageTracker.get() });
           });
         }
-      }
-
-      async function handleTranslateClick(targetLanguage: string, sourceLanguage?: string): Promise<void> {
-        await configStore.onReady();
-        await pageTranslator.translatePage(targetLanguage, sourceLanguage);
       }
 
       pageTranslator.onStateChange((state) => {
@@ -207,9 +289,11 @@ export default defineContentScript({
       })();
     }
 
-    if (window.self === window.top) {
+    if (isTop) {
       void (async () => {
         await Promise.all([configStore.onReady(), originalLanguageTracker.start()]);
+        // A control used while detection ran already decided this page.
+        if (pageCommandSeen) return;
 
         const shouldTranslate = shouldAutoTranslateOnLoad({
           originalLanguage: originalLanguageTracker.get(),
@@ -222,62 +306,23 @@ export default defineContentScript({
           neverTranslateLangs: configStore.get('neverTranslateLangs'),
           isIncognito: browser.extension?.inIncognitoContext ?? false,
         });
-        // Report even "don't translate" so same-origin sub-frames stop polling.
-        // Handled, not `void`, to avoid an unhandled rejection in the page's
-        // console; sub-frames then just don't inherit a decision.
-        sendMessage('reportFrameLanguageDecision', {
-          shouldTranslate,
-          targetLanguage: configStore.get('targetLanguage'),
-          originalLanguage: originalLanguageTracker.get(),
-          mainFrameOrigin: location.origin,
-        }).catch((e) => {
-          console.warn('[prism] could not share the language decision with frames', e);
-        });
         if (shouldTranslate) {
-          await pageTranslator.translatePage(configStore.get('targetLanguage'));
+          await runPageCommand(
+            { kind: 'translate', targetLanguage: configStore.get('targetLanguage') },
+            'autoTranslate',
+          );
+        } else if (pageCommandRoute(frameKind, 'autoTranslate').forwardToSameOriginSubFrames) {
+          // Published even when not translating, so sub-frames stop polling.
+          publishToSubFrames({ kind: 'restore' });
         }
       })();
-    } else {
-      void (async () => {
-        await configStore.onReady();
-        // The main frame's report may arrive after this sub-frame loads, so
-        // poll, bounded in case the main frame never reports.
-        const POLL_INTERVAL_MS = 200;
-        // Covers the main frame's worst case (visibility wait plus language
-        // detection, serial, e.g. a background tab) plus ~1 s of margin.
-        const MAX_ATTEMPTS = Math.ceil(MAIN_FRAME_DECISION_WORST_CASE_MS / POLL_INTERVAL_MS) + 5; // ~9s
-        for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-          const decision = await sendMessage('getFrameLanguageDecision', undefined);
-          // A previous page's entry may still be there; an origin mismatch
-          // means "not updated for this load yet", so keep polling.
-          if (decision && decision.mainFrameOrigin === window.top?.location.origin) {
-            // Explicit source = the main frame's detection. It goes to the
-            // provider as-is, so 'und' must become 'auto' here.
-            if (decision.shouldTranslate) {
-              const sourceLanguage = decision.originalLanguage === 'und' ? 'auto' : decision.originalLanguage;
-              await pageTranslator.translatePage(decision.targetLanguage, sourceLanguage);
-            }
-            return;
-          }
-          await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-        }
-      })();
-    }
 
-    // Registered in every frame: same-origin sub-frames auto-translate
-    // themselves, and "Show original" (sent with no frameId, so to every
-    // frame) must restore them too.
-    onTrustedMessage('pageRestore', () => {
-      pageTranslator.restorePage();
-      return pageTranslator.getState();
-    });
-
-    if (window.self === window.top) {
-      onTrustedMessage('pageTranslate', async (message) => {
-        await configStore.onReady();
-        await pageTranslator.translatePage(message.data.targetLanguage);
-        return pageTranslator.getState();
-      });
+      // Sent to every frame of the tab; only the top frame registers them, so
+      // each command is applied once per frame and answered by the top frame.
+      onTrustedMessage('pageTranslate', (message) =>
+        runPageCommand({ kind: 'translate', targetLanguage: message.data.targetLanguage }, 'pageMessage'),
+      );
+      onTrustedMessage('pageRestore', () => runPageCommand({ kind: 'restore' }, 'pageMessage'));
       onTrustedMessage('getPageState', () => {
         return pageTranslator.getState();
       });
@@ -291,6 +336,55 @@ export default defineContentScript({
       onTrustedMessage('getPageWorking', () => {
         return pageTranslator.isWorking();
       });
+    } else {
+      let followerState: FollowerState = { translated: false };
+      let following: Promise<unknown> = Promise.resolve();
+
+      /** Applies the top frame's latest decision; false while there is none for this page load yet. */
+      async function followOnce(): Promise<boolean> {
+        const decision = await sendMessage('getFrameLanguageDecision', undefined);
+        const step = followTopFrame(decision, window.top?.location.origin ?? '', followerState);
+        if (step.action === 'translate') {
+          followerState = {
+            translated: true,
+            targetLanguage: step.targetLanguage,
+            sourceLanguage: step.sourceLanguage,
+          };
+          await pageTranslator.translatePage(step.targetLanguage, step.sourceLanguage);
+        } else if (step.action === 'restore') {
+          followerState = { translated: false };
+          pageTranslator.restorePage();
+        }
+        return step.action !== 'wait';
+      }
+
+      /** One sync at a time, so two quick commands can't apply out of order. */
+      function syncWithTopFrame(): Promise<boolean> {
+        const run = following.then(followOnce);
+        following = run.catch(() => undefined);
+        return run;
+      }
+
+      window.addEventListener('message', (event) => {
+        if (event.data?.[FRAME_SYNC_KEY] !== true) return;
+        syncWithTopFrame().catch((e) => {
+          console.warn('[prism] could not follow the page command', e);
+        });
+      });
+
+      void (async () => {
+        await configStore.onReady();
+        // The main frame's report may arrive after this sub-frame loads, so
+        // poll, bounded in case the main frame never reports.
+        const POLL_INTERVAL_MS = 200;
+        // Covers the main frame's worst case (visibility wait plus language
+        // detection, serial, e.g. a background tab) plus ~1 s of margin.
+        const MAX_ATTEMPTS = Math.ceil(MAIN_FRAME_DECISION_WORST_CASE_MS / POLL_INTERVAL_MS) + 5; // ~9s
+        for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+          if (await syncWithTopFrame()) return;
+          await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+        }
+      })();
     }
   },
 });
