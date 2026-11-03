@@ -49,9 +49,9 @@ interface ProtocolMap {
   /** Popup → a tab's content script: whether translate work is still queued or in flight. `pageTranslate` resolves once work is queued, so the popup polls this for its busy indicator. */
   getPageWorking(): boolean;
   /**
-   * A tab's main-frame content script → background: reports its
-   * auto-translate-on-load decision so a same-origin sub-frame can inherit it
-   * instead of detecting independently. Same-origin scoping is the caller's job.
+   * A tab's main-frame content script → background: reports the page's current
+   * translate/restore command (from any control, or the auto-translate decision)
+   * so same-origin sub-frames follow it. Same-origin scoping is the caller's job.
    */
   reportFrameLanguageDecision(data: FrameLanguageDecision): void;
   /** A same-origin sub-frame → background: asks for the main frame's decision, if it's reported one yet. */

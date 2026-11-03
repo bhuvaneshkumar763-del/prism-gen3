@@ -1,39 +1,22 @@
-import { createSignal, For, onCleanup, onMount, Show } from 'solid-js';
-import { createStore, reconcile } from 'solid-js/store';
-import { StringListEditor } from '../../components/options/StringListEditor';
+import { createSignal, Show } from 'solid-js';
 import { TabPanel } from '../../components/options/TabPanel';
 import { TabSwitcher } from '../../components/options/TabSwitcher';
-import { providerDescriptors } from '../../src/engine/providers/descriptors';
-import { translationCache } from '../../src/platform/cache/translationCache';
+import { createConfigMirror } from '../../components/shared/configMirror';
 import { configStore } from '../../src/platform/configStore';
-import { type DiagnosticsReport, runDiagnostics } from '../../src/platform/diagnostics';
-import { sendMessage } from '../../src/platform/messaging/protocol';
-import { parseBackup, serializeBackup } from '../../src/shared/config/backup';
-import {
-  addLangToAlwaysTranslate,
-  addLangToNeverTranslate,
-  addSiteToAlwaysTranslate,
-  addSiteToNeverTranslate,
-  type ListsSnapshot,
-  removeLangFromAlwaysTranslate,
-  removeLangFromNeverTranslate,
-  removeSiteFromAlwaysTranslate,
-  removeSiteFromNeverTranslate,
-} from '../../src/shared/config/listMutations';
-import { missingProviderSetup } from '../../src/shared/config/providerSetup';
-import { type Config, type ConfigKey, defaultConfig } from '../../src/shared/config/schema';
-import { clearBubbleOverrideForHost, clearSourceLanguageOverrideForHost } from '../../src/shared/config/siteOverrides';
-import { downloadBlob } from '../../src/shared/downloadBlob';
-import { COMMON_LANGUAGES } from '../../src/shared/languages';
-import { translateShortcut } from '../../src/shared/shortcut';
-import { describeTranslationTest, pickTranslationTestSample } from '../../src/shared/translationTest';
+import type { Config, ConfigKey } from '../../src/shared/config/schema';
+import { AdvancedTab } from './tabs/AdvancedTab';
+import { BubbleTab } from './tabs/BubbleTab';
+import { GeneralTab } from './tabs/GeneralTab';
+import { PageTranslationTab } from './tabs/PageTranslationTab';
+import { SelectionTab } from './tabs/SelectionTab';
+import { describeError, type SettingsTabProps } from './tabs/types';
 import './App.css';
 
 /**
- * The options page: 5 tabs (no Voice/Dictionary; those subsystems don't
- * exist). Config is mirrored into the `settings` store via
- * `configStore.onChanged`; JSX never reads `configStore.get()` directly,
- * since Solid wouldn't track it.
+ * The options page shell: 5 tabs (no Voice/Dictionary; those subsystems don't
+ * exist), one component each under `tabs/`. Config comes from
+ * `createConfigMirror`; JSX never reads `configStore.get()` directly, since
+ * Solid wouldn't track it.
  */
 
 const TABS = [
@@ -44,91 +27,19 @@ const TABS = [
   { id: 'advanced', label: 'Advanced' },
 ];
 
-/**
- * `setStore(key, object)` merges, so a removed per-host entry would survive
- * in the mirror and be written back on the next save; `reconcile()` replaces
- * these Record keys. Not used for arrays: it leaves a trailing `null` when
- * shrinking one, and arrays already replace wholesale.
- */
-const RECONCILED_KEYS = new Set<ConfigKey>(['bubbleByHost', 'sourceLanguageByHost']);
-
 function App() {
-  const [settings, setSettings] = createStore<Config>({} as Config);
+  const { config: settings, ready, setLocal } = createConfigMirror(configStore);
 
-  function applySetting<K extends ConfigKey>(key: K, value: Config[K]): void {
-    if (RECONCILED_KEYS.has(key)) {
-      setSettings(key, reconcile(value) as never);
-    } else {
-      setSettings(key, value as never);
-    }
-  }
-
-  const [ready, setReady] = createSignal(false);
   // Deep-linkable (options.html#page): the popup and bubble open Settings
   // straight at the provider fields when you pick a provider that needs setup.
   const initialTab = TABS.find((t) => `#${t.id}` === location.hash)?.id ?? 'general';
   const [activeTab, setActiveTab] = createSignal(initialTab);
-  const [testRunning, setTestRunning] = createSignal(false);
-  /** The live translate/restore key binding, or null — see translateShortcut. */
-  const [shortcut, setShortcut] = createSignal<string | null>(null);
-  const [testResult, setTestResult] = createSignal<{ ok: boolean; message: string } | null>(null);
-  const providerGaps = () => missingProviderSetup(settings.pageTranslatorProvider, settings);
-
-  /**
-   * Diagnostics test: sends one short sample through the same background path
-   * page translation uses, to answer "does translation work right now?".
-   */
-  async function handleTestTranslation(): Promise<void> {
-    setTestRunning(true);
-    setTestResult(null);
-    const sample = pickTranslationTestSample(settings.targetLanguage);
-    const started = performance.now();
-    try {
-      const result = await sendMessage('translateText', sample);
-      setTestResult(describeTranslationTest(sample, result, performance.now() - started));
-    } catch (e) {
-      setTestResult({ ok: false, message: `Not working: ${describeError(e)}` });
-    } finally {
-      setTestRunning(false);
-    }
-  }
   const [savedField, setSavedField] = createSignal<ConfigKey | null>(null);
-  const [diagnostics, setDiagnostics] = createSignal<DiagnosticsReport | null>(null);
-  const [diagnosticsRunning, setDiagnosticsRunning] = createSignal(false);
-  const [cacheCleared, setCacheCleared] = createSignal(false);
-  const [clearingCache, setClearingCache] = createSignal(false);
-  const [backupMessage, setBackupMessage] = createSignal<string | null>(null);
-  const [restoredDefaults, setRestoredDefaults] = createSignal(false);
   /**
    * Shown when a storage write (setField, import, restore defaults, clear
    * cache) fails, so the page doesn't silently show an unsaved value.
    */
   const [saveError, setSaveError] = createSignal<string | null>(null);
-  let fileInput: HTMLInputElement | undefined;
-
-  function describeError(e: unknown): string {
-    return e instanceof Error ? e.message : String(e);
-  }
-
-  async function handleRunDiagnostics(): Promise<void> {
-    setDiagnosticsRunning(true);
-    setDiagnostics(await runDiagnostics());
-    setDiagnosticsRunning(false);
-  }
-
-  async function handleClearCache(): Promise<void> {
-    setClearingCache(true);
-    try {
-      await translationCache.clear();
-      setCacheCleared(true);
-      setTimeout(() => setCacheCleared(false), 1200);
-      if (diagnostics()) await handleRunDiagnostics();
-    } catch (e) {
-      setSaveError(`Couldn't clear the cache: ${describeError(e)}`);
-    } finally {
-      setClearingCache(false);
-    }
-  }
 
   let savedTimeout: ReturnType<typeof setTimeout> | undefined;
   function flashSaved(key: ConfigKey): void {
@@ -137,117 +48,20 @@ function App() {
     savedTimeout = setTimeout(() => setSavedField(null), 1200);
   }
 
-  onMount(() => {
-    browser.commands
-      ?.getAll?.()
-      .then((commands) => setShortcut(translateShortcut(commands)))
-      .catch(() => {});
-  });
-
-  onMount(async () => {
-    await configStore.onReady();
-    for (const key of Object.keys(defaultConfig) as ConfigKey[]) {
-      setSettings(key, configStore.get(key) as never);
-    }
-    setReady(true);
-  });
-
-  const unsubscribe = configStore.onChanged((name, value) => {
-    applySetting(name, value as never);
-  });
-  onCleanup(unsubscribe);
-
   async function setField<K extends ConfigKey>(key: K, value: Config[K]): Promise<void> {
     const previous = settings[key];
-    applySetting(key, value);
+    setLocal(key, value);
     try {
       await configStore.set(key, value);
       flashSaved(key);
     } catch (e) {
       // Roll back the optimistic update so the field doesn't show an unsaved value.
-      applySetting(key, previous);
+      setLocal(key, previous);
       setSaveError(`Couldn't save this setting: ${describeError(e)}`);
     }
   }
 
-  function listsSnapshot(): ListsSnapshot {
-    return {
-      alwaysTranslateSites: settings.alwaysTranslateSites,
-      neverTranslateSites: settings.neverTranslateSites,
-      alwaysTranslateLangs: settings.alwaysTranslateLangs,
-      neverTranslateLangs: settings.neverTranslateLangs,
-    };
-  }
-
-  async function applyPatch(patch: Partial<ListsSnapshot>): Promise<void> {
-    await Promise.all(
-      (Object.keys(patch) as Array<keyof ListsSnapshot>).map((key) => {
-        const value = patch[key];
-        return value === undefined ? Promise.resolve() : setField(key, value);
-      }),
-    );
-  }
-
-  // Every add/remove goes through src/shared/config/listMutations.ts so the
-  // always/never cross-list cleanup matches the popup's.
-  function handleExport(): void {
-    const json = serializeBackup(settings as Config, Date.now());
-    const blob = new Blob([json], { type: 'application/json' });
-    const date = new Date().toISOString().slice(0, 10);
-    downloadBlob(blob, `prism-settings-${date}.json`);
-  }
-
-  function handleImportClick(): void {
-    fileInput?.click();
-  }
-
-  async function handleImportFile(e: Event): Promise<void> {
-    const input = e.currentTarget as HTMLInputElement;
-    const file = input.files?.[0];
-    if (!file) return;
-    const text = await file.text();
-    const result = parseBackup(text);
-    if (!result.ok) {
-      setBackupMessage(result.error);
-      input.value = '';
-      return;
-    }
-    try {
-      await configStore.import(JSON.stringify(result.value));
-      setBackupMessage('Settings imported.');
-      setTimeout(() => setBackupMessage(null), 3000);
-    } catch (e2) {
-      setBackupMessage(`Import failed: ${describeError(e2)}`);
-    }
-    input.value = '';
-  }
-
-  async function handleRestoreDefaults(): Promise<void> {
-    if (!confirm('Restore all settings to their defaults? This cannot be undone.')) return;
-    try {
-      await configStore.restoreToDefault();
-      setRestoredDefaults(true);
-      setTimeout(() => setRestoredDefaults(false), 2000);
-    } catch (e) {
-      setSaveError(`Couldn't restore defaults: ${describeError(e)}`);
-    }
-  }
-
-  function bubbleHostEntries(): Array<[string, boolean]> {
-    return Object.entries(settings.bubbleByHost ?? {});
-  }
-
-  async function removeBubbleOverride(host: string): Promise<void> {
-    await setField('bubbleByHost', clearBubbleOverrideForHost(settings.bubbleByHost, host));
-  }
-
-  function sourceLanguageHostEntries(): Array<[string, string]> {
-    return Object.entries(settings.sourceLanguageByHost ?? {});
-  }
-
-  async function removeSourceLanguageOverride(host: string): Promise<void> {
-    await setField('sourceLanguageByHost', clearSourceLanguageOverrideForHost(settings.sourceLanguageByHost, host));
-  }
+  const tabProps: SettingsTabProps = { settings, setField, savedField, onError: setSaveError };
 
   return (
     <div class="app">
@@ -268,405 +82,23 @@ function App() {
         <TabSwitcher tabs={TABS} activeId={activeTab()} onSelect={setActiveTab} />
 
         <TabPanel id="general" active={activeTab() === 'general'}>
-          <section class="section">
-            <h2>General</h2>
-            <p class="hint">
-              <Show
-                when={shortcut()}
-                fallback={
-                  <>
-                    No keyboard shortcut is set for translating a page — you can assign one in your browser's extension
-                    shortcuts settings.
-                  </>
-                }
-              >
-                Translate or restore the current page with <kbd>{shortcut()}</kbd>. You can change it in your browser's
-                extension shortcuts settings.
-              </Show>
-            </p>
-            <label class="field">
-              <span>Theme</span>
-              <select value={settings.theme} onChange={(e) => void setField('theme', e.currentTarget.value as never)}>
-                <option value="auto">Match system</option>
-                <option value="light">Always light</option>
-                <option value="dark">Always dark</option>
-              </select>
-            </label>
-            <label class="field">
-              <span>Translate into</span>
-              <select
-                value={settings.targetLanguage}
-                onChange={(e) => void setField('targetLanguage', e.currentTarget.value)}
-              >
-                <For each={COMMON_LANGUAGES}>{(l) => <option value={l.code}>{l.name}</option>}</For>
-              </select>
-            </label>
-            <label class="field">
-              <span>Source language for selected text</span>
-              <select
-                value={settings.sourceLanguage}
-                onChange={(e) => void setField('sourceLanguage', e.currentTarget.value)}
-              >
-                <option value="auto">Detect automatically</option>
-                <For each={COMMON_LANGUAGES}>{(l) => <option value={l.code}>{l.name}</option>}</For>
-              </select>
-              <small class="hint">
-                Page translation detects the language by itself. If it guesses wrong on a site, set it with the bubble's
-                From picker.
-              </small>
-            </label>
-            <StringListEditor
-              label="Preferred target languages"
-              values={settings.targetLanguages ?? []}
-              languageOptions
-              onAdd={(code) =>
-                void setField('targetLanguages', [...new Set([...(settings.targetLanguages ?? []), code])])
-              }
-              onRemove={(code) =>
-                void setField(
-                  'targetLanguages',
-                  (settings.targetLanguages ?? []).filter((c) => c !== code),
-                )
-              }
-            />
-            <Show
-              when={savedField() === 'theme' || savedField() === 'targetLanguage' || savedField() === 'sourceLanguage'}
-            >
-              <p class="saved">Saved</p>
-            </Show>
-          </section>
-
-          <section class="section">
-            <h2>Backup</h2>
-            <p class="hint">
-              Settings are stored on this device only (see the Advanced tab's diagnostics for why —
-              `chrome.storage.sync` caused real, hard-to-diagnose bugs on some browsers). Export/import is the supported
-              way to move them between devices.
-            </p>
-            {/*
-              Unlike the diagnostics export, this one keeps API keys (stripping
-              them would break restoring on another device), so warn instead.
-            */}
-            <p class="hint">
-              <strong>The exported file includes any API keys you've entered in plain text</strong> — store and share it
-              the same way you would the keys themselves.
-            </p>
-            <div class="backupActions">
-              <button type="button" onClick={handleExport}>
-                Export settings
-              </button>
-              <button type="button" class="secondary" onClick={handleImportClick}>
-                Import settings
-              </button>
-              <input
-                ref={fileInput}
-                type="file"
-                accept="application/json"
-                style={{ display: 'none' }}
-                onChange={(e) => void handleImportFile(e)}
-              />
-              <button type="button" class="danger" onClick={() => void handleRestoreDefaults()}>
-                Restore defaults
-              </button>
-            </div>
-            <Show when={backupMessage()}>
-              <p class="saved">{backupMessage()}</p>
-            </Show>
-            <Show when={restoredDefaults()}>
-              <p class="saved">Defaults restored.</p>
-            </Show>
-          </section>
+          <GeneralTab {...tabProps} />
         </TabPanel>
 
         <TabPanel id="page" active={activeTab() === 'page'}>
-          <section class="section">
-            <h2>Translation service</h2>
-            <label class="field">
-              <span>Provider</span>
-              <select
-                value={settings.pageTranslatorProvider}
-                onChange={(e) => void setField('pageTranslatorProvider', e.currentTarget.value as never)}
-              >
-                <For each={providerDescriptors}>{(d) => <option value={d.id}>{d.displayName}</option>}</For>
-              </select>
-            </label>
-
-            <Show when={settings.pageTranslatorProvider === 'googleCloudTranslate'}>
-              <div class="providerFields">
-                <label class="field">
-                  <span>Google Cloud Translation API key</span>
-                  <input
-                    type="password"
-                    value={settings.googleCloudTranslateApiKey}
-                    onChange={(e) => void setField('googleCloudTranslateApiKey', e.currentTarget.value)}
-                  />
-                </label>
-              </div>
-            </Show>
-
-            <Show when={settings.pageTranslatorProvider === 'google'}>
-              <p class="hint">No configuration needed for this provider.</p>
-            </Show>
-
-            <Show when={providerGaps()}>
-              {(gaps) => (
-                <p class="setupWarning" role="status">
-                  Needs setup: {gaps().join(', ')}.
-                </p>
-              )}
-            </Show>
-
-            <div class="testRow">
-              <button type="button" disabled={testRunning()} onClick={() => void handleTestTranslation()}>
-                {testRunning() ? 'Testing…' : 'Test translation'}
-              </button>
-              <Show when={testResult()}>
-                {(result) => (
-                  <p class="testResult" classList={{ ok: result().ok, bad: !result().ok }} role="status">
-                    {result().message}
-                  </p>
-                )}
-              </Show>
-            </div>
-
-            <Show
-              when={
-                savedField() && ['pageTranslatorProvider', 'googleCloudTranslateApiKey'].includes(savedField() ?? '')
-              }
-            >
-              <p class="saved">Saved</p>
-            </Show>
-          </section>
-
-          <section class="section">
-            <h2>Automatic translation</h2>
-            <p class="hint">
-              One hostname or language code per line (or comma-separated). Never-translate takes priority over
-              always-translate for the same site or language.
-            </p>
-            <StringListEditor
-              label="Always translate these sites"
-              values={settings.alwaysTranslateSites ?? []}
-              placeholder="example.com"
-              onAdd={(host) => void applyPatch(addSiteToAlwaysTranslate(listsSnapshot(), host))}
-              onRemove={(host) => void applyPatch(removeSiteFromAlwaysTranslate(listsSnapshot(), host))}
-            />
-            <StringListEditor
-              label="Never translate these sites"
-              values={settings.neverTranslateSites ?? []}
-              placeholder="example.com"
-              onAdd={(host) => void applyPatch(addSiteToNeverTranslate(listsSnapshot(), host))}
-              onRemove={(host) => void applyPatch(removeSiteFromNeverTranslate(listsSnapshot(), host))}
-            />
-            <StringListEditor
-              label="Always translate from these languages"
-              values={settings.alwaysTranslateLangs ?? []}
-              languageOptions
-              onAdd={(lang) => void applyPatch(addLangToAlwaysTranslate(listsSnapshot(), lang))}
-              onRemove={(lang) => void applyPatch(removeLangFromAlwaysTranslate(listsSnapshot(), lang))}
-            />
-            <StringListEditor
-              label="Never translate from these languages"
-              values={settings.neverTranslateLangs ?? []}
-              languageOptions
-              onAdd={(lang) => void applyPatch(addLangToNeverTranslate(listsSnapshot(), lang))}
-              onRemove={(lang) => void applyPatch(removeLangFromNeverTranslate(listsSnapshot(), lang))}
-            />
-          </section>
-
-          <section class="section">
-            <h2>Content handling</h2>
-            <label class="toggleRow">
-              <input
-                type="checkbox"
-                checked={settings.translatePreTags}
-                onChange={(e) => void setField('translatePreTags', e.currentTarget.checked)}
-              />
-              <span>
-                Translate text inside &lt;pre&gt; blocks (off by default to protect code samples — turn this on if a
-                site uses &lt;pre&gt; for plain text instead, and its content isn't being translated)
-              </span>
-            </label>
-            <label class="toggleRow">
-              <input
-                type="checkbox"
-                checked={settings.groupParagraphs}
-                onChange={(e) => void setField('groupParagraphs', e.currentTarget.checked)}
-              />
-              <span>
-                Translate each paragraph as a whole, for better sentence context. Leave this on for sites that wrap
-                every word separately, like sangtacviet: turning it off translates those word by word. Turn it off only
-                if a page comes out with words moved between links or styled text, or chips and tags run together.
-              </span>
-            </label>
-          </section>
+          <PageTranslationTab {...tabProps} />
         </TabPanel>
 
         <TabPanel id="bubble" active={activeTab() === 'bubble'}>
-          <section class="section">
-            <h2>Floating bubble</h2>
-            <label class="toggleRow">
-              <input
-                type="checkbox"
-                checked={settings.bubbleEnabled}
-                onChange={(e) => void setField('bubbleEnabled', e.currentTarget.checked)}
-              />
-              <span>Show the floating translate bubble by default</span>
-            </label>
-            <div class="bubbleActions">
-              <button type="button" class="secondary" onClick={() => void setField('bubblePosition', null)}>
-                Reset remembered position
-              </button>
-            </div>
-
-            <p class="hint">Per-site overrides (set from the popup or the bubble's Hide chip):</p>
-            <Show when={bubbleHostEntries().length > 0} fallback={<p class="listEditorEmpty">None</p>}>
-              <ul class="siteTable">
-                <For each={bubbleHostEntries()}>
-                  {([host, shown]) => (
-                    <li>
-                      <span>
-                        {host}: <span class="siteValue">{shown ? 'shown' : 'hidden'}</span>
-                      </span>
-                      <button
-                        type="button"
-                        class="removeBtn"
-                        aria-label={`Remove override for ${host}`}
-                        onClick={() => void removeBubbleOverride(host)}
-                      >
-                        ×
-                      </button>
-                    </li>
-                  )}
-                </For>
-              </ul>
-            </Show>
-          </section>
+          <BubbleTab {...tabProps} />
         </TabPanel>
 
         <TabPanel id="selection" active={activeTab() === 'selection'}>
-          <section class="section">
-            <h2>Selection & hover</h2>
-            <label class="toggleRow">
-              <input
-                type="checkbox"
-                checked={settings.hoverTooltipEnabled}
-                onChange={(e) => void setField('hoverTooltipEnabled', e.currentTarget.checked)}
-              />
-              <span>Show original text when hovering over translated text</span>
-            </label>
-            <label class="toggleRow">
-              <input
-                type="checkbox"
-                checked={settings.selectionPopupEnabled}
-                onChange={(e) => void setField('selectionPopupEnabled', e.currentTarget.checked)}
-              />
-              <span>Show a button to translate selected text</span>
-            </label>
-            <label class="toggleRow">
-              <input
-                type="checkbox"
-                checked={settings.selectionPopupSkipInvalidText}
-                onChange={(e) => void setField('selectionPopupSkipInvalidText', e.currentTarget.checked)}
-              />
-              <span>Don't show the button for a single character or a selection with nothing to translate</span>
-            </label>
-            <label class="toggleRow">
-              <input
-                type="checkbox"
-                checked={settings.selectionPopupSkipTargetLanguageText}
-                onChange={(e) => void setField('selectionPopupSkipTargetLanguageText', e.currentTarget.checked)}
-              />
-              <span>Don't show the button when the selected text is already in your target language</span>
-            </label>
-
-            <p class="hint">
-              Per-site source-language overrides (set from the bubble's "From" select) force-retranslate the current
-              page from that language right now — a one-off correction for when auto-detection got the whole page wrong,
-              not a standing rule. A fresh page load goes back to automatic detection.
-            </p>
-            <Show when={sourceLanguageHostEntries().length > 0} fallback={<p class="listEditorEmpty">None</p>}>
-              <ul class="siteTable">
-                <For each={sourceLanguageHostEntries()}>
-                  {([host, lang]) => (
-                    <li>
-                      <span>
-                        {host}: <span class="siteValue">{lang}</span>
-                      </span>
-                      <button
-                        type="button"
-                        class="removeBtn"
-                        aria-label={`Remove override for ${host}`}
-                        onClick={() => void removeSourceLanguageOverride(host)}
-                      >
-                        ×
-                      </button>
-                    </li>
-                  )}
-                </For>
-              </ul>
-            </Show>
-          </section>
+          <SelectionTab {...tabProps} />
         </TabPanel>
 
         <TabPanel id="advanced" active={activeTab() === 'advanced'}>
-          <section class="section">
-            <h2>Translation cache</h2>
-            <label class="toggleRow">
-              <input
-                type="checkbox"
-                checked={settings.translationCacheEnabled}
-                onChange={(e) => void setField('translationCacheEnabled', e.currentTarget.checked)}
-              />
-              <span>Cache translations on disk (reduces repeat requests to the provider)</span>
-            </label>
-            <div class="diagnosticsActions">
-              <button type="button" disabled={clearingCache()} onClick={() => void handleClearCache()}>
-                {clearingCache() ? 'Clearing…' : 'Clear translation cache'}
-              </button>
-              <Show when={cacheCleared()}>
-                <span class="saved inline">Cache cleared</span>
-              </Show>
-            </div>
-          </section>
-
-          <section class="section">
-            <h2>Diagnostics</h2>
-            <p class="hint">
-              Checks what actually works in this browser — a storage round trip, capability detection, and the
-              translation cache — rather than assuming.
-            </p>
-            <div class="diagnosticsActions">
-              <button type="button" disabled={diagnosticsRunning()} onClick={() => void handleRunDiagnostics()}>
-                {diagnosticsRunning() ? 'Running…' : 'Run diagnostics'}
-              </button>
-            </div>
-
-            <Show when={diagnostics()}>
-              {(report) => (
-                <dl class="diagnosticsList">
-                  <dt>Storage round trip</dt>
-                  <dd class={report().storageRoundTripOk ? 'ok' : 'fail'}>
-                    {report().storageRoundTripOk ? 'OK' : 'FAILED'}
-                  </dd>
-                  <dt>Translation cache size</dt>
-                  <dd>{report().cacheSizeBytes === null ? 'unavailable' : `${report().cacheSizeBytes} bytes`}</dd>
-                  <dt>i18n.detectLanguage available</dt>
-                  <dd class={report().hasI18nDetectLanguage ? 'ok' : 'fail'}>
-                    {report().hasI18nDetectLanguage ? 'yes' : 'no'}
-                  </dd>
-                  <dt>scripting API available</dt>
-                  <dd class={report().hasScriptingApi ? 'ok' : 'fail'}>{report().hasScriptingApi ? 'yes' : 'no'}</dd>
-                  <dt>IndexedDB available</dt>
-                  <dd class={report().hasIndexedDb ? 'ok' : 'fail'}>{report().hasIndexedDb ? 'yes' : 'no'}</dd>
-                  <dt>Effective config (API keys redacted)</dt>
-                  <dd>
-                    <pre class="configDump">{JSON.stringify(report().effectiveConfig, null, 2)}</pre>
-                  </dd>
-                </dl>
-              )}
-            </Show>
-          </section>
+          <AdvancedTab {...tabProps} />
         </TabPanel>
       </Show>
     </div>

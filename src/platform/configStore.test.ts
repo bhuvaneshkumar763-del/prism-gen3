@@ -217,7 +217,6 @@ describe('configStore', () => {
     await expect(store.onReady()).rejects.toThrow('transient storage failure');
     // The next call must actually retry, not return the same dead rejection.
     await expect(store.onReady()).resolves.toBeUndefined();
-    expect(store.isReady()).toBe(true);
   });
 });
 

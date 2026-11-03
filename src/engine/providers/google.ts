@@ -1,5 +1,6 @@
 import { err, ok } from '../../shared/result';
-import type { PieceOutcome, TranslateBatchRequest, Translator } from '../translator';
+import { describeTranslateError } from '../pageTranslator/errorState';
+import type { PieceOutcome, TranslateBatchRequest, TranslateError, Translator } from '../translator';
 import { createBatchedHttpProvider } from './batchedHttpProvider';
 import { escapeHTML, unescapeHTML } from './htmlEscape';
 import { hasBoundaryReflow } from './reflowIntegrity';
@@ -65,24 +66,20 @@ function isKeyRejection(status: number, reason: string | null): boolean {
   return status === 401 || status === 403 || /\bAPI key\b/i.test(reason ?? '');
 }
 
-const NO_AUTH_KEY_MESSAGE = '[google] no auth key available';
-const REJECTED_MESSAGE = /^\[google\] rejected \(HTTP (\d+)\)(?::\s*(.+))?$/;
+/** An `'auth'` error whose message names the way out, for surfaces that show `message` as-is. */
+function keyFailure(status?: number, reason?: string): TranslateError {
+  const error: TranslateError = { kind: 'auth', message: '' };
+  if (status !== undefined) error.status = status;
+  if (reason) error.reason = reason;
+  return { ...error, message: describeTranslateError(error) };
+}
 
-/**
- * Rewrites a key failure into a message that names the cause and the way out:
- * the Google Cloud provider is the backup when the free key stops working.
- */
-function explainKeyFailure(outcome: PieceOutcome): PieceOutcome {
-  if (outcome.ok) return outcome;
-  const rejected = REJECTED_MESSAGE.exec(outcome.error.message);
-  const noKey = outcome.error.message === NO_AUTH_KEY_MESSAGE;
-  if (!noKey && !(rejected && isKeyRejection(Number(rejected[1]), rejected[2] ?? null))) return outcome;
-  const reason = rejected?.[2]?.replace(/\.$/, '');
-  const detail = rejected ? ` (HTTP ${rejected[1]}${reason ? `: ${reason}` : ''})` : '';
-  return err({
-    kind: outcome.error.kind,
-    message: `Google's free translation key isn't working${detail}. Prism keeps retrying with a new key. To translate now, switch to Google Cloud in Settings and add your own API key.`,
-  });
+/** Marks a rejection that is about the key as `'auth'`; anything else passes through. */
+function classifyKeyFailure(outcome: PieceOutcome): PieceOutcome {
+  if (outcome.ok || outcome.error.kind !== 'http' || outcome.error.status === undefined) return outcome;
+  const { status, reason } = outcome.error;
+  if (status === 429 || status >= 500 || !isKeyRejection(status, reason ?? null)) return outcome;
+  return err(keyFailure(status, reason));
 }
 
 /**
@@ -215,30 +212,10 @@ function tokenize(html: string): Token[] {
   return tokens;
 }
 
-function splitPieceResponse(raw: string, dontSortResults: boolean): string[] {
+function splitPieceResponse(raw: string): string[] {
   const preMatch = raw.match(/^<pre[^>]*>([\s\S]*)<\/pre>$/);
   const html = preMatch ? (preMatch[1] ?? raw) : raw;
   const tokens = tokenize(html);
-
-  if (dontSortResults) {
-    // Segments in response order; orphan text folds into the FOLLOWING tag
-    // (no index to sort by here, so this is just a consistent choice).
-    const out: string[] = [];
-    let pending = '';
-    for (const token of tokens) {
-      if (token.index === null) {
-        pending += token.text;
-      } else {
-        out.push(unescapeHTML(pending + token.text));
-        pending = '';
-      }
-    }
-    // No tagged segments: the normal shape for a single-string piece. Without
-    // this the translation would come back as an empty success.
-    if (out.length === 0) return pending ? [unescapeHTML(pending)] : [];
-    if (pending) out[out.length - 1] += unescapeHTML(pending);
-    return out;
-  }
 
   // Reassemble by index: repeated occurrences append, orphan text folds into
   // the preceding tagged index.
@@ -276,11 +253,27 @@ function splitPieceResponse(raw: string, dontSortResults: boolean): string[] {
   return result;
 }
 
+/**
+ * The endpoint answers `[[text, ...], [detectedLanguage, ...]]`. Anything
+ * else means the scraped endpoint changed, so it's reported, not guessed at.
+ */
+function parseTranslateHtmlResponse(
+  response: unknown,
+): Array<{ text: string; detectedLanguage: string | null }> | null {
+  if (!Array.isArray(response)) return null;
+  const [texts, detectedLanguages] = response as unknown[];
+  if (!Array.isArray(texts) || !texts.every((text) => typeof text === 'string')) return null;
+  const languages: unknown[] = Array.isArray(detectedLanguages) ? detectedLanguages : [];
+  return texts.map((text: string, index) => {
+    const language = languages[index];
+    return { text, detectedLanguage: typeof language === 'string' ? language : null };
+  });
+}
+
 export function createGoogleProvider(): Translator {
   const inner = createBatchedHttpProvider({
     name: 'google',
     baseUrl: 'https://translate-pa.googleapis.com/v1/translateHtml',
-    method: 'POST',
     callbacks: {
       transformPiece,
       splitPieceResponse,
@@ -290,10 +283,7 @@ export function createGoogleProvider(): Translator {
         { name: 'Content-Type', value: 'application/application/json+protobuf' },
         { name: 'X-goog-api-key', value: translateAuth ?? '' },
       ],
-      parseResponse: (response) => {
-        const [texts, detectedLanguages] = response as [string[], (string | null)[] | undefined];
-        return texts.map((text, index) => ({ text, detectedLanguage: detectedLanguages?.[index] ?? null }));
-      },
+      parseResponse: parseTranslateHtmlResponse,
     },
     // A key rejection means the cached key is dead; other statuses are unrelated to it.
     onNonRetryableStatus: (status, reason) => {
@@ -306,9 +296,7 @@ export function createGoogleProvider(): Translator {
   const translator: Translator = {
     async translateBatch(request: TranslateBatchRequest): Promise<PieceOutcome[]> {
       await findAuth();
-      if (!translateAuth) {
-        return request.pieces.map(() => explainKeyFailure(err({ kind: 'network', message: NO_AUTH_KEY_MESSAGE })));
-      }
+      if (!translateAuth) return request.pieces.map(() => err(keyFailure()));
       // Google doesn't reliably translate a bare single-string piece (no
       // <a i=N> wrapper), and most pieces are one string. Pad each with a
       // throwaway second string to force the wrapped path, then trim it off.
@@ -326,7 +314,6 @@ export function createGoogleProvider(): Translator {
        * A multi-node group can come back reflowed across its `<a i=N>`
        * boundaries, misattributing one node's text to another; `needsRepair`
        * detects that and `repair` re-requests the group node by node.
-       * Not checked in `dontSortResults` mode, which page translation never uses.
        *
        * `repairs` caches one repair promise per index: `repair` is called from
        * both `onPieceComplete` and the final loop and must not fire twice.
@@ -356,7 +343,8 @@ export function createGoogleProvider(): Translator {
         if (existing) return existing;
         const promise = (async (): Promise<PieceOutcome> => {
           const originalPiece = request.pieces[index];
-          if (!originalPiece) return err({ kind: 'parse', message: '[google] internal: piece missing for repair' });
+          if (!originalPiece)
+            return err({ kind: 'badResponse', message: '[google] internal: piece missing for repair' });
           // One single-string piece per node through this same translateBatch
           // (so padding applies). Not the generic repair path, which resends
           // the same multi-item wire text and could reflow again.
@@ -364,7 +352,6 @@ export function createGoogleProvider(): Translator {
             sourceLanguage: request.sourceLanguage,
             targetLanguage: request.targetLanguage,
             pieces: originalPiece.map((s) => [s]),
-            dontSortResults: false,
           });
           const failure = results.find((r) => !r.ok);
           if (failure && !failure.ok) return err(failure.error);
@@ -395,11 +382,11 @@ export function createGoogleProvider(): Translator {
         onPieceComplete: (index, rawOutcome) => {
           if (needsRepair(index, rawOutcome)) {
             void repair(index).then((repaired) => {
-              request.onPieceComplete?.(index, explainKeyFailure(repaired));
+              request.onPieceComplete?.(index, classifyKeyFailure(repaired));
             });
             return;
           }
-          request.onPieceComplete?.(index, explainKeyFailure(rawOutcome));
+          request.onPieceComplete?.(index, classifyKeyFailure(rawOutcome));
         },
       });
 
@@ -435,7 +422,7 @@ export function createGoogleProvider(): Translator {
           final[index] = outcome;
         });
       }
-      return final.map(explainKeyFailure);
+      return final.map(classifyKeyFailure);
     },
   };
 

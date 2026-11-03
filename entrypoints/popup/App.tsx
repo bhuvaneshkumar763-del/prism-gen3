@@ -1,4 +1,5 @@
-import { createMemo, createSignal, For, onCleanup, onMount, Show } from 'solid-js';
+import { createMemo, createSignal, For, onMount, Show } from 'solid-js';
+import { createConfigMirror } from '../../components/shared/configMirror';
 import type { ErrorKind, PageLanguageState } from '../../src/engine/pageTranslator/translateLoop';
 import { type ProviderId, providerDescriptors } from '../../src/engine/providers/descriptors';
 import { applyListPatch, readListsSnapshot } from '../../src/platform/configMutations';
@@ -15,7 +16,7 @@ import {
   removeSiteFromNeverTranslate,
   siteListIncludesHostname,
 } from '../../src/shared/config/listMutations';
-import { missingProviderSetup, type ProviderSetupFields } from '../../src/shared/config/providerSetup';
+import { missingProviderSetup } from '../../src/shared/config/providerSetup';
 import { resolveBubbleVisibility, setBubbleVisibilityForHost } from '../../src/shared/config/siteOverrides';
 import { baseLanguageTag, COMMON_LANGUAGES, languageName, translationDirection } from '../../src/shared/languages';
 import { loadPageStatus } from '../../src/shared/pageStatus';
@@ -35,42 +36,24 @@ const MAX_QUICK_LANGUAGES = 5;
 /**
  * Toolbar popup: translate/restore the active tab, quick languages and
  * per-site/per-language toggles. List edits go through configMutations so the
- * always/never cross-list cleanup applies everywhere. Config is mirrored into
- * signals via `configStore.onChanged`, never read with `get()` in JSX
- * (enforced by scripts/check-solid-reactivity.mjs).
+ * always/never cross-list cleanup applies everywhere. Config is read from
+ * `createConfigMirror`, never with `configStore.get()` in JSX (enforced by
+ * scripts/check-solid-reactivity.mjs).
  */
 function App() {
+  const { config, ready, setLocal } = createConfigMirror(configStore);
   const [status, setStatus] = createSignal<'idle' | 'busy' | 'error'>('idle');
   const [pageState, setPageState] = createSignal<PageLanguageState>('original');
   const [errorMessage, setErrorMessage] = createSignal<string | null>(null);
   const [errorKind, setErrorKind] = createSignal<ErrorKind>(null);
-  const [targetLanguage, setTargetLanguage] = createSignal('en');
-  const [provider, setProvider] = createSignal('google');
-  const [ready, setReady] = createSignal(false);
   const [hostname, setHostname] = createSignal('');
   const [tabUrl, setTabUrl] = createSignal('');
   const [originalLanguage, setOriginalLanguage] = createSignal('und');
-  const [quickLanguages, setQuickLanguages] = createSignal<string[]>([]);
-  const [alwaysSites, setAlwaysSites] = createSignal<string[]>([]);
-  const [neverSites, setNeverSites] = createSignal<string[]>([]);
-  const [alwaysLangs, setAlwaysLangs] = createSignal<string[]>([]);
-  const [bubbleEnabled, setBubbleEnabled] = createSignal(true);
-  const [bubbleByHost, setBubbleByHost] = createSignal<Record<string, boolean>>({});
-  const [hoverTooltipEnabled, setHoverTooltipEnabled] = createSignal(true);
-  const [selectionPopupEnabled, setSelectionPopupEnabled] = createSignal(true);
   const [showMore, setShowMore] = createSignal(false);
   /** The live translate/restore key binding, or null — see translateShortcut. */
   const [shortcut, setShortcut] = createSignal<string | null>(null);
-  const [setupFields, setSetupFields] = createSignal<ProviderSetupFields>({
-    googleCloudTranslateApiKey: '',
-  });
   /** What each provider still needs, or null — see missingProviderSetup. */
-  const providerGaps = (id: ProviderId) => missingProviderSetup(id, setupFields());
-  function readSetupFields(): ProviderSetupFields {
-    return {
-      googleCloudTranslateApiKey: configStore.get('googleCloudTranslateApiKey'),
-    };
-  }
+  const providerGaps = (id: ProviderId) => missingProviderSetup(id, config);
   /** Set when there's no Prism running in this tab — see `describeUnsupportedPage`. */
   const [unsupportedMessage, setUnsupportedMessage] = createSignal<string | null>(null);
   let tabId: number | null = null;
@@ -80,29 +63,21 @@ function App() {
   const translated = createMemo(() => pageState() === 'translated' && status() !== 'busy');
   // The shared helper, not `.includes()`, so `www.`/apex hosts match the way
   // auto-translate matches them.
-  const alwaysSiteOn = createMemo(() => siteListIncludesHostname(alwaysSites(), hostname()));
-  const neverSiteOn = createMemo(() => siteListIncludesHostname(neverSites(), hostname()));
+  const alwaysSiteOn = createMemo(() => siteListIncludesHostname(config.alwaysTranslateSites, hostname()));
+  const neverSiteOn = createMemo(() => siteListIncludesHostname(config.neverTranslateSites, hostname()));
   const alwaysLangOn = createMemo(() =>
-    alwaysLangs().some((l) => baseLanguageTag(l) === baseLanguageTag(originalLanguage())),
+    config.alwaysTranslateLangs.some((l) => baseLanguageTag(l) === baseLanguageTag(originalLanguage())),
   );
   const bubbleOnForSite = createMemo(() =>
-    resolveBubbleVisibility({ hostname: hostname(), bubbleEnabled: bubbleEnabled(), bubbleByHost: bubbleByHost() }),
+    resolveBubbleVisibility({
+      hostname: hostname(),
+      bubbleEnabled: config.bubbleEnabled,
+      bubbleByHost: config.bubbleByHost,
+    }),
   );
 
   onMount(async () => {
     await configStore.onReady();
-    setTargetLanguage(configStore.get('targetLanguage'));
-    setProvider(configStore.get('pageTranslatorProvider'));
-    setQuickLanguages(configStore.get('targetLanguages'));
-    setAlwaysSites(configStore.get('alwaysTranslateSites'));
-    setNeverSites(configStore.get('neverTranslateSites'));
-    setAlwaysLangs(configStore.get('alwaysTranslateLangs'));
-    setBubbleEnabled(configStore.get('bubbleEnabled'));
-    setBubbleByHost(configStore.get('bubbleByHost'));
-    setHoverTooltipEnabled(configStore.get('hoverTooltipEnabled'));
-    setSelectionPopupEnabled(configStore.get('selectionPopupEnabled'));
-    setSetupFields(readSetupFields());
-    setReady(true);
     // Not every browser exposes commands.getAll — no hint is better than a broken one.
     browser.commands
       ?.getAll?.()
@@ -151,21 +126,6 @@ function App() {
     }
   });
 
-  const unsubscribe = configStore.onChanged((name, value) => {
-    if (name === 'targetLanguage') setTargetLanguage(value as string);
-    if (name === 'pageTranslatorProvider') setProvider(value as string);
-    if (name === 'targetLanguages') setQuickLanguages(value as string[]);
-    if (name === 'alwaysTranslateSites') setAlwaysSites(value as string[]);
-    if (name === 'neverTranslateSites') setNeverSites(value as string[]);
-    if (name === 'alwaysTranslateLangs') setAlwaysLangs(value as string[]);
-    if (name === 'bubbleEnabled') setBubbleEnabled(value as boolean);
-    if (name === 'bubbleByHost') setBubbleByHost(value as Record<string, boolean>);
-    if (name === 'hoverTooltipEnabled') setHoverTooltipEnabled(value as boolean);
-    if (name === 'selectionPopupEnabled') setSelectionPopupEnabled(value as boolean);
-    if (name === 'googleCloudTranslateApiKey') setSetupFields(readSetupFields());
-  });
-  onCleanup(unsubscribe);
-
   /**
    * A translation can start failing after `pageTranslate` has answered, and
    * the popup doesn't subscribe to onError like the bubble does, so it checks
@@ -191,9 +151,12 @@ function App() {
    * also applies mid-translation; on an untranslated page it only saves.
    */
   async function onTargetLanguageChange(code: string): Promise<void> {
-    setTargetLanguage(code);
+    setLocal('targetLanguage', code);
     await configStore.set('targetLanguage', code);
-    await configStore.set('targetLanguages', addRecentTargetLanguage(quickLanguages(), code, MAX_QUICK_LANGUAGES));
+    await configStore.set(
+      'targetLanguages',
+      addRecentTargetLanguage(config.targetLanguages, code, MAX_QUICK_LANGUAGES),
+    );
     if (pageState() === 'translated') await onTranslateClick();
   }
 
@@ -203,13 +166,13 @@ function App() {
     // fail until its key is entered); Settings opens where it is set up. The
     // popup opens Settings itself if the background doesn't answer.
     if (providerGaps(id)) {
-      select.value = provider();
+      select.value = config.pageTranslatorProvider;
       sendMessage('openOptionsPage', { section: 'page' }).catch(() => {
         void browser.runtime.openOptionsPage();
       });
       return;
     }
-    setProvider(id);
+    setLocal('pageTranslatorProvider', id);
     // Awaited before retranslating: the provider is read from config by the
     // background at translate time, so the write has to have landed first.
     await configStore.set('pageTranslatorProvider', id);
@@ -251,7 +214,7 @@ function App() {
       const id = await getActiveTabId();
       tabId = id;
       const state = await withTimeout(
-        sendMessage('pageTranslate', { targetLanguage: targetLanguage() }, id),
+        sendMessage('pageTranslate', { targetLanguage: config.targetLanguage }, id),
         CONTENT_SCRIPT_TIMEOUT_MS,
       );
       setPageState(state);
@@ -337,7 +300,7 @@ function App() {
     if (alwaysLangOn()) {
       const langBase = baseLanguageTag(lang);
       await saveListPatch(
-        { alwaysTranslateLangs: alwaysLangs().filter((l) => baseLanguageTag(l) !== langBase) },
+        { alwaysTranslateLangs: config.alwaysTranslateLangs.filter((l) => baseLanguageTag(l) !== langBase) },
         input,
       );
       return;
@@ -349,7 +312,7 @@ function App() {
   async function onToggleBubbleForSite(): Promise<void> {
     const host = hostname();
     if (!host) return;
-    await configStore.set('bubbleByHost', setBubbleVisibilityForHost(bubbleByHost(), host, !bubbleOnForSite()));
+    await configStore.set('bubbleByHost', setBubbleVisibilityForHost(config.bubbleByHost, host, !bubbleOnForSite()));
   }
 
   function openSettings(): void {
@@ -358,7 +321,7 @@ function App() {
 
   function openInGoogleTranslate(): void {
     if (!tabUrl()) return;
-    const base = targetLanguage().split('-')[0];
+    const base = config.targetLanguage.split('-')[0];
     void browser.tabs.create({
       url: `https://translate.google.com/translate?sl=auto&tl=${base}&u=${encodeURIComponent(tabUrl())}`,
     });
@@ -370,7 +333,7 @@ function App() {
         <h1>Prism</h1>
         <span class="statusPill" classList={{ on: translated() }} role="status">
           {translated()
-            ? (translationDirection(originalLanguage(), targetLanguage()) ?? 'Translated')
+            ? (translationDirection(originalLanguage(), config.targetLanguage) ?? 'Translated')
             : `Original · ${originalLanguage() === 'und' ? '…' : languageName(originalLanguage())}`}
         </span>
       </div>
@@ -413,14 +376,14 @@ function App() {
         </p>
       </Show>
 
-      <Show when={quickLanguages().length > 0}>
+      <Show when={config.targetLanguages.length > 0}>
         <div class="pillRow">
-          <For each={quickLanguages().slice(0, MAX_QUICK_LANGUAGES)}>
+          <For each={config.targetLanguages.slice(0, MAX_QUICK_LANGUAGES)}>
             {(code) => (
               <button
                 type="button"
                 class="pill"
-                classList={{ on: translated() && code === targetLanguage() }}
+                classList={{ on: translated() && code === config.targetLanguage }}
                 onClick={() => void onTargetLanguageChange(code)}
               >
                 {languageName(code)}
@@ -433,14 +396,14 @@ function App() {
       <Show when={ready()}>
         <label class="quickField">
           <span>Translate into</span>
-          <select value={targetLanguage()} onChange={(e) => void onTargetLanguageChange(e.currentTarget.value)}>
+          <select value={config.targetLanguage} onChange={(e) => void onTargetLanguageChange(e.currentTarget.value)}>
             <For each={COMMON_LANGUAGES}>{(l) => <option value={l.code}>{l.name}</option>}</For>
           </select>
         </label>
 
         <label class="quickField">
           <span>Service</span>
-          <select value={provider()} onChange={(e) => void onProviderChange(e.currentTarget)}>
+          <select value={config.pageTranslatorProvider} onChange={(e) => void onProviderChange(e.currentTarget)}>
             <For each={providerDescriptors}>
               {(d) => (
                 <option value={d.id}>
@@ -454,7 +417,7 @@ function App() {
       </Show>
 
       <div class="toggleList">
-        <Show when={originalLanguage() !== 'und' && originalLanguage() !== targetLanguage()}>
+        <Show when={originalLanguage() !== 'und' && originalLanguage() !== config.targetLanguage}>
           <label class="toggleRow">
             <input
               type="checkbox"
@@ -495,7 +458,7 @@ function App() {
           <label class="toggleRow">
             <input
               type="checkbox"
-              checked={hoverTooltipEnabled()}
+              checked={config.hoverTooltipEnabled}
               onChange={(e) => void configStore.set('hoverTooltipEnabled', e.currentTarget.checked)}
             />
             <span>Show original text when hovering</span>
@@ -503,7 +466,7 @@ function App() {
           <label class="toggleRow">
             <input
               type="checkbox"
-              checked={selectionPopupEnabled()}
+              checked={config.selectionPopupEnabled}
               onChange={(e) => void configStore.set('selectionPopupEnabled', e.currentTarget.checked)}
             />
             <span>Show the button to translate selected text</span>

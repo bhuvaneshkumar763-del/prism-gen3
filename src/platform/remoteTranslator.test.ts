@@ -64,24 +64,6 @@ describe('createRemoteTranslator', () => {
     });
   });
 
-  it('forwards dontSortResults through to the message', async () => {
-    let received: unknown;
-    unsubscribe = onMessage('translatePieces', (message) => {
-      received = message.data;
-      return [];
-    });
-
-    const translator = createRemoteTranslator();
-    await translator.translateBatch({
-      sourceLanguage: 'en',
-      targetLanguage: 'es',
-      pieces: [],
-      dontSortResults: true,
-    });
-
-    expect(received).toMatchObject({ dontSortResults: true });
-  });
-
   describe('timeout — reliability fix, found via a real mobile bug report: a translatePieces call whose response never arrives (e.g. the background service worker was killed mid-request by mobile OS memory pressure, losing its sendResponse closure) used to hang translateBatch() forever, pinning translateLoop.ts\'s "working" state permanently true with no recovery short of reloading the page', () => {
     it('rejects once the round trip exceeds the timeout instead of hanging forever', async () => {
       unsubscribe = onMessage('translatePieces', () => new Promise(() => {}));

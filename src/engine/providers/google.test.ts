@@ -170,24 +170,6 @@ describe('createGoogleProvider', () => {
     expect(results).toEqual([{ ok: true, value: ['hola'] }]);
   });
 
-  it('honors dontSortResults, folding orphan text into the FOLLOWING tag in appearance order', async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(authScrapeResponse())
-      .mockResolvedValueOnce(jsonResponse([['<a i=0>Bonjour</a> <a i=1>Monde</a>'], ['en']]));
-    vi.stubGlobal('fetch', fetchMock);
-
-    const provider = await freshCreateGoogleProvider();
-    const results = await provider.translateBatch({
-      sourceLanguage: 'en',
-      targetLanguage: 'fr',
-      pieces: [['hello', 'world']],
-      dontSortResults: true,
-    });
-
-    expect(results).toEqual([{ ok: true, value: ['Bonjour', ' Monde'] }]);
-  });
-
   it('reconstructs the raw reflowed text when an index appears more than once (a real reflow case), for the case nothing else repairs it', async () => {
     // splitPieceResponse's own reconstruction (append rather than
     // overwrite when an index recurs) is still exercised directly here —
@@ -568,30 +550,6 @@ describe('createGoogleProvider', () => {
     expect(results[0]).toEqual({ ok: true, value: ['¿Como estas ', 'hoy'] });
   });
 
-  it('returns the translation for a single-string piece under dontSortResults (now always tagged, since it gets padded to 2 items)', async () => {
-    // A single-string piece is padded to 2 items before being sent (see the
-    // padding test above), so the response comes back tagged even under
-    // dontSortResults. The dontSortResults branch pushed only on tagged
-    // tokens, so an untagged response used to return [] here — a
-    // successful-looking outcome with the translation silently gone; that
-    // shape can no longer happen for a piece this provider originated.
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(authScrapeResponse())
-      .mockResolvedValueOnce(jsonResponse([['<a i=0>hola</a><a i=1> </a>'], ['en']]));
-    vi.stubGlobal('fetch', fetchMock);
-
-    const provider = await freshCreateGoogleProvider();
-    const results = await provider.translateBatch({
-      sourceLanguage: 'en',
-      targetLanguage: 'es',
-      pieces: [['hello']],
-      dontSortResults: true,
-    });
-
-    expect(results[0]).toEqual({ ok: true, value: ['hola'] });
-  });
-
   it('does not splice raw <a i=…> markup into the page when the response cannot be tokenized', async () => {
     // If Google ever emits inline tags inside a segment, the tokenizer
     // matches nothing; returning the raw HTML verbatim would render literal
@@ -715,6 +673,49 @@ describe('createGoogleProvider', () => {
     // The whole point: NOT 'auto' again, which would reissue the identical
     // request and get the identical echo back.
     expect(sourceOf(retry)).toBe('zh-CN');
+  });
+
+  describe('response-shape validation', () => {
+    it.each([
+      ['an object instead of an array', { translations: ['hola'] }],
+      ['numbers where strings belong', [[1], ['en']]],
+      ['an empty array', []],
+    ])("reports %s as 'badResponse' and sends it once, not as a network failure retried", async (_label, body) => {
+      const fetchMock = vi.fn(async (url: string) =>
+        String(url).includes('translate_http') ? authScrapeResponse() : jsonResponse(body),
+      );
+      vi.stubGlobal('fetch', fetchMock);
+      const provider = await freshCreateGoogleProvider();
+      const [outcome] = await provider.translateBatch({
+        sourceLanguage: 'en',
+        targetLanguage: 'es',
+        pieces: [['hello']],
+      });
+      if (!outcome || outcome.ok) throw new Error('expected a failed outcome');
+      expect(outcome.error.kind).toBe('badResponse');
+      expect(fetchMock.mock.calls.filter(([url]) => !String(url).includes('translate_http'))).toHaveLength(1);
+    });
+  });
+
+  it("marks a rejected free key as kind 'auth' with its status and reason", async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) =>
+        String(url).includes('translate_http')
+          ? authScrapeResponse()
+          : jsonResponse([400, 'API key not valid. Please pass a valid API key.'], 400),
+      ),
+    );
+    const provider = await freshCreateGoogleProvider();
+    const [outcome] = await provider.translateBatch({
+      sourceLanguage: 'en',
+      targetLanguage: 'es',
+      pieces: [['hello']],
+    });
+    expect(outcome).toMatchObject({
+      ok: false,
+      error: { kind: 'auth', status: 400, reason: 'API key not valid. Please pass a valid API key.' },
+    });
   });
 
   describe("auth-key reliability fixes — a stale/rejected key used to silently degrade translation into a no-op for up to 20 minutes at a time, found live during this exact repo's own testing", () => {

@@ -31,7 +31,7 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       include: ['src/engine/**/*.ts', 'src/shared/**/*.ts', 'src/platform/**/*.ts'],
-      exclude: ['src/**/*.test.ts', 'src/**/*.test.tsx', 'src/**/README.md'],
+      exclude: ['src/**/*.test.ts', 'src/**/*.test.tsx', 'src/**/README.md', 'src/**/testing/**'],
       // Per folder, a little under today's figures, so a folder that loses
       // coverage (for example a new untested file) fails CI.
       thresholds: {

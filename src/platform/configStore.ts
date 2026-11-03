@@ -16,7 +16,6 @@ export function createConfigStore(backend: StorageBackend = localStorageBackend)
   const state: Config = { ...defaultConfig };
   const listeners = new Set<(name: ConfigKey, value: unknown) => void>();
 
-  let configIsReady = false;
   let readyPromise: Promise<void> | null = null;
 
   /**
@@ -63,7 +62,6 @@ export function createConfigStore(backend: StorageBackend = localStorageBackend)
         );
       }
     }
-    configIsReady = true;
   }
 
   backend.onChanged((changes) => {
@@ -117,9 +115,6 @@ export function createConfigStore(backend: StorageBackend = localStorageBackend)
         });
       }
       return readyPromise;
-    },
-    isReady(): boolean {
-      return configIsReady;
     },
     get<K extends ConfigKey>(key: K): Config[K] {
       return state[key];

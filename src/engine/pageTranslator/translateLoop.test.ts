@@ -1,8 +1,9 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { err, ok } from '../../shared/result';
+import { TimeoutError } from '../../shared/withTimeout';
 import { connectivity } from '../connectivity';
-import type { PieceOutcome, Translator } from '../translator';
+import type { PieceOutcome, TranslateError, Translator } from '../translator';
 import { createPageTranslator, pruneDisconnectedRestoreEntries } from './translateLoop';
 
 async function waitFor(condition: () => boolean, timeoutMs = 2000): Promise<void> {
@@ -627,26 +628,6 @@ describe('createPageTranslator', () => {
     pageTranslator.restorePage();
   });
 
-  it('getTranslatedNodes() exposes the currently-translated nodes and their pre-translation text', async () => {
-    document.body.innerHTML = '<p>hello</p>';
-    const pageTranslator = createPageTranslator({
-      translator: uppercaseTranslator(),
-      getSourceLanguage: () => 'en',
-      getBatchingHint: () => undefined,
-    });
-
-    await pageTranslator.translatePage('es');
-    await waitFor(() => document.body.textContent === 'HELLO');
-
-    const translated = pageTranslator.getTranslatedNodes();
-    expect(translated).toHaveLength(1);
-    expect(translated[0]?.original).toBe('hello');
-    expect(translated[0]?.node.data).toBe('HELLO');
-
-    pageTranslator.restorePage();
-    expect(pageTranslator.getTranslatedNodes()).toHaveLength(0);
-  });
-
   it("findOriginalTextForElement() looks up the same original text as getTranslatedNodes() would, without materialising an array first — speed fix, found via a round-4 audit: getTranslatedNodes() allocates a fresh N-object array on every call, which the hover tooltip's onMouseMove used to pay on every mousemove event while visible", async () => {
     document.body.innerHTML = '<p id="a">hello</p><p id="b">world</p>';
     const pageTranslator = createPageTranslator({
@@ -839,8 +820,11 @@ describe('createPageTranslator', () => {
       await vi.advanceTimersByTimeAsync(1000);
       await vi.advanceTimersByTimeAsync(2000);
 
-      expect(pageTranslator.getLastError()).toBe('HTTP 429');
-      expect(errorSpy).toHaveBeenCalledWith('HTTP 429', 'provider');
+      expect(pageTranslator.getLastError()).toBe("Couldn't reach the translation service — retrying automatically.");
+      expect(errorSpy).toHaveBeenCalledWith(
+        "Couldn't reach the translation service — retrying automatically.",
+        'provider',
+      );
       // The page must stay untranslated — no false success.
       expect(document.body.textContent).toBe('hello');
 
@@ -880,8 +864,13 @@ describe('createPageTranslator', () => {
       await vi.advanceTimersByTimeAsync(1000);
       await vi.advanceTimersByTimeAsync(2000);
 
-      expect(pageTranslator.getLastError()).toBe('HTTP 429');
-      expect(errorSpy).toHaveBeenCalledWith('HTTP 429', 'provider');
+      expect(pageTranslator.getLastError()).toBe(
+        'The translation service answered with an error — retrying automatically.',
+      );
+      expect(errorSpy).toHaveBeenCalledWith(
+        'The translation service answered with an error — retrying automatically.',
+        'provider',
+      );
       expect(document.body.textContent).toBe('hello');
 
       pageTranslator.restorePage();
@@ -1066,7 +1055,7 @@ describe('createPageTranslator', () => {
       // noteMissingResult's 4-call plateau does NOT apply here — a genuine
       // failure keeps retrying well past it, and an error does surface.
       expect(translateBatch.mock.calls.length).toBeGreaterThan(4);
-      expect(pageTranslator.getLastError()).toBe('provider unreachable');
+      expect(pageTranslator.getLastError()).toBe("Couldn't reach the translation service — retrying automatically.");
 
       pageTranslator.restorePage();
     } finally {
@@ -1095,7 +1084,7 @@ describe('createPageTranslator', () => {
       await vi.advanceTimersByTimeAsync(1000);
       await vi.advanceTimersByTimeAsync(2000);
 
-      expect(pageTranslator.getLastError()).toBe('connection reset');
+      expect(pageTranslator.getLastError()).toBe("Couldn't reach the translation service — retrying automatically.");
       pageTranslator.restorePage();
     } finally {
       vi.useRealTimers();
@@ -1127,7 +1116,9 @@ describe('createPageTranslator', () => {
       await vi.advanceTimersByTimeAsync(1000);
       await vi.advanceTimersByTimeAsync(2000);
 
-      expect(pageTranslator.getLastError()).toBe('translation failed');
+      expect(pageTranslator.getLastError()).toBe(
+        "Google changed how its translation service answers, so Prism can't read the replies. Switch to Google Cloud in Settings until Prism is updated.",
+      );
       pageTranslator.restorePage();
     } finally {
       vi.useRealTimers();
@@ -1313,12 +1304,12 @@ describe('createPageTranslator', () => {
     });
   });
 
-  async function lastErrorFor(rawMessage: string): Promise<string | null> {
+  async function lastErrorFor(error: TranslateError): Promise<string | null> {
     document.body.innerHTML = '<p>hello</p>';
     const pageTranslator = createPageTranslator({
       translator: {
         async translateBatch(request) {
-          return request.pieces.map((): PieceOutcome => err({ kind: 'network', message: rawMessage }));
+          return request.pieces.map((): PieceOutcome => err(error));
         },
       },
       getSourceLanguage: () => 'en',
@@ -1339,20 +1330,69 @@ describe('createPageTranslator', () => {
 
   it('says the service REJECTED the request, and why, instead of "couldn\'t reach… retrying automatically" — real gap, found via a UI audit: a rejected API key reached the user as that message, which is false twice over: the service was reached, and retrying won\'t fix a wrong key', async () => {
     expect(
-      await lastErrorFor('[googleCloudTranslate] rejected (HTTP 400): API key not valid. Please pass a valid API key.'),
+      await lastErrorFor({
+        kind: 'http',
+        status: 400,
+        reason: 'API key not valid. Please pass a valid API key.',
+        message: '[googleCloudTranslate] rejected (HTTP 400): API key not valid. Please pass a valid API key.',
+      }),
     ).toBe('The translation service rejected the request: API key not valid. Please pass a valid API key.');
   });
 
   it('still names the status when the service gave no usable reason', async () => {
-    expect(await lastErrorFor('[llm] rejected (HTTP 403)')).toBe(
+    expect(await lastErrorFor({ kind: 'http', status: 403, message: '[svc] rejected (HTTP 403)' })).toBe(
       'The translation service rejected the request (HTTP 403).',
     );
   });
 
   it("says the text came back untranslated, not that the service couldn't be reached, when the provider gave up on a run of echoes", async () => {
-    expect(await lastErrorFor('[google] kept sending text back untranslated')).toBe(
+    expect(await lastErrorFor({ kind: 'untranslated', message: '[google] kept sending text back untranslated' })).toBe(
       'The translation service keeps sending text back untranslated. Prism keeps retrying; if it keeps happening, switch provider in Settings.',
     );
+  });
+
+  it("says Google is limiting requests, not that it couldn't be reached, when every piece came back rate-limited", async () => {
+    expect(await lastErrorFor({ kind: 'rateLimited', status: 429, message: '[google] rate-limited (HTTP 429)' })).toBe(
+      'Google is limiting requests right now; Prism will retry automatically.',
+    );
+  });
+
+  it("says Google changed how it answers, not that it couldn't be reached, when its responses can't be read", async () => {
+    expect(await lastErrorFor({ kind: 'badResponse', message: '[google] response is not valid JSON' })).toBe(
+      "Google changed how its translation service answers, so Prism can't read the replies. Switch to Google Cloud in Settings until Prism is updated.",
+    );
+  });
+
+  it('says the service is too slow when every piece timed out', async () => {
+    expect(await lastErrorFor({ kind: 'timeout', message: '[google] timed out' })).toBe(
+      'The translation service is taking too long to answer — retrying automatically.',
+    );
+  });
+
+  it('says the service is too slow when the round trip to the background times out', async () => {
+    document.body.innerHTML = '<p>hello</p>';
+    const pageTranslator = createPageTranslator({
+      translator: {
+        async translateBatch() {
+          throw new TimeoutError('timed out after 90000ms');
+        },
+      },
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+    vi.useFakeTimers();
+    try {
+      void pageTranslator.translatePage('es');
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(pageTranslator.getLastError()).toBe(
+        'The translation service is taking too long to answer — retrying automatically.',
+      );
+    } finally {
+      pageTranslator.restorePage();
+      vi.useRealTimers();
+    }
   });
 
   it('shows a plain-language message instead of the raw internal "no result for this piece" string', async () => {
