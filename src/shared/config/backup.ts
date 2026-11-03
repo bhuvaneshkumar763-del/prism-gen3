@@ -1,13 +1,11 @@
 import { err, ok, type Result } from '../result';
+import { applyConfigMigrations } from './migrations';
 import type { Config } from './schema';
 import { validatePartialConfig } from './validate';
 
 /**
- * Settings backup serialization for the options page's Export/Import —
- * the pre-rewrite fork's popup had this; Gen 3's `configStore.export()`/
- * `import()` (src/platform/configStore.ts) already existed and were
- * already tested, just never wired to any UI. This module is the pure
- * validation/formatting layer between that store API and the options page.
+ * Settings backup serialization for the options page's Export/Import: the
+ * pure validation/formatting layer over `configStore.export()`/`import()`.
  */
 
 export const BACKUP_FORMAT_VERSION = 1;
@@ -24,12 +22,9 @@ export function serializeBackup(config: Config, timestamp: number): string {
 }
 
 /**
- * Accepts either this module's own `{version, timestamp, config}` shape or
- * a bare config object (the shape `configStore.export()` itself produces,
- * and what an older/simpler export tool might hand back) — returns a real
- * error message instead of throwing on malformed JSON or a config shape
- * that doesn't validate, so the options page can show the user what went
- * wrong rather than an unhandled exception.
+ * Accepts this module's `{version, timestamp, config}` shape or a bare config
+ * object (what `configStore.export()` produces). Returns an error message
+ * instead of throwing, so the options page can show what went wrong.
  */
 export function parseBackup(json: string): Result<Partial<Config>, string> {
   let parsed: unknown;
@@ -42,28 +37,14 @@ export function parseBackup(json: string): Result<Partial<Config>, string> {
   const isWrapped = parsed !== null && typeof parsed === 'object' && 'config' in (parsed as Record<string, unknown>);
   const configCandidate = isWrapped ? (parsed as { config: unknown }).config : parsed;
 
-  // Same fallback migrations.ts applies to stored config (versions 3-5):
-  // a backup exported before the `builtin`/`libretranslate`/`llm` provider
-  // removals still has one of those values here, and unlike the raw-storage
-  // load path, nothing else remaps it before schema validation — without
-  // this, restoring an old-but-otherwise-valid backup would fail the
-  // `pageTranslatorProvider` enum check and reject the whole import.
-  if (
-    configCandidate !== null &&
-    typeof configCandidate === 'object' &&
-    'pageTranslatorProvider' in configCandidate &&
-    ['builtin', 'libretranslate', 'llm'].includes(
-      String((configCandidate as Record<string, unknown>).pageTranslatorProvider),
-    )
-  ) {
-    (configCandidate as Record<string, unknown>).pageTranslatorProvider = 'google';
-  }
-  // The removed `llm` provider's fields (one is an API key) aren't settings any more.
-  if (configCandidate !== null && typeof configCandidate === 'object') {
-    for (const key of ['llmBaseUrl', 'llmApiKey', 'llmModel']) delete (configCandidate as Record<string, unknown>)[key];
-  }
+  // Backups carry no schema version, so every migration runs; each one
+  // leaves already-current settings unchanged.
+  const migratedCandidate =
+    configCandidate !== null && typeof configCandidate === 'object' && !Array.isArray(configCandidate)
+      ? applyConfigMigrations({ ...(configCandidate as Record<string, unknown>) }, 0)
+      : configCandidate;
 
-  const result = validatePartialConfig(configCandidate);
+  const result = validatePartialConfig(migratedCandidate);
   if (!result.ok) {
     return err(
       `That doesn't look like a Prism settings file${result.path ? ` (${result.path}: ${result.message})` : ''}.`,

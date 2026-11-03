@@ -1,53 +1,15 @@
 /**
- * Depth-first walk collecting translatable Text nodes under `root`,
- * skipping script/style/noscript/textarea subtrees and editable content.
- * Extracted as its own function (rather than inlined in translateLoop.ts)
- * so it's directly unit-testable against a real (happy-dom) DOM without
- * spinning up the whole engine — same reasoning as `grouping.ts`.
- *
- * Crosses open shadow-root boundaries too — real bug, confirmed against a
- * real site (bilibili's main comment thread, as opposed to its danmaku
- * overlay which isn't shadow DOM and translated fine): `element.childNodes`
- * does NOT include a shadow host's `shadowRoot` content, so a plain walk
- * silently skips any subtree rendered inside one. Confirmed live that
- * site's comment system is a deep tree of custom elements
- * (`bili-comment-renderer` > `bili-rich-text` > ...), each attaching its
- * own OPEN shadow root — several levels deep, so this has to recurse into
- * `el.shadowRoot`, not just check the immediate root once. A closed shadow
- * root is unreachable from outside by design (`element.shadowRoot` reads
- * `null` for one) — nothing to do about that case, same as this project's
- * existing acknowledged gap for same-origin iframes.
- *
- * `mutationWatcher.ts`'s own MutationObserver still can't see mutations
- * happening *inside* an already-attached shadow root (subtree:true on a
- * light-DOM ancestor doesn't cross the boundary either) — that gap is
- * already covered by `resweep.ts`'s periodic/scroll-triggered re-walk,
- * which calls this same function; making this function shadow-aware is
- * what makes that existing backstop actually reach shadow content, not a
- * separate fix.
+ * Depth-first walk collecting translatable Text nodes under `root`, skipping
+ * non-prose subtrees and editable content. Recurses into open shadow roots
+ * (`childNodes` omits them); closed ones are unreachable by design. Content
+ * changed inside a shadow root later is picked up by resweep.ts's re-walk.
  */
 
-// Always skipped: source code sent to a translation provider comes back
-// with identifiers reworded, quotes "smartened", and indentation reflowed
-// — the sample renders as broken, uncopyable code. `<code>` is the
-// standard semantic tag for exactly this, whether standalone or nested
-// inside a `<pre>` block.
 /**
- * Real gap this closed, found by comparing against TWP's live source
- * (`htmlTagsNoTranslate`): `SVG`, `TEMPLATE`, `MATH`, `MJX-CONTAINER`, and
- * `TEX-MATH` were never skipped here. `<template>` content is inert (never
- * rendered, and can be programmatically cloned/reused by page JS — mutating
- * its text is corrupting markup, not translating a page). `<svg>` mixes
- * icon/graphic markup with structural `<text>` labels that translation
- * would just as often break as help. `<math>`/`<mjx-container>`/
- * `<tex-math>` hold MathJax/MathML formulas — translating a formula's
- * variable names breaks rendering (the exact failure TWP's own issue #704
- * reports).
- *
- * Compared case-insensitively below (`el.tagName.toUpperCase()`), because
- * SVG elements keep their authored lowercase `tagName` in the DOM (`'svg'`)
- * unlike ordinary HTML elements, which are always uppercased — confirmed
- * directly against happy-dom before relying on it.
+ * Never translated: code comes back with identifiers reworded and quotes
+ * smartened; `<template>` is inert markup page JS may clone; SVG and math
+ * (MathML/MathJax) formulas break when their text is translated.
+ * Compared upper-cased because SVG elements keep a lowercase `tagName`.
  */
 const SKIP_TAGS = new Set([
   'SCRIPT',
@@ -62,21 +24,7 @@ const SKIP_TAGS = new Set([
   'TEX-MATH',
 ]);
 
-/**
- * Icon-font ligature classes: the element's rendered "text" is actually a
- * font ligature that maps a literal word like `home` or `menu` to a glyph
- * (Material Icons/Symbols). Translating that word breaks the icon —
- * matches TWP's own class-based skip list, found via source comparison.
- *
- * Real gap this closed, found via audit: only 2 of Google's 8 official
- * Material icon-font class names were listed (`material-icons`,
- * `material-symbols-outlined`) — the other two Material Icons style
- * variants (`-outlined`, `-round`, `-sharp`, `-two-tone`) and the other
- * two Material Symbols weights (`-rounded`, `-sharp`) were missed
- * entirely, so a site using any of them got its icon ligature text
- * translated exactly like the two originally-listed classes were meant to
- * prevent.
- */
+/** Icon-font ligature classes (Material Icons/Symbols): the text `home` renders as a glyph, so translating it breaks the icon. */
 const ICON_FONT_CLASSES = [
   'material-icons',
   'material-icons-outlined',
@@ -89,41 +37,15 @@ const ICON_FONT_CLASSES = [
 ];
 
 /**
- * KaTeX-rendered formulas. Real gap this closed, found via audit: `MATH`
- * (above, in `SKIP_TAGS`) only protects the invisible, screen-reader-only
- * `<math>`/MathML half of KaTeX's output — the half the user actually
- * SEES is plain `<span>`s (`.katex-html`), completely unprotected. A
- * formula like `sin(x)` renders as `<span class="mop">sin</span>
- * <span class="mord mathnormal">x</span>` inside `.katex`; without this,
- * "sin" gets translated as an ordinary English word ("pecado" in Spanish,
- * "péché" in French — both mean "sin" the noun, not the trig function),
- * breaking the formula while the still-correct MathML copy stays hidden.
- * `.katex` (the single outer wrapper around both the MathML and HTML
- * renderings) is skipped as one atomic unit rather than targeting
- * `.katex-html` specifically, so this can't itself become the "only the
- * visible half is covered" gap it's fixing.
+ * KaTeX output: `MATH` only covers its hidden MathML half; the visible half
+ * is plain spans (`sin` would become "pecado"). Skip the whole `.katex` wrapper.
  */
 const KATEX_CLASS = 'katex';
 
 /**
- * `<pre>` is skipped separately from `SKIP_TAGS` (not always, not never) —
- * real bug, confirmed live against cool18.com: an old-school forum's post
- * body was a single `<pre>` wrapping 60% of the page's actual content
- * (10,750 of 17,754 characters), used purely to preserve the author's
- * original line breaks, not to mark code. `<pre>` alone doesn't mean
- * "code" the way `<code>` does — plenty of sites use it just for
- * whitespace-sensitive prose. TWP (confirmed against their live source)
- * gets this exactly right: `<pre>` skipping is a per-user setting
- * (`translateTag_pre`, default off) with one automatic exception — if the
- * *entire* page is nothing but one bare `<pre>` (viewing a raw text/JSON
- * response, which browsers render this way natively), it's always
- * translated regardless of the setting, since there's nothing there to be
- * "code embedded in an article." Matched here as `translatePreTags`
- * (`src/shared/config/schema.ts`) plus `isWholePageBarePre` below.
- *
- * Round-5 bloat audit: no longer `export`ed — confirmed (repo-wide grep)
- * that nothing outside this file, including tests, ever imported it; only
- * `isNoTranslateNode` below calls it.
+ * `<pre>` often holds plain prose kept for its line breaks, so skipping it is
+ * a setting (`translatePreTags`). A page that is one bare `<pre>` (a raw
+ * text/JSON response) is always translated.
  */
 function isWholePageBarePre(): boolean {
   return (
@@ -134,42 +56,19 @@ function isWholePageBarePre(): boolean {
 }
 
 /**
- * Bare tag/mention markers with nothing else in the node — real-world tag
- * lists routinely wrap the marker in its own inline element for styling,
- * e.g. `<a><em>#</em>travel</a>`, leaving the marker as its own Text node
- * separate from the word. There is nothing useful to translate here (it's
- * punctuation, not prose) and leaving it out of the queue means it can
- * never get mangled by a provider — see `grouping.ts`'s tag-anchor
- * isolation, which relies on the surrounding `<a>`'s full text (marker
- * still present in the live DOM, just not queued) to still recognize the
- * cluster as a tag.
+ * A lone `#`/`@` marker node (`<a><em>#</em>travel</a>`): nothing to translate.
+ * grouping.ts still sees it in the anchor's live `textContent`.
  */
 const BARE_MARKER = /^[#@]$/;
 
 /**
- * Text with no letters at all — digits, punctuation, symbols, whitespace —
- * has nothing translatable in it and is exactly the kind of short,
- * context-free fragment a provider is most likely to mangle instead of
- * passing through unchanged: real site bug, a novel-site's chapter-count
- * filter chips ("> 50", "> 100", "> 200", ...) came back as "approximately
- * 50", "compare 100", "> 200" — visibly inconsistent for tokens that are
- * identical in shape, because Google's endpoint doesn't leave a bare
- * symbol+number alone the way it leaves prose alone. Skipping these
- * entirely is strictly safe (nothing here needs translating) and removes
- * them from the provider's context window, rather than trying to get a
- * translation provider to consistently no-op on them.
- */
-/**
- * Also the reason a lone zero-width character (U+200B, U+200C/U+200D
- * joiners, U+FEFF) never needs its own filter: none of those are in the
- * Unicode Letter category either, so a text node containing only invisible
- * characters already matches this and gets skipped — verified directly
- * before adding a separate check that would have been dead code.
+ * Letterless text (digits, symbols, zero-width chars) has nothing to translate,
+ * and Google mangles short fragments like "> 50" into "approximately 50".
  */
 const NO_LETTERS = /^[^\p{L}]*$/u;
 
 export interface NoTranslateOptions {
-  /** See `isWholePageBarePre`'s doc comment above — when false (the config default), `<pre>` is treated as a skip tag same as `SKIP_TAGS`. */
+  /** `false` skips `<pre>` (see `isWholePageBarePre`); omitted or `true` translates it. */
   translatePreTags?: boolean;
 }
 
@@ -177,53 +76,24 @@ export function isNoTranslateNode(node: Node, options: NoTranslateOptions = {}):
   if (node.nodeType === Node.ELEMENT_NODE) {
     const el = node as Element;
     if (SKIP_TAGS.has(el.tagName.toUpperCase())) return true;
-    // Explicit `false` opts out; omitted/`true` both mean "translate",
-    // matching the config default (`true`) so this function's own
-    // no-options behavior agrees with the shipped product default instead
-    // of silently defaulting the opposite way when a caller (or a test)
-    // omits the option.
+    // Only an explicit `false` skips; omitted matches the config default (`true`).
     if (el.tagName === 'PRE' && options.translatePreTags === false && !isWholePageBarePre()) return true;
     if ((el as HTMLElement).isContentEditable) return true;
-    // The standard, cross-tool opt-out signals a site uses to protect brand
-    // names, identifiers, usernames and the like. `translate="no"` is the
-    // HTML attribute; `.notranslate` is the long-standing class convention
-    // Google Translate popularised. Both are honored by every major
-    // translation tool, and both were previously ignored here entirely.
+    // Standard opt-outs: the HTML `translate="no"` attribute and the `.notranslate` class.
     if (el.getAttribute('translate') === 'no') return true;
     if (el.classList.contains('notranslate')) return true;
     if (ICON_FONT_CLASSES.some((cls) => el.classList.contains(cls))) return true;
     if (el.classList.contains(KATEX_CLASS)) return true;
-    // Real gap this closed, found via audit: an <option> with no `value`
-    // attribute submits its own TEXT as the form value (the HTML spec's
-    // default) — translating it silently changes what the form actually
-    // submits, not just what the user sees. An <option> that DOES have an
-    // explicit `value` is unaffected either way, so only the no-value case
-    // needs skipping.
+    // An <option> without `value` submits its text, so translating it changes form data.
     if (el.tagName === 'OPTION' && !el.hasAttribute('value')) return true;
   }
   return false;
 }
 
 /**
- * Round-6 audit fix: extracted from `mutationWatcher.ts`, which had this as
- * a private closure function — pulled out here (it's pure, no closure state
- * needed beyond the predicate itself) so `attributeTranslator.ts` can reuse
- * it instead of shipping without an ancestor walk at all, which it did
- * until now.
- *
- * `isNoTranslateNode` only ever inspects ONE node — by design, it's the
- * same check this file's own top-down `collectTextNodes`/
- * `collectAttributeTargets` walks use, which never need to look further
- * because they stop descending the instant a skip node is found, so every
- * descendant is implicitly covered. A MutationObserver callback has no such
- * guarantee: the node it's handed can be reinserted or rewritten
- * arbitrarily deep inside a subtree the initial walk already decided to
- * skip (a syntax highlighter rewriting `<code>`'s innerHTML with plain
- * `<span>`s, a charting library appending `<text>` labels into an existing
- * `<svg>`), and neither the added node nor its immediate parent is itself a
- * skip tag/class — only some ANCESTOR further up is. Without walking up,
- * that content gets translated even though the very same content would
- * have been correctly skipped had it been present at initial-walk time.
+ * True if any ancestor is a no-translate node. The top-down walks never need
+ * this (they stop descending at a skip node), but a mutation can insert a
+ * node deep inside an already-skipped subtree (spans into a `<code>`).
  */
 export function hasNoTranslateAncestor(node: Node, isNoTranslate: (node: Node) => boolean): boolean {
   let el = node.parentElement;
@@ -235,27 +105,9 @@ export function hasNoTranslateAncestor(node: Node, isNoTranslate: (node: Node) =
 }
 
 /**
- * Iterative (explicit stack, not recursive) — a pathologically deep DOM
- * (real risk: infinite-scroll/virtualized-list pages that nest a nearly
- * flat structure hundreds of levels deep) would blow the call stack with a
- * recursive walk and kill translation outright with a `RangeError` instead
- * of just costing more time.
- *
- * Deliberately no `lang`-attribute-based skip check: an earlier version had
- * one ("if a site marks this exact text as already the target language,
- * skip it"), but real sites almost never annotate individual paragraphs —
- * they set `lang` once on `<html>` to describe their own UI's language, not
- * to describe what's actually written on the page. Real bug this caused:
- * pixiv sets `<html lang="en">` from the logged-in user's UI-language
- * preference, completely independent of the actual language of whatever
- * novel/manga/post is being viewed (confirmed live: `<html lang>` was
- * "en" while the page's own title was Chinese) — `closest('[lang]')`
- * resolves to that root `<html>` for every single text node with no closer
- * override, so the old check silently excluded 100% of the page whenever
- * the target language happened to match the site's UI language. TWP
- * (confirmed against their live source) has no equivalent check at all —
- * removing this matches that, and removes the whole bug class rather than
- * just this one page's specific shape of it.
+ * Iterative (explicit stack) so a pathologically deep DOM can't overflow the
+ * call stack. No `lang`-attribute skip: sites set `<html lang>` to their UI
+ * language, not the content's, so such a check would skip whole pages.
  */
 export function collectTextNodes(root: Node, options: NoTranslateOptions = {}): Text[] {
   const nodes: Text[] = [];
@@ -267,18 +119,8 @@ export function collectTextNodes(root: Node, options: NoTranslateOptions = {}): 
     if (node.nodeType === Node.TEXT_NODE) {
       const parent = node.parentNode;
       const text = node.textContent?.trim();
-      // Speed fix, found via a round-6 audit: `isNoTranslateNode(parent,
-      // options)` here is redundant for every Text node reached by normal
-      // descent — its parent Element was already checked by the branch
-      // below BEFORE that parent's children (this node included) were ever
-      // pushed onto the stack, so re-checking it per text node paid ~12 DOM
-      // reads, a string alloc, and (via isContentEditable) a possible style
-      // recalc, for a result already known — on EVERY text node, on every
-      // resweep (1.5-10s, forever). NOT safe to drop entirely, though: when
-      // `root` itself is a Text node — which happens via `onNewRoot` below,
-      // since a MutationObserver's addedNodes can be a bare Text node — its
-      // parent was never separately visited by this call, so this is the
-      // ONLY place that validates it. Scoped to exactly that one case.
+      // A descended-into node's parent was already checked before its children
+      // were pushed; only a Text `root` (a bare added node) needs the check.
       const parentCheckNeeded = node === root;
       if (
         text &&
@@ -292,10 +134,8 @@ export function collectTextNodes(root: Node, options: NoTranslateOptions = {}): 
       continue;
     }
     if (isNoTranslateNode(node, options)) continue;
-    // Push in reverse so the stack pops children in original document
-    // order, then push the shadow root last so it's on top of the stack
-    // and pops first — matching the original recursive walk's order
-    // (shadow content processed before the host's own light-DOM children).
+    // Reverse push so children pop in document order; the shadow root goes
+    // last so it's processed before the host's light-DOM children.
     const children = node.childNodes;
     for (let i = children.length - 1; i >= 0; i--) {
       // biome-ignore lint/style/noNonNullAssertion: i is always in bounds
@@ -308,43 +148,10 @@ export function collectTextNodes(root: Node, options: NoTranslateOptions = {}): 
 }
 
 /**
- * Attribute translation (round-3 audit follow-up): the target set matches
- * TWP's real, current source (`getAttributesToTranslate`, confirmed live,
- * not assumed) — `placeholder` on `<input>`/`<textarea>`, `alt` on
- * `<area>`/`<img>`/an image-type `<input>`, `value` on a
- * button/submit/reset `<input>` (its VISIBLE label, not a form's actual
- * submitted data — a text/email/etc. input's `value` is real user data and
- * is deliberately never touched), and `title` on any element (a tooltip).
- * `aria-label` on any element was added by a round-7 audit — it is the one
- * commonly-used visible-to-screen-readers label TWP's set omits, so it left
- * assistive tech announcing the source language on an otherwise fully
- * translated page.
- * Honors `.notranslate`/`translate="no"`/`isContentEditable` on the
- * element itself and every ancestor, same as text-node collection. Does
- * NOT reuse `isNoTranslateNode` wholesale for the element's OWN attribute
- * check, though — that function's `SKIP_TAGS` set (script/style/textarea/
- * code/svg/...) exists to stop text-node collection from DESCENDING into
- * those subtrees, but `<textarea>` is itself one of exactly the elements
- * whose OWN `placeholder` this feature must translate (per TWP's real
- * source), and a `<code title="...">` tooltip or an icon-font-classed
- * element's own `title` are legitimate real attributes independent of
- * their (skipped) text content. `SKIP_TAGS`/icon-font/KaTeX/no-value-
- * `<option>` remain exactly right for deciding whether to DESCEND into an
- * element's children, just not for excluding the element's own attributes.
- */
-/**
- * The single source of truth for which attributes get translated.
- *
- * `attributeTranslator.ts`'s `WATCHED_ATTRIBUTES` (its MutationObserver's
- * `attributeFilter`) is derived from this rather than hand-listed: that
- * array used to be typed as a plain `AttributeTarget['attribute'][]`, which
- * a subset satisfies, so adding an attribute here and forgetting it there
- * compiled fine and silently translated the initial value while ignoring
- * every later change to it.
- *
- * `aria-label` is included; `aria-placeholder`/`aria-description` are not —
- * they are rare, and each added attribute is more surface for the "a machine
- * identifier gets translated" risk `title` already carries.
+ * The single source of truth for which attributes get translated;
+ * attributeTranslator.ts derives its observer filter from it.
+ * `aria-placeholder`/`aria-description` are left out: rare, and each added
+ * attribute risks translating a machine identifier, as `title` already can.
  */
 export const TRANSLATABLE_ATTRIBUTES = ['placeholder', 'alt', 'value', 'title', 'aria-label'] as const;
 
@@ -353,6 +160,10 @@ export interface AttributeTarget {
   attribute: (typeof TRANSLATABLE_ATTRIBUTES)[number];
 }
 
+/**
+ * Attribute exclusions are narrower than `isNoTranslateNode`: SKIP_TAGS stops
+ * descent, but a `<textarea>` placeholder or `<code title>` is still translatable.
+ */
 function isHardExcludedFromAttributes(el: Element): boolean {
   if ((el as HTMLElement).isContentEditable) return true;
   if (el.getAttribute('translate') === 'no') return true;
@@ -379,10 +190,8 @@ function translatableAttributesFor(el: Element): AttributeTarget['attribute'][] 
 }
 
 /**
- * Same iterative (explicit stack) walk as `collectTextNodes` and the same
- * reason — a pathologically deep DOM shouldn't blow the call stack. Unlike
- * `collectTextNodes`, every ELEMENT is inspected (not just skipped over on
- * the way to text), since the attributes live on the elements themselves.
+ * Same iterative walk as `collectTextNodes`, but inspects every element's own
+ * attributes. Only button-type `value` is a label; other inputs' are user data.
  */
 export function collectAttributeTargets(root: Node, options: NoTranslateOptions = {}): AttributeTarget[] {
   const targets: AttributeTarget[] = [];

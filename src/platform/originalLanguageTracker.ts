@@ -1,51 +1,20 @@
 /**
- * Detects the page's original (source) language via `browser.i18n
- * .detectLanguage()` against the page's own text, and decides whether to
- * auto-translate on load (the pure decision logic lives in
- * `src/engine/pageTranslator/autoTranslateDecision.ts` — this file is only
- * the browser-API-touching detector, which is why it lives in
- * `src/platform/` and not `src/engine/`).
- *
- * Scope note: main-frame only. The old repo's fork additionally relayed a
- * main-frame's detected language into same-origin iframes (so an iframe
- * doesn't independently auto-translate against its own, possibly
- * different, detected language) via a background round trip. Gen 3 has no
- * typed messaging protocol yet (that's Session 6) and `content.ts` doesn't
- * do anything per-frame today, so that relay isn't built here — an iframe
- * gets no auto-translate decision at all yet, which is a coverage gap, not
- * a behavior regression (nothing auto-translated iframes before this
- * either). Revisit once Session 6's messaging layer exists.
- *
- * Also no language-code normalization table yet (the old repo's
- * `fixTLanguageCode`, e.g. mapping a browser-detected `"prs"` to the
- * standard `"fa-AF"` tag) — that's part of the generated language-name
- * tables the plan defers to Session 7. `detectFromPageText` below returns
- * whatever code `browser.i18n.detectLanguage` reports, as-is.
+ * Detects the page's original language and lives in `src/platform/` because
+ * it touches browser APIs; the auto-translate decision itself is in
+ * `src/engine/pageTranslator/autoTranslateDecision.ts`. Detected codes are
+ * returned as the browser reports them, without normalization.
  */
 
 import { withTimeout } from '../shared/withTimeout';
 import { sendMessage } from './messaging/protocol';
 
-/**
- * Round-5 bloat audit: named and exported (previously an unexported
- * `timeoutMs = 5000` default parameter) so `content.ts`'s sub-frame
- * decision-poll budget can be derived from the SAME numbers that bound
- * `start()`'s real worst case, instead of the two being set independently
- * and drifting apart — see `MAIN_FRAME_DECISION_WORST_CASE_MS` below for
- * what that drift caused.
- */
+/** Exported so `content.ts` derives its sub-frame poll budget from the same bound. */
 export const VISIBILITY_TIMEOUT_MS = 5000;
 
 /**
- * Resolves when the tab becomes visible — but never waits forever. The cap
- * matters because `start()`'s result gates the auto-translate-on-load
- * decision in content.ts: a permanently-pending promise here means "always
- * translate this site" silently never fires, with nothing logged. A
- * browser that reports a non-'visible' state and then never emits
- * `visibilitychange` (background/prerendered tabs, and WebKit-based engines
- * where these semantics differ) would do exactly that. Falling through
- * after the timeout is safe: the worst case is detecting language on a page
- * that isn't on screen yet, which costs nothing.
+ * Resolves when the tab becomes visible, capped so a tab that never fires
+ * `visibilitychange` (background/prerendered tabs, some WebKit engines) can't
+ * block the auto-translate decision forever. Detecting off-screen is harmless.
  */
 async function waitUntilVisible(timeoutMs = VISIBILITY_TIMEOUT_MS): Promise<void> {
   if (document.visibilityState === 'visible') return;
@@ -67,65 +36,22 @@ async function waitUntilVisible(timeoutMs = VISIBILITY_TIMEOUT_MS): Promise<void
 }
 
 /**
- * Always resolves — 'und' on any failure, never throws. `i18n.detectLanguage`
- * is feature-detected AND wrapped: it's absent or non-functional on some
- * non-Chromium engines, and an exception escaping here would otherwise kill
- * the auto-translate decision downstream. An unknown language must degrade
- * to "translate anyway if the user asked for this site" (via the
- * always-translate-sites list), never to silence.
- */
-/**
- * Real bug, found testing against actual Firefox (not just Chrome, which
- * is all this was ever exercised against until Firefox releases became
- * installable): Firefox's `i18n.detectLanguage` has long-standing
- * upstream reliability problems (e.g. Mozilla bug 1712214) where it can
- * simply never resolve or reject, rather than failing cleanly the way the
- * try/catch below already handles. Without a bound, that hangs this
- * function — and everything downstream awaiting it, including the entire
- * auto-translate-on-load decision — forever, with no error, no timeout,
- * nothing. 3s is generous for what should be a near-instant local call.
+ * Bounds each detection call: Firefox's `i18n.detectLanguage` can hang
+ * without resolving or rejecting (Mozilla bug 1712214), which would stall
+ * the auto-translate decision. Generous for a near-instant local call.
  */
 const DETECT_LANGUAGE_TIMEOUT_MS = 3000;
 
 /**
- * `start()`'s real worst case: `waitUntilVisible` runs to completion BEFORE
- * detection begins (see `start()` below), so the two bounds stack rather
- * than overlap — a page opened in a background tab (never visible, so
- * `waitUntilVisible` burns its full timeout) with slow detection can take
- * up to this long to report a decision.
- *
- * Round-5 bloat audit: exported specifically so `content.ts`'s sub-frame
- * decision-poll budget is derived from this number instead of being set
- * independently. It used to be a fixed `200ms x 15 = 3s` budget, well under
- * this worst case — on a page opened in a background tab or with slow
- * detection, every same-origin sub-frame exhausted its poll budget and
- * gave up silently, well before the main frame's own perfectly good
- * decision ever arrived. Real waste (up to 15 wasted background round
- * trips per sub-frame) and a real correctness gap (the sub-frame never
- * translates) from the same root cause: two independently-set timing
- * budgets on either side of one relay, never reconciled.
+ * `start()`'s worst case: the visibility wait runs before detection, so the
+ * bounds stack. Exported so `content.ts`'s sub-frame poll budget covers it.
  */
 export const MAIN_FRAME_DECISION_WORST_CASE_MS = VISIBILITY_TIMEOUT_MS + DETECT_LANGUAGE_TIMEOUT_MS;
 
 /**
- * Speed fix, found via audit: this used to read `document.body.innerText`
- * for the sample below. `innerText` (unlike `textContent`) reflects actual
- * rendering — visibility, `display:none`, generated line breaks — which
- * means the browser must force a full synchronous layout of the whole
- * document just to compute it, on the auto-translate-on-load critical
- * path, before any of it is even needed. A plain `textContent` read has no
- * such cost, but isn't a safe drop-in replacement on its own: it includes
- * `<script>`/`<style>` element content verbatim, so a page with a large
- * inline script near the top of `<body>` would feed raw JS/CSS text into
- * the sample instead of prose, corrupting the language guess. Walking text
- * nodes directly with a `TreeWalker` gets the cheap-read property of
- * `textContent` while still excluding script/style content — visibility
- * isn't accounted for (a `display:none` nav drawer's text can end up in
- * the sample), but this is already a coarse, best-effort heuristic
- * (falls back to `'und'` on any failure, gets overridden by the primary
- * `tabs.detectLanguage` relay whenever that succeeds) where a little
- * hidden boilerplate mixed into 4000 characters of real content isn't
- * going to change the detected language.
+ * Samples body text via a `TreeWalker`: unlike `innerText` it forces no
+ * layout, and unlike `textContent` it skips script/style content. Hidden text
+ * can leak in, which is acceptable for a coarse fallback heuristic.
  */
 function sampleBodyText(maxChars: number): string {
   if (!document.body) return '';
@@ -146,6 +72,10 @@ function sampleBodyText(maxChars: number): string {
   return sample.slice(0, maxChars);
 }
 
+/**
+ * Fallback detection; always resolves, `'und'` on any failure. `i18n.detectLanguage`
+ * is feature-detected and wrapped because it's absent or broken on some engines.
+ */
 async function detectFromPageText(): Promise<string> {
   try {
     const sample = sampleBodyText(4000).trim();
@@ -160,15 +90,8 @@ async function detectFromPageText(): Promise<string> {
 }
 
 /**
- * The primary detection path, matching TWP's real, current design
- * (confirmed against their live source, not assumed): relay to the
- * background so it can call `browser.tabs.detectLanguage()` — a
- * background-only API that inspects the browser's own view of the tab's
- * actual content, rather than a client-side `innerText` slice this file
- * builds itself (see `detectFromPageText` above, kept as the fallback for
- * whenever this returns `'und'`). `withTimeout`-guarded for the same
- * reason as `detectFromPageText`'s own call: a message round trip that
- * never resolves must not hang the entire auto-translate decision.
+ * Primary detection: asks the background to run `browser.tabs.detectLanguage()`,
+ * which sees the tab's real content. Timeout-guarded like the text fallback.
  */
 async function detectViaTab(): Promise<string> {
   try {
@@ -184,37 +107,9 @@ export function createOriginalLanguageTracker() {
   let language = 'und';
 
   /**
-   * Never rejects. Callers gate real behavior (auto-translate on load) on
-   * this settling, so a rejection here is indistinguishable from "the user
-   * doesn't want this page translated."
-   *
-   * Speed fix, found via an audit: this used to start with an unconditional
-   * 150ms sleep before anything else — unlike every other timing constant
-   * in this file (the 3s detect timeout, the 5s visibility cap), it had no
-   * comment justifying it, and nothing downstream actually needs it:
-   * `waitUntilVisible()` already handles a not-yet-visible page correctly
-   * on its own, and `detectViaTab()`/`detectFromPageText()` are
-   * independently timeout-guarded — this was pure added latency on the
-   * auto-translate-on-load critical path with no found purpose.
-   *
-   * Speed fix, found via audit: `detectViaTab()` (an MV3 message round trip
-   * that can cost a cold-start service-worker wake) and `detectFromPageText()`
-   * (the fallback) used to run strictly one after the other — awaiting the
-   * first in full, THEN starting the second only if it reported `'und'`.
-   * Each is independently bounded at `DETECT_LANGUAGE_TIMEOUT_MS`, so the
-   * worst case (a slow/unanswered relay, which itself resolves to `'und'`
-   * via its own timeout) paid for BOTH timeouts back to back — up to twice
-   * the latency on the auto-translate-on-load critical path for no reason,
-   * since neither detector's input depends on the other's result. They now
-   * start together and are both awaited via `Promise.all`, capping the
-   * worst case at one timeout window instead of two, while still
-   * preferring the tab relay's result whenever it isn't `'und'` — same
-   * preference order as before, just no longer paid for serially. The
-   * trade: `detectFromPageText()`'s local `i18n.detectLanguage()` call now
-   * always fires (previously skipped whenever the relay alone succeeded);
-   * that's a cheap, non-network local call with no forced layout (see
-   * `sampleBodyText`'s doc comment), a fair price for cutting the shared
-   * worst case in half.
+   * Never rejects: callers gate auto-translate on this settling. Both
+   * detectors run in parallel so the worst case is one timeout, not two;
+   * the tab relay's answer wins unless it's `'und'`.
    */
   async function detect(): Promise<void> {
     try {

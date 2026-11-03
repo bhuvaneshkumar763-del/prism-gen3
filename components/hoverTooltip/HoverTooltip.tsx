@@ -1,10 +1,8 @@
 import { Show } from 'solid-js';
 
 /**
- * "Hover over translated text to see the original" — a small tooltip
- * following the cursor. Pure presentation; `mountHoverTooltip.ts` owns the
- * hover-detection/debounce/positioning logic (kept out of this component
- * so the interaction logic is unit-testable without mounting Solid).
+ * Tooltip showing the original of hovered translated text. Presentation only;
+ * `mountHoverTooltip.ts` owns detection, debounce and positioning.
  */
 export interface HoverTooltipProps {
   visible: boolean;

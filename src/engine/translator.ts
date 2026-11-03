@@ -1,38 +1,19 @@
 import { err, ok, type Result } from '../shared/result';
 
-/**
- * The core port every translation provider implements. Session 2 shipped a
- * deliberately minimal single-string version of this; Session 4 is where it
- * generalizes to real batching, exactly per the Gen 3 plan's guidance —
- * "if adding provider #6 needs touching shared internals, fix the
- * abstraction now while there are only ~5 implementations." This is
- * provider #2, so now is when the batch shape gets designed for real,
- * against Google/Bing/Yandex/LLM's actual (very different) wire formats,
- * not guessed at with only LibreTranslate as a data point.
- */
+/** The port every translation provider implements. */
 
 /**
- * `'suspicious'` (added via a reliability audit): distinct from `'network'`
- * — the request itself SUCCEEDED (a real 200 OK), the response just kept
- * looking like a silent-echo failure per `outputSanityCheck.ts` even after
- * a repair retry. This is NOT evidence the provider is down, unlike a real
- * `'network'`/`'http'` failure — a caller retrying a genuine network/HTTP
- * failure forever until the provider recovers is correct; retrying a
- * confirmed-suspicious-but-successful response forever is not, since a
- * working provider will keep returning the exact same (possibly entirely
- * legitimate — a proper noun, an untranslated language endonym) result
- * every time. See `translateLoop.ts`'s `allFailed` handling for where this
- * distinction is actually used.
+ * `'suspicious'`: the request succeeded but the response still looked like a
+ * silent echo after a repair retry. Unlike `'network'`/`'http'` it isn't
+ * evidence the provider is down, so callers shouldn't retry it forever (the
+ * result may be legitimate, e.g. a proper noun). See translateLoop.ts.
  */
 export type TranslateError = { kind: 'network' | 'http' | 'parse' | 'suspicious'; message: string };
 
 /**
- * One unit of translation work. Usually a single string; more than one
- * when a piece is a group of related strings translated together for
- * shared context (e.g. sibling DOM text nodes under the same block
- * element — the old repo's `grouping.ts` concept, ported in a later
- * session once the page-translation engine exists). Every provider must
- * preserve the string count and order within a piece.
+ * One unit of translation work: usually a single string, or a group of
+ * related strings (e.g. sibling text nodes) sent together for context.
+ * Providers must preserve the string count and order within a piece.
  */
 export type TranslatePiece = string[];
 
@@ -41,51 +22,26 @@ export interface TranslateBatchRequest {
   targetLanguage: string;
   pieces: TranslatePiece[];
   /**
-   * When true, don't reorder results to match request order — just return
-   * them in whatever order the provider's response naturally gives (some
-   * providers' index markers can drop/merge under real-world HTML, so
-   * "trust response order" is sometimes the more correct choice for a
-   * given piece of content). Ported concept from the old repo's
-   * `dontSortResults`.
-   */
-  /**
-   * True when `sourceLanguage` was chosen explicitly by the user (the
-   * bubble's From picker); false/absent when it is the page-level GUESS
-   * from `originalLanguageTracker`.
-   *
-   * A provider may override a guess with its own per-piece detection, but
-   * must honour an explicit choice — that picker exists precisely because
-   * the guess was wrong, so ignoring it would break the one control a user
-   * has for fixing a misdetected page.
+   * True when the user chose `sourceLanguage` (the bubble's From picker);
+   * false/absent for the page-level guess. A provider may override a guess
+   * with per-piece detection but must honour an explicit choice.
    */
   sourceLanguageIsExplicit?: boolean;
   /**
-   * Provider-internal hint: the language to re-request a piece with when
-   * the output sanity check flags it as suspicious.
-   *
-   * Set by a provider that deliberately sends `'auto'` on the wire, so a
-   * silently-echoed piece falls back to the page's guessed language
-   * instead of pointlessly retrying `'auto'` — which would just repeat the
-   * same request and return the same echo.
+   * Provider-internal: the language to re-request a suspicious piece with.
+   * Set by a provider that sends `'auto'`, so a silent echo falls back to the
+   * page's guess instead of repeating the identical `'auto'` request.
    */
   suspiciousRetrySourceLanguage?: string;
+  /**
+   * When true, return results in the provider's response order instead of
+   * reordering to request order (index markers can drop/merge under real HTML).
+   */
   dontSortResults?: boolean;
   /**
-   * Speed fix, found via audit: a batch of N pieces used to have every
-   * translated piece withheld from the caller until the SLOWEST of the
-   * batch's underlying HTTP sub-requests finished — so on a 300-node
-   * article split into ~30 sub-batches at 6 concurrent, one sub-batch
-   * stalling to its request timeout held back the other 29 (already
-   * fully translated in memory) from ever reaching the DOM. Optional and
-   * purely additive: a provider that supports incremental delivery
-   * (`batchedHttpProvider`-based ones) calls this the instant each
-   * individual piece's result is known, well before the overall
-   * `translateBatch()` promise resolves; a caller that doesn't pass it
-   * gets the exact same behavior as before. `translateBatch()`'s
-   * returned array remains the single source of truth for bookkeeping
-   * (retries, error surfacing, dedupe) — this is only a chance to write
-   * a piece to the page sooner, never a replacement for awaiting the
-   * final result.
+   * Optional incremental delivery: called as soon as each piece's result is
+   * known, so one slow sub-request doesn't hold back the rest. The returned
+   * array stays the source of truth for bookkeeping (retries, errors).
    */
   onPieceComplete?(index: number, outcome: PieceOutcome): void;
 }

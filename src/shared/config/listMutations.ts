@@ -1,15 +1,8 @@
 /**
- * Cross-list cleanup for the always/never-translate site and language
- * lists — the single home for a rule the pre-rewrite fork applied
- * inconsistently: its popup removed a site from "never" when adding it to
- * "always" (and vice versa), but its options page's list editors did the
- * same add/remove with no cross-list cleanup at all, so a site could end up
- * listed in both simultaneously depending on which surface you used last.
- *
- * Pure snapshot-in, patch-out — no storage I/O. `src/platform/configMutations.ts`
- * is the only thing that applies a returned patch to the real config store;
- * every UI surface (bubble, popup, options) calls through that, never a raw
- * `configStore.set(...)` on these four keys.
+ * Cross-list cleanup for the always/never-translate site and language lists:
+ * adding to one list removes from the other, so an entry is never in both.
+ * Pure snapshot-in, patch-out; `src/platform/configMutations.ts` applies the
+ * patch, and every UI surface goes through it.
  */
 
 export interface ListsSnapshot {
@@ -42,14 +35,9 @@ function withRemovedSite(list: string[], hostname: string): string[] {
 }
 
 /**
- * Every site-list check elsewhere in this codebase (`autoTranslateDecision.ts`,
- * `siteOverrides.ts`) matches against `location.hostname` — always lowercase,
- * no scheme, no path, per the URL spec. A rule added here from raw user
- * input (typed `BBC.com`, or a pasted `https://bbc.com/`) that ISN'T
- * normalized the same way silently never matches anything, while the
- * options page keeps displaying it as if it were an active rule. Accepts
- * either a bare hostname or a full URL — prefixing an assumed scheme when
- * one is missing lets `URL` do the actual stripping either way.
+ * Normalizes a bare hostname or full URL to `location.hostname` form
+ * (lowercase, no scheme/path), which every site-list check matches against.
+ * An unnormalized rule (`BBC.com`, `https://bbc.com/`) would never match.
  */
 export function normalizeHostname(input: string): string {
   const trimmed = input.trim();
@@ -83,20 +71,11 @@ function apexForm(hostname: string): string {
 }
 
 /**
- * The single membership test for the always/never-translate site lists.
+ * The single membership test for the always/never-translate site lists, so
+ * the auto-translate decision and the bubble/popup toggles always agree.
  *
- * Real bug this exists to close (round-7 audit): the decision
- * (`autoTranslateDecision.ts`) and BOTH per-site toggles (the bubble's and
- * the popup's) each did their own `list.includes(hostname)`, so a `www.`
- * mismatch made a saved rule silently inert while the UI still showed it as
- * active. Three independent copies of the same comparison is also why this
- * lives here rather than being fixed at any one call site — fixing only the
- * decision would have left both toggles reading OFF while auto-translate
- * fired, which is worse than being consistently wrong.
- *
- * Entries are re-normalized rather than trusted: `addSiteTo*` normalizes on
- * save, but a list restored from a backup or written by an older build can
- * still hold a raw `HTTPS://Example.COM/path`.
+ * Entries are re-normalized rather than trusted: a list restored from a
+ * backup or written by an older build can still hold `HTTPS://Example.COM/path`.
  */
 export function siteListIncludesHostname(list: readonly string[], hostname: string): boolean {
   if (!hostname.trim()) return false;

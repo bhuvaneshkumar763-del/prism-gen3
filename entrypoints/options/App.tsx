@@ -30,23 +30,10 @@ import { describeTranslationTest, pickTranslationTestSample } from '../../src/sh
 import './App.css';
 
 /**
- * The options page — 5 tabs, restored toward the pre-rewrite fork's 6-tab
- * layout (no Voice/Dictionary tabs: those engine subsystems don't exist in
- * Gen 3 at all, so there's nothing to build settings UI for — a deliberate
- * scope boundary, not an oversight, agreed with the user alongside the
- * rest of this post-launch UI-depth pass; see this repo's CLAUDE.md).
- *
- * `TabSwitcher`/`TabPanel` (`components/options/`) are the ARIA APG
- * automatic-activation tablist ported from the fork, `StringListEditor`
- * the shared add/remove list widget. Keyboard math lives in
- * `src/shared/ui/tabNavigation.ts` (unit-tested, coverage-gated).
- *
- * Mirrors `configStore` into a local Solid store (`settings`), synced via
- * `configStore.onChanged` — reading `configStore.get(...)` directly inside
- * JSX is a known foot-gun in this codebase's history (Solid doesn't
- * re-render on a plain object read that isn't tracked), so every field
- * here reads from the reactive `settings` store, never `configStore.get()`
- * directly.
+ * The options page: 5 tabs (no Voice/Dictionary; those subsystems don't
+ * exist). Config is mirrored into the `settings` store via
+ * `configStore.onChanged`; JSX never reads `configStore.get()` directly,
+ * since Solid wouldn't track it.
  */
 
 const TABS = [
@@ -58,31 +45,10 @@ const TABS = [
 ];
 
 /**
- * Reliability fix, found via a round-4 audit: `setStore(key, objectValue)`
- * MERGES a plain object value into whatever's already at that path — it
- * never removes a key the new object is missing. For most config keys
- * that's fine (every mutator already returns the full replacement shape,
- * and either a fresh scalar or an ARRAY value at a path IS replaced
- * wholesale, confirmed directly against the actual solid-js store
- * behavior, not assumed). But `bubbleByHost`/`sourceLanguageByHost` are
- * both `Record<string, ...>` — removing a per-host override (or
- * "Restore defaults" resetting either back to `{}`) produces a SMALLER
- * object, and the merge silently kept the deleted host's entry sitting in
- * the page's own mirror: the removed row kept rendering, and the next
- * unrelated save on that same key re-spread the stale mirror and wrote
- * the "removed" entry straight back into persistent storage — an
- * override the user had just deleted, resurrected.
- *
- * `reconcile()` is Solid's own targeted fix for exactly this — a diff-
- * based replace instead of a shallow merge. Deliberately NOT applied to
- * every key: verified directly (a throwaway solid-js store script, not
- * assumed) that `reconcile()` on an ARRAY value at a path does NOT
- * correctly shrink it — a 3-item array reconciled down to 2 items left a
- * trailing `null` instead of actually removing the third slot. Every
- * OTHER config key already works correctly without `reconcile` (arrays
- * replace natively; scalars always did), so scoping this to only the two
- * genuinely-broken `Record`-shaped keys avoids introducing that array
- * regression while still fixing the real bug.
+ * `setStore(key, object)` merges, so a removed per-host entry would survive
+ * in the mirror and be written back on the next save; `reconcile()` replaces
+ * these Record keys. Not used for arrays: it leaves a trailing `null` when
+ * shrinking one, and arrays already replace wholesale.
  */
 const RECONCILED_KEYS = new Set<ConfigKey>(['bubbleByHost', 'sourceLanguageByHost']);
 
@@ -109,10 +75,8 @@ function App() {
   const providerGaps = () => missingProviderSetup(settings.pageTranslatorProvider, settings);
 
   /**
-   * Improvement, found via a UI audit: diagnostics checked storage and API
-   * availability but never actually translated anything, so nothing could
-   * answer "does translation work with my settings right now?". This sends
-   * one short sample through the same background path page translation uses.
+   * Diagnostics test: sends one short sample through the same background path
+   * page translation uses, to answer "does translation work right now?".
    */
   async function handleTestTranslation(): Promise<void> {
     setTestRunning(true);
@@ -136,13 +100,8 @@ function App() {
   const [backupMessage, setBackupMessage] = createSignal<string | null>(null);
   const [restoredDefaults, setRestoredDefaults] = createSignal(false);
   /**
-   * A single general-purpose save-error message — this whole file had NO
-   * error handling at all: every storage write (setField, import,
-   * restore-defaults, clear-cache) assumed success. A rejected write (quota
-   * exceeded, extension context invalidated, a transient storage error)
-   * left the page showing a value that was never actually persisted, with
-   * only the ABSENCE of the "Saved" flash as the only (easy to miss) sign
-   * something went wrong.
+   * Shown when a storage write (setField, import, restore defaults, clear
+   * cache) fails, so the page doesn't silently show an unsaved value.
    */
   const [saveError, setSaveError] = createSignal<string | null>(null);
   let fileInput: HTMLInputElement | undefined;
@@ -205,9 +164,7 @@ function App() {
       await configStore.set(key, value);
       flashSaved(key);
     } catch (e) {
-      // Roll back the optimistic update — otherwise the field keeps
-      // showing the new value as if it had saved, when it never actually
-      // persisted.
+      // Roll back the optimistic update so the field doesn't show an unsaved value.
       applySetting(key, previous);
       setSaveError(`Couldn't save this setting: ${describeError(e)}`);
     }
@@ -231,10 +188,8 @@ function App() {
     );
   }
 
-  // Every add/remove here goes through src/shared/config/listMutations.ts,
-  // not a bare array push/filter — this is the fix for a real pre-rewrite
-  // fork inconsistency: its popup applied cross-list cleanup (adding a
-  // site to "always" removed it from "never"), its options page didn't.
+  // Every add/remove goes through src/shared/config/listMutations.ts so the
+  // always/never cross-list cleanup matches the popup's.
   function handleExport(): void {
     const json = serializeBackup(settings as Config, Date.now());
     const blob = new Blob([json], { type: 'application/json' });
@@ -389,12 +344,8 @@ function App() {
               way to move them between devices.
             </p>
             {/*
-              Product decision, found via a round-6 audit: diagnostics.ts's
-              own export already redacts *ApiKey fields, but this settings
-              export never has — it writes googleCloudTranslateApiKey
-              in plain text, since removing them would silently
-              break restoring a backup on another device. Warning here
-              instead, so the exported file's contents aren't a surprise.
+              Unlike the diagnostics export, this one keeps API keys (stripping
+              them would break restoring on another device), so warn instead.
             */}
             <p class="hint">
               <strong>The exported file includes any API keys you've entered in plain text</strong> — store and share it

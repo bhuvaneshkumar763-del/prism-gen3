@@ -1,12 +1,7 @@
 /**
- * Copies `text` to the clipboard; true on success.
- *
- * `navigator.clipboard` exists only in secure contexts, so on a plain-http
- * page it is simply undefined — and it can also refuse on permissions. The
- * legacy copy command still works in both cases, so it's the fallback: a
- * temporary off-screen field is filled, selected, copied from, and removed.
- * Returns false rather than throwing, so the UI can say "Copy failed"
- * instead of falsely claiming success.
+ * Copies `text` to the clipboard; false (never a throw) on failure. Falls back
+ * to `execCommand('copy')` on a temporary field, since `navigator.clipboard`
+ * is missing on plain-http pages and can be refused by permissions.
  */
 export async function copyText(text: string): Promise<boolean> {
   try {

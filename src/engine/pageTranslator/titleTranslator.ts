@@ -1,23 +1,8 @@
 import type { Translator } from '../translator';
 
 /**
- * Tab-bar title translation. Kept as its own module (not folded into
- * `translateLoop.ts`) so the cache and the dual-write are unit-testable
- * without a DOM-walking full page. `collectTextNodes` in `translateLoop.ts`
- * never reaches `<title>` (it walks from `document.body`, and `<title>`
- * lives in `<head>`), so page translation alone never touches the tab
- * title — this module exists to cover that gap.
- *
- * Session 7 originally worked around a real Google quirk here directly
- * (`transformPiece` only wraps a piece in `<a i=N>` markers when it has
- * more than one string, and a bare single-string request doesn't
- * translate reliably) by hand-padding `pieces: [[text, ' ']]`. `google.ts`
- * has since grown that same padding automatically for every caller
- * (Session 4+/beta.28), including the reconciliation fix for content
- * Google reflows into the padding slot — this module now just sends an
- * ordinary single-string piece and lets the provider handle it, rather
- * than duplicating (and, as an audit later found, silently bypassing) that
- * logic here.
+ * Tab-bar title translation. The page walk starts at `document.body`, so it
+ * never reaches `<title>` in `<head>`; this module covers that gap.
  */
 
 const MAX_CACHE_ENTRIES = 50;
@@ -51,22 +36,21 @@ export function createTitleTranslator(options: TitleTranslatorOptions) {
   let originalPageTitle: string | null = null;
   let translatedPageTitle: string | null = null;
   let active = false;
-  // A single DOM change (e.g. a site's own document.title assignment) can
-  // fire the MutationObserver below more than once before the first
-  // resulting request resolves — without this guard, each of those ticks
-  // would race a duplicate request for the exact same text, since the
-  // cache is only populated once the first one finishes.
+  // Bumped by start()/restore(); a start() resuming under a stale cycle must not install the watcher.
+  let cycle = 0;
+  // Bumped per new title and by start()/restore(); a response from an older
+  // generation is dropped, so a slow chapter-1 reply can't overwrite chapter 2.
+  let titleGeneration = 0;
+  // One title change can fire the observer several times before the first
+  // request resolves (the cache fills only then); this stops duplicates.
   let inFlightKey: string | null = null;
 
   let headObserver: MutationObserver | null = null;
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
   /** Bumped by every startWatching()/stopWatching() — see schedulePoll below. */
   let watchGeneration = 0;
-  // Mirrors translateLoop.ts's own surfaced-error backoff: a provider that's
-  // confirmed broken/rate-limited (repeated 'failed' results) grows the
-  // polling interval instead of being hammered every POLL_MIN_MS forever.
-  // Resets to the fast interval the moment a poll succeeds (or has nothing
-  // to do) again.
+  // Grows on repeated 'failed' results so a broken provider isn't hammered;
+  // resets once a poll succeeds or has nothing to do.
   let pollDelay: number = POLL_MIN_MS;
 
   function cacheKey(text: string): string {
@@ -74,20 +58,9 @@ export function createTitleTranslator(options: TitleTranslatorOptions) {
   }
 
   /**
-   * Sends the title as an ordinary single-string piece — `google.ts`'s own
-   * `translateBatch` already pads any single-string piece with a throwaway
-   * second string itself now (Session 7+, see its header comment for why a
-   * plain single-string request would silently fail), and reconciles the
-   * result correctly on the way back (including a later fix for content
-   * Google reflows into the padding slot). This function used to hand-roll
-   * its own `[text, ' ']` padding to work around the same problem — real
-   * bug, found via an audit: because that made the piece already 2 items
-   * long, it silently bypassed `google.ts`'s (now-fixed) reconciliation
-   * logic entirely, which only engages for pieces it padded itself. Any
-   * reflowed content Google put in the throwaway slot was then just
-   * dropped at the `outcome.value[0]` read below, unlike regular page
-   * text. Letting the provider pad instead of doing it here fixes that for
-   * free and removes the duplicate logic.
+   * Sends the title as a plain single-string piece. Don't pad it here:
+   * `google.ts` pads single strings itself, and its reflow reconciliation
+   * only engages for pieces it padded.
    */
   async function translateTitleString(text: string): Promise<TranslateTitleResult> {
     const key = cacheKey(text);
@@ -129,11 +102,8 @@ export function createTitleTranslator(options: TitleTranslatorOptions) {
   }
 
   /**
-   * A page's title is really two things — the `<title>` element and the
-   * browser-visible `document.title` — and they can drift out of sync.
-   * Writing only one of them is why the tab bar can keep showing stale text
-   * even after translation succeeds. Write both, each in its own try/catch
-   * so a failure on one doesn't block the other.
+   * Writes both `document.title` and the `<title>` element, which can drift
+   * apart (writing one can leave the tab stale); separate try/catch for each.
    */
   function applyTabTitle(text: string): void {
     try {
@@ -156,9 +126,7 @@ export function createTitleTranslator(options: TitleTranslatorOptions) {
     }
   }
 
-  // Loop guard: the MutationObserver below watches <head>, and applyTabTitle
-  // writes into <title> (inside <head>) — without this, every translated
-  // write would immediately re-trigger maybeRetranslate on our own change.
+  // Loop guard: the <head> observer would otherwise fire on our own <title> write.
   let suppressNextObserverTick = false;
   function noteOwnHeadWrite(): void {
     suppressNextObserverTick = true;
@@ -174,8 +142,9 @@ export function createTitleTranslator(options: TitleTranslatorOptions) {
     if (!current || current.trim().length < 1) return;
 
     originalPageTitle = current;
+    const myGeneration = ++titleGeneration;
     const result = await translateTitleString(current);
-    if (!active) return; // restored/torn down while the request was in flight
+    if (myGeneration !== titleGeneration) return;
     if (result.status === 'translated' && result.text !== current) {
       translatedPageTitle = result.text;
       applyTabTitle(result.text);
@@ -189,9 +158,12 @@ export function createTitleTranslator(options: TitleTranslatorOptions) {
     if (!current || current.trim().length < 1) return;
     if (current === translatedPageTitle) return;
 
+    // The same title again (a duplicate observer/poll tick) keeps its generation.
+    if (current !== originalPageTitle) titleGeneration++;
     originalPageTitle = current;
+    const myGeneration = titleGeneration;
     const result = await translateTitleString(current);
-    if (!active) return;
+    if (myGeneration !== titleGeneration) return;
 
     if (result.status === 'failed') {
       pollDelay = Math.min(POLL_MAX_MS, Math.round(pollDelay * POLL_BACKOFF_FACTOR));
@@ -219,20 +191,11 @@ export function createTitleTranslator(options: TitleTranslatorOptions) {
     if (head) {
       headObserver.observe(head, { childList: true, subtree: true, characterData: true });
     }
-    // Some sites' title writes don't reliably fire the observer — a polling
-    // fallback catches those too. Only runs while the page is visible;
-    // visibilitychange handling in translateLoop.ts does one catch-up check
-    // on refocus. Self-reschedules (rather than setInterval) so pollDelay's
-    // backoff, grown in maybeRetranslate() on a 'failed' result, actually
-    // takes effect between ticks instead of firing at a fixed cadence
-    // regardless of how many consecutive requests have failed.
+    // Polling fallback for title writes the observer misses; visible pages only.
+    // Self-rescheduling (not setInterval) so pollDelay's backoff takes effect.
     pollDelay = POLL_MIN_MS;
-    // Captured per startWatching() run. A self-rescheduling timer can
-    // otherwise resurrect itself: stopWatching() clears the pending timer,
-    // but a callback already awaiting maybeRetranslate() resumes afterwards
-    // and re-arms, leaving a timer running for the life of the page. The
-    // generation check makes a stopped (or restarted) watcher's in-flight
-    // callback a no-op.
+    // A callback awaiting maybeRetranslate() when stopWatching() runs would
+    // otherwise re-arm itself afterwards; the generation check stops that.
     watchGeneration++;
     const myGeneration = watchGeneration;
     const schedulePoll = (): void => {
@@ -256,7 +219,9 @@ export function createTitleTranslator(options: TitleTranslatorOptions) {
 
   /** Called on translatePage() — starts translating the title and watching for changes. */
   async function start(targetLanguage: string): Promise<void> {
+    const myCycle = ++cycle;
     await translate(targetLanguage);
+    if (myCycle !== cycle) return; // restored, or started again, during the await
     startWatching();
   }
 
@@ -264,6 +229,8 @@ export function createTitleTranslator(options: TitleTranslatorOptions) {
   function restore(): void {
     stopWatching();
     active = false;
+    cycle++;
+    titleGeneration++;
     if (originalPageTitle !== null) {
       applyTabTitle(originalPageTitle);
     }

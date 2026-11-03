@@ -84,12 +84,8 @@ describe('createAttributeTranslator', () => {
     expect(document.getElementById('a')?.getAttribute('aria-label')).toBe('TR:Open dialog');
 
     t.restore();
-    // The FIRST-ever-seen value, not the page's later one — `noteOriginal`
-    // deliberately never overwrites the real original, so a re-translate
-    // can't poison the restore baseline with an already-translated value.
-    // Same for every other attribute; asserted here so this test documents
-    // the real contract rather than an assumed one.
-    expect(document.getElementById('a')?.getAttribute('aria-label')).toBe('Close dialog');
+    // The page's latest value, not the first one seen: the page changed it.
+    expect(document.getElementById('a')?.getAttribute('aria-label')).toBe('Open dialog');
   });
 
   it('sends the source/target languages and original values through as pieces', async () => {
@@ -181,7 +177,7 @@ describe('createAttributeTranslator', () => {
     expect(document.getElementById('a')?.getAttribute('placeholder')).toBe('FILTER');
   });
 
-  it('restores the ORIGINAL value, not an intermediate translated one, even after a page-driven change and re-translate', async () => {
+  it("restores the page's latest value, not the first one seen or a translated one, after a page-driven change and re-translate", async () => {
     document.body.innerHTML = '<input id="a" placeholder="Search">';
     uppercaseOnce();
     const t = newTranslator();
@@ -194,7 +190,147 @@ describe('createAttributeTranslator', () => {
 
     t.restore();
 
-    expect(document.getElementById('a')?.getAttribute('placeholder')).toBe('Search');
+    expect(document.getElementById('a')?.getAttribute('placeholder')).toBe('Filter');
+  });
+
+  it("restores a page-changed label to the page's value even when its re-translation fails (a Play/Pause toggle)", async () => {
+    document.body.innerHTML = '<button id="a" aria-label="Play">x</button>';
+    uppercaseOnce();
+    const t = newTranslator();
+    await t.start('es');
+    expect(document.getElementById('a')?.getAttribute('aria-label')).toBe('PLAY');
+
+    translateBatch.mockResolvedValueOnce([err({ kind: 'network', message: 'boom' })]);
+    document.getElementById('a')?.setAttribute('aria-label', 'Pause');
+    await flushAsyncWork();
+    await flushAsyncWork();
+    expect(document.getElementById('a')?.getAttribute('aria-label')).toBe('Pause');
+
+    t.restore();
+
+    expect(document.getElementById('a')?.getAttribute('aria-label')).toBe('Pause');
+  });
+
+  it('does not write a translation over a value the page changed while the request was in flight, and translates the new value instead', async () => {
+    document.body.innerHTML = '<input id="a" placeholder="Search">';
+    uppercaseOnce();
+    const t = newTranslator();
+    await t.start('es');
+
+    let resolveFilter!: (outcomes: PieceOutcome[]) => void;
+    translateBatch.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveFilter = resolve;
+        }),
+    );
+    const input = document.getElementById('a') as HTMLInputElement;
+    input.setAttribute('placeholder', 'Filter');
+    await flushAsyncWork(); // 'Filter' is now in flight
+    input.setAttribute('placeholder', 'Sort');
+    await flushAsyncWork();
+
+    uppercaseOnce();
+    resolveFilter([ok(['FILTER'])]);
+    await flushAsyncWork();
+    await flushAsyncWork();
+
+    expect(input.getAttribute('placeholder')).toBe('SORT');
+    expect(translateBatch).toHaveBeenLastCalledWith(expect.objectContaining({ pieces: [['Sort']] }));
+    t.restore();
+    expect(input.getAttribute('placeholder')).toBe('Sort');
+  });
+
+  it("requeues an attribute the page changed while start()'s first batch was in flight (before the observer runs)", async () => {
+    document.body.innerHTML = '<input id="a" placeholder="Search">';
+    let resolveStart!: (outcomes: PieceOutcome[]) => void;
+    translateBatch.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveStart = resolve;
+        }),
+    );
+    const t = newTranslator();
+    const startPromise = t.start('es');
+    const input = document.getElementById('a') as HTMLInputElement;
+    input.setAttribute('placeholder', 'Filter');
+
+    uppercaseOnce();
+    resolveStart([ok(['SEARCH'])]);
+    await startPromise;
+    await flushAsyncWork();
+    await flushAsyncWork();
+
+    expect(input.getAttribute('placeholder')).toBe('FILTER');
+  });
+
+  it("still starts watching for changes when start()'s first batch rejects (messaging failure or timeout)", async () => {
+    document.body.innerHTML = '<input id="a" placeholder="Search">';
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    translateBatch.mockRejectedValueOnce(new Error('message channel closed'));
+    const t = newTranslator();
+    await expect(t.start('es')).resolves.toBeUndefined();
+
+    uppercaseOnce();
+    const input = document.createElement('input');
+    input.setAttribute('placeholder', 'New field');
+    document.body.appendChild(input);
+    await flushAsyncWork();
+    await flushAsyncWork();
+
+    expect(input.getAttribute('placeholder')).toBe('NEW FIELD');
+  });
+
+  it('keeps translating later changes after a mutation-driven batch rejects', async () => {
+    document.body.innerHTML = '';
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const t = newTranslator();
+    await t.start('es');
+
+    translateBatch.mockRejectedValueOnce(new Error('timeout'));
+    const first = document.createElement('input');
+    first.setAttribute('placeholder', 'First');
+    document.body.appendChild(first);
+    await flushAsyncWork();
+    await flushAsyncWork();
+    expect(error).toHaveBeenCalled();
+
+    uppercaseOnce();
+    const second = document.createElement('input');
+    second.setAttribute('placeholder', 'Second');
+    document.body.appendChild(second);
+    await flushAsyncWork();
+    await flushAsyncWork();
+
+    expect(second.getAttribute('placeholder')).toBe('SECOND');
+  });
+
+  it("re-translates a textarea's placeholder when the page changes it (its own attributes are translatable, unlike its text)", async () => {
+    document.body.innerHTML = '<textarea id="a" placeholder="Write a comment"></textarea>';
+    uppercaseOnce();
+    const t = newTranslator();
+    await t.start('es');
+    expect(document.getElementById('a')?.getAttribute('placeholder')).toBe('WRITE A COMMENT');
+
+    uppercaseOnce();
+    document.getElementById('a')?.setAttribute('placeholder', 'Write a reply');
+    await flushAsyncWork();
+    await flushAsyncWork();
+
+    expect(document.getElementById('a')?.getAttribute('placeholder')).toBe('WRITE A REPLY');
+  });
+
+  it('does not translate an attribute the page changes on an element inside a translate="no" subtree', async () => {
+    document.body.innerHTML = '<div translate="no"><span id="s">x</span></div>';
+    const t = newTranslator();
+    await t.start('es');
+
+    document.getElementById('s')?.setAttribute('title', 'Keep me');
+    await flushAsyncWork();
+    await flushAsyncWork();
+
+    expect(translateBatch).not.toHaveBeenCalled();
+    expect(document.getElementById('s')?.getAttribute('title')).toBe('Keep me');
   });
 
   it('leaves an attribute alone when its translate outcome fails, rather than writing garbage or throwing', async () => {
@@ -352,22 +488,23 @@ describe('createAttributeTranslator', () => {
     // restore() lands while that mutation-driven batch is still awaiting
     // its network round trip.
     t.restore();
-    expect(document.getElementById('a')?.getAttribute('placeholder')).toBe('Search'); // restored to the TRUE original
+    // The page's own 'Filter' replaced our write, so restore leaves it.
+    expect(document.getElementById('a')?.getAttribute('placeholder')).toBe('Filter');
 
     resolveRetranslate([ok(['FILTRAR'])]);
     await flushAsyncWork();
 
     // The stale translation must not land after the fact...
-    expect(document.getElementById('a')?.getAttribute('placeholder')).toBe('Search');
+    expect(document.getElementById('a')?.getAttribute('placeholder')).toBe('Filter');
 
     // ...and a SECOND start()/restore() cycle must restore to the real
     // original, not a corrupted baseline the stale write would have left
     // in `originals` without the generation guard.
     uppercaseOnce();
     await t.start('es');
-    expect(document.getElementById('a')?.getAttribute('placeholder')).toBe('SEARCH');
+    expect(document.getElementById('a')?.getAttribute('placeholder')).toBe('FILTER');
     t.restore();
-    expect(document.getElementById('a')?.getAttribute('placeholder')).toBe('Search');
+    expect(document.getElementById('a')?.getAttribute('placeholder')).toBe('Filter');
   });
 
   it('skips an attribute on an element added inside a translate="no"/.notranslate ancestor, discovered via the mutation observer — real bug, found via a round-6 audit: unlike mutationWatcher.ts\'s text-node path, this subsystem had no ancestor walk at all, only checking the added node\'s own descendants, not whether the node itself sits inside a skip subtree that already existed above it', async () => {

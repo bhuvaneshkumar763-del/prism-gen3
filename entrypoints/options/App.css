@@ -288,7 +288,7 @@ body {
   background: #0f172a;
 }
 
-/* Post-launch UI-depth pass, Phase 3: shared list editor (always/never-translate lists, restyled onto the 5-tab layout) */
+/* Shared list editor (always/never-translate lists) */
 
 .listEditor {
   display: flex;

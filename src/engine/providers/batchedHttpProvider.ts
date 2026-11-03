@@ -5,26 +5,17 @@ import type { PieceOutcome, TranslateBatchRequest, Translator } from '../transla
 import { isSuspiciousOutcome } from './outputSanityCheck';
 
 /**
- * Shared machinery every HTTP-based translation provider composes (Gen 3
- * plan, Session 4): request-level dedupe, a soft per-request char budget so
- * many small pieces get bundled into few HTTP calls, retry-with-backoff
- * honoring `Retry-After`, a concurrency cap, and a "short response" repair
- * pass. This is the old repo's `Service` base class, kept because the
- * design is real, hard-won engineering (see each option's doc comment for
- * the specific problem it solves) — rebuilt fresh here, and importantly
- * kept `fetch`-based and free of any `chrome`/`browser` API so it can live
- * in `src/engine/` at all (the old repo's equivalent used an XHR shim
- * because MV3 service workers lack real XHR — `fetch` doesn't have that
- * problem, so no shim is needed here).
+ * Shared machinery for HTTP translation providers: request-level dedupe, a
+ * soft per-request char budget that bundles many small pieces into few HTTP
+ * calls, retry-with-backoff honoring `Retry-After`, a shared concurrency cap,
+ * and a repair pass for missing/suspicious pieces. `fetch`-based and free of
+ * `chrome`/`browser` APIs so it can live in `src/engine/`.
  *
- * The two-level structure: `pieces` (each is 1+ related strings, e.g.
- * grouped DOM siblings) are wire-transformed individually by
- * `transformPiece`, then MULTIPLE pieces get bundled into one HTTP request
- * up to `maxBatchChars`, and `getRequestBody`/`getQueryString` receive the
- * whole bundle of already-transformed piece strings to build one wire
- * request. `parseResponse` maps the raw response back to one raw string
- * per piece (in request order), and `splitPieceResponse` decodes each
- * piece's raw string back into its original N-string shape.
+ * Two levels: each piece (1+ related strings) is wire-encoded by
+ * `transformPiece`; several encoded pieces are bundled into one request up to
+ * `maxBatchChars`. `parseResponse` maps the response back to one raw string
+ * per piece (request order), and `splitPieceResponse` decodes each back into
+ * its original N-string shape.
  */
 
 export interface BatchedProviderCallbacks {
@@ -32,7 +23,7 @@ export interface BatchedProviderCallbacks {
   /** Given the raw parsed response body and how many pieces were sent, return one outcome per piece (null = missing). */
   parseResponse(response: unknown, pieceCount: number): Array<{ text: string; detectedLanguage: string | null } | null>;
   splitPieceResponse(raw: string, dontSortResults: boolean): string[];
-  /** `pieceWireTexts` is included for GET-based providers (e.g. Yandex) that encode the whole batch in the query string rather than a request body. */
+  /** For GET-based providers that encode the whole batch in the query string rather than a request body. */
   getQueryString?(sourceLanguage: string, targetLanguage: string, pieceWireTexts: string[]): string;
   getRequestBody?(sourceLanguage: string, targetLanguage: string, pieceWireTexts: string[]): string | undefined;
   getExtraHeaders?(): Array<{ name: string; value: string }>;
@@ -44,32 +35,9 @@ export interface BatchedProviderOptions {
   method: 'GET' | 'POST';
   callbacks: BatchedProviderCallbacks;
   /**
-   * Soft per-HTTP-request character budget across bundled pieces.
-   *
-   * Raised from 800 to 2000 (speed audit, found via direct measurement
-   * against the live endpoint): per-request overhead dominates at 800 —
-   * 300 short pieces at ~800 chars/request took 674ms end-to-end vs 107ms
-   * bundled at ~6000 chars/request, and positional array alignment stayed
-   * EXACT at up to 300 pieces sharing one request (0 misaligned at 40, 120,
-   * and 300 pieces/request, measured directly). That means the stated
-   * rationale for keeping this small — "fewer unrelated pieces sharing a
-   * request means less for Google's endpoint to misalign" — doesn't
-   * actually hold: the real misalignment risk this project has hit before
-   * (tag-cluster scrambling) is the `<a i=N>` reflow WITHIN a single piece,
-   * independent of how many pieces share a request, and is already handled
-   * separately (tag-cluster isolation, single-item padding — see
-   * google.ts).
-   *
-   * 2000 rather than the full ~6000 tested: still a real, measurable win
-   * (fewer requests per page) while staying well short of the largest
-   * value exercised, and — matching this project's own established
-   * caution here, this exact constant has a real prior incident (beta.22)
-   * — verified end-to-end against a real large live page (not just
-   * synthetic sentences) before shipping, not just via the unit tests
-   * below.
-   *
-   * 800 previously matched TWP's real upstream value; TWP's own tuning
-   * doesn't bind this fork once measurement says otherwise.
+   * Soft per-request budget of CONTENT characters (pre-`transformPiece`).
+   * Per-request overhead dominates at small values; positional alignment was
+   * measured exact at up to 300 pieces/request, so 2000 is a safe default.
    */
   maxBatchChars?: number;
   /** Hard cap on pieces per HTTP request, for endpoints with a documented per-request segment limit. Unset = no piece limit. */
@@ -86,32 +54,17 @@ export interface BatchedProviderOptions {
   onBatchStart?(): void;
   onBatchEnd?(): void;
   /**
-   * Reliability fix, found via a live incident: a genuine non-retryable
-   * HTTP status (a real 401/403, not the 429/5xx `sendOnce` already
-   * retries) used to be swallowed entirely inside `handleBatch`'s catch
-   * block, with no way for the provider that supplied the credential to
-   * react — a rejected/rotated key kept being resent for the rest of
-   * whatever cache window the provider used. Fired from `sendOnce` the
-   * instant `!response.ok` is detected, before the error is thrown, so a
-   * provider like `google.ts` can invalidate its cached auth key
-   * immediately instead of waiting out its own cache timer. `reason` is the
-   * service's own explanation (see `readRejectionReason`), since Google
-   * answers a bad key with a 400 that only its message tells apart from a
-   * malformed request.
+   * Fired on a non-retryable HTTP status (not 429/5xx) before the error is
+   * thrown, so a provider can drop a rejected credential immediately.
+   * `reason` is the service's own message (see `readRejectionReason`): Google
+   * answers a bad key with a 400 that only its message tells apart.
    */
   onNonRetryableStatus?(status: number, reason: string | null): void;
   /**
-   * Reliability fix, found via a live incident: a real, live-reproduced
-   * case where the provider's auth was silently broken and every piece
-   * came back looking like a legitimate "already in the target language"
-   * echo (`kind: 'suspicious'`) — by design, correct for a genuinely
-   * untranslatable piece, but indistinguishable from a fully-broken
-   * provider when every single piece is affected. Fired once, edge-
-   * triggered, the moment a rolling window of the last
-   * `SUSPICIOUS_WINDOW_SIZE` piece classifications crosses
-   * `SUSPICIOUS_RATIO_THRESHOLD` — lets a provider force an immediate
-   * credential refresh so the very next tick has a real chance to
-   * self-heal, rather than only reporting the problem after the fact.
+   * Fired once (edge-triggered) when the rolling window of the last
+   * `SUSPICIOUS_WINDOW_SIZE` pieces crosses `SUSPICIOUS_RATIO_THRESHOLD`
+   * suspicious: almost everything echoing back untranslated looks like broken
+   * auth, so the provider can force a credential refresh.
    */
   onSuspiciousStreak?(): void;
 }
@@ -120,14 +73,7 @@ interface RetryableError extends Error {
   retryAfterMs?: number;
 }
 
-/**
- * A 4xx other than 429 (a bad/expired API key, a malformed request) is
- * permanent — retrying it wastes the full retry budget (up to ~30s)
- * confirming the same failure three times before surfacing an error the
- * first attempt already proved. Real bug: `sendWithRetry`'s catch didn't
- * distinguish this from a transient network/5xx/429 failure at all, so it
- * retried everything uniformly.
- */
+/** A 4xx other than 429 (bad key, malformed request) is permanent; retrying it only burns the retry budget. */
 class NonRetryableHttpError extends Error {
   constructor(
     readonly status: number,
@@ -146,12 +92,6 @@ const MAX_REJECTION_REASON_CHARS = 200;
  * ...]` (the free endpoint's shape), a bare `{message}`/`{error: "..."}`, or a
  * short plain-text body. Null for an empty body or an HTML error page: markup
  * is never worth showing a user, and a status code alone is honest.
- *
- * Found via a UI audit: this body used to go unread, so a rejected API key
- * reached the user as a generic "no result for this piece" — which the
- * bubble renders as "Couldn't reach the translation service — retrying
- * automatically", false twice over for a key the service reached and
- * refused.
  */
 async function readRejectionReason(response: Response): Promise<string | null> {
   let text: string;
@@ -185,21 +125,15 @@ async function readRejectionReason(response: Response): Promise<string | null> {
 interface PendingRequest {
   wireText: string;
   /**
-   * The piece's ORIGINAL strings joined — i.e. pre-`transformPiece`, with no
-   * wire-format wrapper or HTML escaping. `isSuspiciousOutcome` compares
-   * against this, not `wireText`: comparing a wrapped request against an
-   * unwrapped response can never match, which silently disabled the
-   * echoed-back-untranslated check for any provider whose `transformPiece`
-   * adds a wrapper (Google wraps every piece in `<pre>`, so the check was
-   * inert there specifically — see google.ts's `transformPiece`).
+   * The piece's ORIGINAL strings joined (pre-`transformPiece`).
+   * `isSuspiciousOutcome` compares against this, not `wireText`: a wrapped
+   * request (Google wraps in `<pre>`) can never equal an unwrapped response.
    */
   originalText: string;
   /**
-   * `wasSuspicious` (added via a reliability audit): true when a null
-   * `result` means "confirmed suspicious after a repair retry, not a real
-   * network/HTTP failure" — see `translator.ts`'s `'suspicious'` error
-   * kind doc comment for why this distinction matters. Only meaningful
-   * when `result` is null; ignored otherwise.
+   * `wasSuspicious`: a null `result` was confirmed suspicious after a repair
+   * retry rather than a network/HTTP failure (see translator.ts's
+   * `'suspicious'` kind). Ignored when `result` is non-null.
    */
   resolve(
     result: { text: string; detectedLanguage: string | null } | null,
@@ -211,58 +145,21 @@ interface PendingRequest {
 
 const DEFAULT_MAX_BATCH_CHARS = 2000;
 /**
- * Speed fix, found via measuring the actual delta between beta.27 and the
- * next release (this file's own git history) after a live user report:
- * `maxBatchChars` is documented (see its own doc comment above) as a
- * CONTENT budget — "how much of the page's own text goes in one request" —
- * but the batching loop below used to charge it against `wireText.length`,
- * the POST-`transformPiece` string. For a provider whose wrapper is
- * non-trivial (Google's `<pre><a i=N>text</a></pre>` per single-node
- * piece), that's `content.length + 34` for the common single-node-piece
- * case — pure markup ceremony eating the same budget meant for content, so
- * a page of many short pieces (a novel chapter's dialogue lines, a nav
- * list) filled each request with FEWER real pieces than the budget's own
- * name promises, and paid for several times more HTTP requests as a result
- * (measured: 8 requests vs 3 for 300 pieces of ~19 chars — see this file's
- * own chapter-shaped test).
- * Now budgeted on content length (`pending.originalText.length`, the same
- * pre-`transformPiece` string `isSuspiciousOutcome` already compares
- * against) instead, restoring what a typical short-piece page's actual
- * request density looked like before that wrapper existed.
- *
- * A CONTENT budget alone isn't a complete substitute for the old WIRE
- * budget, though: a batch built entirely from a handful of unusually LONG
- * pieces could now produce a wire payload past what's actually been
- * measured safe (see `maxBatchChars`'s own doc comment: ~6000 wire
- * chars/request was the largest size directly verified against the live
- * endpoint with 0 positional misalignment at up to 300 pieces). This is
- * that same already-measured figure, kept as a hard ceiling alongside the
- * content budget — whichever trips first closes the batch — so a request's
- * wire size can never exceed what's actually been verified safe, while the
- * common short-piece case is no longer artificially split by markup that
- * was never part of what `maxBatchChars` was meant to bound.
+ * Hard ceiling on WIRE characters per request, alongside the content budget
+ * (`maxBatchChars`); whichever trips first closes the batch. 6000 is the
+ * largest size verified against the live endpoint with zero misalignment.
  */
 const HARD_MAX_WIRE_CHARS = 6000;
 const DEFAULT_MAX_CONCURRENT = 6;
 const REQUEST_TIMEOUT_MS = 20000;
 const MAX_ATTEMPTS = 3;
-// Reliability fix, found via a live incident (see onSuspiciousStreak's doc
-// comment above): deliberately conservative pending real live tuning.
-// Legitimate suspicious content (a same-language endonym, a handful of
-// numbers/proper nouns) clusters in small groups within otherwise-normal
-// translated prose — it does not plausibly make up 27+ of 30 consecutive
-// pieces across a real page, so a large window and a high threshold keep
-// this from ever firing on a genuinely healthy, if unusual, page.
+// Deliberately conservative: legitimate suspicious content (endonyms,
+// numbers, proper nouns) comes in small clusters, not 27+ of 30 consecutive
+// pieces, so this shouldn't fire on a healthy page.
 const SUSPICIOUS_WINDOW_SIZE = 30;
 const SUSPICIOUS_RATIO_THRESHOLD = 0.9;
-// REQUEST_TIMEOUT_MS x MAX_ATTEMPTS (plus inter-attempt delays) is a ~62s
-// worst case with no cap — translationRoutine awaits one sendWithRetry()
-// call synchronously, so a provider that's merely slow (not down; a 5xx/429
-// with no Retry-After) could leave the page visibly untranslated for a full
-// minute with no error. This bounds the WHOLE retry sequence, not any single
-// attempt: the first attempt still gets a real shot even against a fresh
-// REQUEST_TIMEOUT_MS-scale hang, but later attempts get whatever's left of
-// the budget, not a fresh timeout each time.
+// Bounds the WHOLE retry sequence (otherwise ~62s worst case): the first
+// attempt gets a full REQUEST_TIMEOUT_MS, later ones only what's left.
 const OVERALL_DEADLINE_MS = 30000;
 
 interface ConcurrencyGate {
@@ -270,31 +167,11 @@ interface ConcurrencyGate {
 }
 
 /**
- * A shared semaphore gating at most `getLimit()` concurrently in-flight
- * tasks. `getLimit` is polled fresh on every dispatch, not read once, so a
- * connection-quality change mid-run is picked up without restarting
- * (matches the adaptive behavior this always had).
- *
- * Speed fix, found via a round-4 audit: this used to be a plain function
- * (`runWithConcurrencyLimit`) that created a FRESH `inFlight` counter on
- * every call, so the top-level batch dispatch loop and the individual-
- * piece repair retry — despite intending to share one cap — each got
- * their OWN independent budget for the SAME `translateBatch()` call. Worse,
- * `createProvider()`'s result is a singleton memoized for the whole
- * service-worker lifetime (see `background.ts`'s `cachedProvider` comment,
- * which already documented the INTENT that `maxConcurrent` lives at the
- * provider level — the actual counter just never did): the main
- * translate tick, `attributeTranslator.ts`, and `titleTranslator.ts` all
- * share that one provider instance, but each of their own
- * `translateBatch()` calls also got an independent local counter. Clicking
- * Translate on a long page could open 6 (main tick) + 6
- * (`attributeTranslator`) + 1 (`titleTranslator`) = 13 simultaneous
- * requests against a `maxConcurrent` of 6, against a free endpoint that
- * rate-limits by IP. Fixed by hoisting ONE gate into
- * `createBatchedHttpProvider`'s closure (alongside `inFlightByKey`) so
- * every caller — both call sites below, and every separate
- * `translateBatch()` invocation sharing this provider instance — draws
- * from the same budget.
+ * A semaphore gating at most `getLimit()` in-flight tasks. `getLimit` is
+ * polled on every dispatch so a connection-quality change applies mid-run.
+ * One gate per provider instance: the provider is a long-lived singleton
+ * shared by the page, attribute and title translators, and all of them (plus
+ * repair retries) must draw from the same `maxConcurrent` budget.
  */
 function createConcurrencyGate(getLimit: () => number): ConcurrencyGate {
   let inFlight = 0;
@@ -337,49 +214,27 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
   const maxBatchChars = options.maxBatchChars ?? DEFAULT_MAX_BATCH_CHARS;
   const configuredMaxConcurrent = options.maxConcurrent ?? DEFAULT_MAX_CONCURRENT;
 
-  // Provider-level (not per-`translateBatch()` call) — see
-  // `createConcurrencyGate`'s doc comment for the real bug this closes:
-  // both call sites below (the top-level batch dispatch and the
-  // individual-piece repair retry), and every separate `translateBatch()`
-  // call sharing this one cached provider instance (the main tick,
-  // `attributeTranslator.ts`, `titleTranslator.ts`), now draw from ONE
-  // shared concurrency budget instead of each getting their own.
+  // Provider-level, so every translateBatch() call and repair retry shares it.
   const concurrencyGate = createConcurrencyGate(() => getAdaptiveConcurrency(configuredMaxConcurrent));
 
   /** In-flight dedupe: two identical concurrent piece requests share one HTTP call's result. */
   const inFlightByKey = new Map<string, Promise<{ text: string; detectedLanguage: string | null } | null>>();
-  // Provider-level (not per-`translateBatch()` call), for the same reason
-  // `inFlightByKey` is: a piece deduped into an ALREADY-in-flight promise
-  // from a separate `translateBatch()` call needs to find the SAME
-  // WeakSet the original call's `resolveFn` added that promise to — a
-  // WeakSet scoped inside `translateBatch()` would be empty for every
-  // caller except the one that happened to own the original request,
-  // silently defaulting every deduped-in caller back to the network-error
-  // kind. Keyed by the shared result PROMISE, not by index or
-  // PendingRequest, so this works regardless of which call's index the
-  // promise ends up at.
+  // Provider-level like `inFlightByKey`: a piece deduped into another call's
+  // in-flight promise must see the same set. Keyed by the shared promise.
   const suspiciousPromises = new WeakSet<Promise<{ text: string; detectedLanguage: string | null } | null>>();
   /** A specific failure reason per piece promise, when one is known — see `readRejectionReason`. */
   const failureMessages = new WeakMap<Promise<{ text: string; detectedLanguage: string | null } | null>, string>();
 
-  // Provider-level (not per-`translateBatch()` call) rolling window of the
-  // last SUSPICIOUS_WINDOW_SIZE piece-level classifications — same scope
-  // as `inFlightByKey`/`suspiciousPromises` above, and for the same
-  // reason: the auth key this ratio is meant to protect is a provider-wide
-  // resource, shared across every tab/page using this one cached provider
-  // instance, not something scoped to a single page's translateBatch()
-  // call. `suspiciousStreakActive` edge-triggers `onSuspiciousStreak` once
-  // per crossing rather than firing it again for every piece while the
-  // ratio stays over threshold.
+  // Provider-level rolling window of the last SUSPICIOUS_WINDOW_SIZE piece
+  // classifications (the auth key it protects is provider-wide).
+  // `suspiciousStreakActive` makes `onSuspiciousStreak` fire once per crossing.
   const suspiciousWindow: boolean[] = [];
   let suspiciousStreakActive = false;
 
   /**
-   * Records one piece's final suspicious/not classification into the
-   * rolling window and returns whether the ratio is (now) over threshold.
-   * Called from `resolveFn` below — the single choke point every piece's
-   * FINAL settlement funnels through, whether it resolved on the first
-   * attempt or only after `handleBatch`'s individual-piece repair retry.
+   * Records one piece's final suspicious/not classification and returns
+   * whether the ratio is over threshold. Called from `resolveFn`, which every
+   * piece's final settlement (first attempt or repair) goes through.
    */
   function recordSuspiciousSample(isSuspicious: boolean): boolean {
     suspiciousWindow.push(isSuspicious);
@@ -408,39 +263,12 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
     const query = options.callbacks.getQueryString?.(sourceLanguage, targetLanguage, pieceWireTexts) ?? '';
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
-    // Hygiene fix, found via a round-6 audit: the backstop's own timer
-    // (below) was never cleared, leaving one armed for `timeoutMs + 500`
-    // past every request that settled normally — harmless (its reject()
-    // call lands on an already-settled Promise.race, a no-op), but untidy
-    // and unnecessary now that its handle is captured here.
     let backstopTimeout: ReturnType<typeof setTimeout> | undefined;
     try {
-      // Reliability fix, found via a live user report (spinning forever,
-      // permanently, after exactly one successful translate — reproduced
-      // on sangtacviet.vip in Orion/iOS): this used to just `await
-      // fetch(...)`/`response.json()` directly, trusting `controller.abort()`
-      // to make that reject once `timeoutMs` elapsed. WebKit (Orion's and
-      // iOS Safari's engine) has real-world cases where aborting a fetch
-      // doesn't reliably reject it once response headers have already
-      // arrived and the body is still being read — exactly the shape of a
-      // large JSON response from a text-dense page. If that happens, this
-      // function never settles, which means `handleBatch`'s wrapping
-      // `concurrencyGate.run(...)` call never settles either, which means
-      // that permit is never returned to the gate (see
-      // `createConcurrencyGate`'s doc comment: `inFlight` only decrements
-      // inside `worker().then(...)`) — and since the gate is a shared
-      // singleton living for the whole background-context lifetime, that
-      // permit is gone forever, eventually exhausting all of
-      // `DEFAULT_MAX_CONCURRENT` and making every future translate hang.
-      // Racing against a plain `setTimeout`-based rejection that doesn't
-      // depend on `AbortController`/`fetch` cooperating at all guarantees
-      // this function — and therefore the gate permit it holds — always
-      // settles by `timeoutMs`, regardless of what the platform's
-      // fetch/abort implementation actually does. The `+500` gives the
-      // normal abort path (which already produces a real HTTP/network
-      // error, more informative than this generic one) a head start, so
-      // this backstop only fires when that path has genuinely failed to
-      // settle at all.
+      // Raced against a plain timer: WebKit doesn't always reject an aborted
+      // fetch once headers have arrived and the body is mid-read. A hung call
+      // would never return its concurrency-gate permit, and the gate is a
+      // long-lived singleton. The +500 lets the real abort error win normally.
       return await Promise.race([
         (async () => {
           const response = await fetch(options.baseUrl + query, {
@@ -480,50 +308,28 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
     sourceLanguage: string,
     targetLanguage: string,
     pieceWireTexts: string[],
-    // Speed/reliability fix, found via audit: the individual-piece repair
-    // path below used to call this with no deadline, so it computed its
-    // OWN fresh `OVERALL_DEADLINE_MS` budget — meaning a `handleBatch()`
-    // whose response came back with a couple of missing/suspicious pieces
-    // could genuinely run for ~60s (the original batch's ~30s PLUS a
-    // fresh ~30s for the repair retry), double what this constant's own
-    // doc comment above says it bounds. Threading the PARENT's absolute
-    // deadline down here means a repair retry gets whatever's left of the
-    // SAME budget, not a second one — this parameter is only ever unset at
-    // the true top level, where a fresh deadline is exactly correct.
+    // Absolute deadline from a parent call, so a repair retry shares the
+    // original budget instead of starting a fresh one. Unset at top level.
     inheritedDeadline?: number,
   ): Promise<unknown> {
     const deadline = inheritedDeadline ?? Date.now() + OVERALL_DEADLINE_MS;
     let lastError: RetryableError | undefined;
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       if (attempt > 0) {
-        // Offline: the browser has no route to anywhere, so every remaining
-        // attempt is guaranteed to fail the same way sendOnce() would find
-        // out anyway — skip straight to giving up instead of burning the
-        // rest of the retry budget sleeping between doomed requests.
-        // navigator.onLine has known false positives (a captive portal),
-        // which is exactly why this only short-circuits the *retry* loop,
-        // not the very first attempt — a false "online" or an offline
-        // flip mid-request still goes through the normal sendOnce()/catch
-        // path below and reports a real error, same as before this change.
+        // Offline: remaining attempts are doomed, so stop retrying. Only the
+        // retries are skipped (navigator.onLine has false positives); the
+        // first attempt always goes out.
         if (!connectivity.isOnline()) break;
 
         let delay = attempt === 1 ? 400 : 1200;
         if (lastError?.retryAfterMs && lastError.retryAfterMs > delay) {
-          // A server-specified Retry-After is exact, not jittered — the
-          // endpoint told us how long to wait, second-guessing it with
-          // randomness serves no purpose.
+          // A server-specified Retry-After is used exactly, not jittered.
           delay = lastError.retryAfterMs;
         } else {
-          // ±25% jitter on the fixed delays: with maxConcurrent=6, many
-          // pieces failing together against a real provider outage used to
-          // retry in lockstep at the exact same two offsets, producing
-          // synchronized request waves against an already-struggling
-          // endpoint. Jitter desyncs those waves.
+          // ±25% jitter so many pieces failing together don't retry in lockstep.
           delay = delay * 0.75 + Math.random() * delay * 0.5;
         }
-        // Never sleep past the overall deadline — a Retry-After longer than
-        // what's left of the budget is a sign this attempt sequence should
-        // end, not extend indefinitely.
+        // Never sleep past the overall deadline.
         delay = Math.min(delay, deadline - Date.now());
         if (delay <= 0) break;
         await new Promise((resolve) => setTimeout(resolve, delay));
@@ -541,20 +347,15 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
   }
 
   /**
-   * "Checking": a batch response can come back with fewer entries than
-   * pieces sent (a real risk for an LLM provider — truncation/malformed
-   * JSON — much rarer but still possible for a plain MT endpoint). Rather
-   * than failing the whole batch, retry just the missing pieces
-   * individually once before marking them as errors.
+   * Sends one bundled request. Pieces missing from the response, or flagged
+   * suspicious, are retried individually once before being marked as errors.
    */
   async function handleBatch(
     sourceLanguage: string,
     targetLanguage: string,
     pending: PendingRequest[],
     isIndividualRetry = false,
-    // Absolute deadline (ms since epoch), threaded down from the top-level
-    // call and reused as-is by the repair retry below — see
-    // `sendWithRetry`'s `inheritedDeadline` doc comment for why.
+    // Absolute deadline (ms since epoch), reused as-is by the repair retry.
     deadline: number = Date.now() + OVERALL_DEADLINE_MS,
     /**
      * Language a SUSPICIOUS piece is re-requested with. Supplied by a
@@ -575,13 +376,9 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
       const parsed = options.callbacks.parseResponse(response, pending.length);
       const results = parsed.length === pending.length ? parsed : [];
       const missing: PendingRequest[] = [];
-      // Tracks WHICH of `missing`'s entries got there via the sanity check
-      // (a real 200 OK that just looked like a silent echo) rather than
-      // `!result` (no data at all for this piece — closer to a real
-      // network/parse failure). Only meaningful once a repair retry is
-      // ALSO exhausted (see the `isIndividualRetry` branch below) — see
-      // `translator.ts`'s `'suspicious'` error kind for why this
-      // distinction is threaded all the way out to the caller.
+      // Which `missing` entries were a 200 OK that looked like a silent echo,
+      // as opposed to no data at all. Reported as `'suspicious'` if the
+      // repair retry is also exhausted.
       const missingBecauseSuspicious = new Set<PendingRequest>();
 
       pending.forEach((p, idx) => {
@@ -609,58 +406,13 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
         });
         return;
       }
-      // Speed fix, found via audit: this used to be a bare
-      // `Promise.all(missing.map(...))`, firing one HTTP request per
-      // missing/suspicious piece all at once — completely invisible to
-      // `pump()`'s `inFlight` accounting below, which only ever counts
-      // TOP-LEVEL batches. A batch-wide echo/truncation failure (Google's
-      // documented silent-echo mode, or an LLM response short a few
-      // entries) could turn one counted "slot" into dozens of uncounted
-      // concurrent requests — precisely the rate-limiter stampede
-      // `maxConcurrent` exists to prevent, and precisely when the
-      // endpoint is already struggling. `runWithConcurrencyLimit` applies
-      // the SAME adaptive limit real top-level batches respect.
+      // A suspicious piece suggests its declared source language is wrong
+      // (Google echoes input told source == target), so it retries with
+      // `suspiciousRetrySourceLanguage` or 'auto'; a missing piece keeps it.
       //
-      // Reliability fix, found via a live-page audit and reproduced
-      // directly against a real, logged-in X.com/Twitter account: a piece
-      // flagged suspicious (see `isSuspiciousOutcome`'s script-mismatch
-      // check) is real evidence that the CALLER'S declared `sourceLanguage`
-      // is wrong for this specific piece, not just that the provider had a
-      // blip — translateLoop.ts's `getSourceLanguage()` reports one
-      // language for the whole page, but a genuinely multi-language page
-      // (a social feed, a forum, a comment section) can have individual
-      // pieces in a different language than whatever the page-level
-      // detector guessed. Retrying with that SAME wrong source (as this
-      // used to do unconditionally) just reproduces the identical
-      // silent-echo failure every time — Google, told the source IS the
-      // target language, has nothing to translate and hands the input
-      // straight back — so the piece stays suspicious forever and
-      // (correctly, per the fix above this comment's era) is never retried
-      // again, leaving it permanently untranslated with no error surfaced:
-      // exactly "shows translated, does nothing" for that piece. A plain
-      // missing piece (no data at all — truncation/parse failure) has no
-      // such evidence about the source language being wrong, so it keeps
-      // retrying with the ORIGINAL declared source, unchanged.
-      //
-      // Dispatched, NOT awaited — real deadlock this closed, found while
-      // sharing one gate across both call sites (see createConcurrencyGate's
-      // doc comment): THIS call is itself running inside a
-      // `concurrencyGate.run(...)` slot from the top-level dispatch below.
-      // Awaiting these child repairs here would hold that slot hostage
-      // until every repair also finishes — which deadlocks outright once
-      // the adaptive limit is low enough that no slot is ever free for a
-      // child while its parent still occupies one (reproduces reliably at
-      // limit=1, a real value `getAdaptiveConcurrency` returns on a
-      // detected slow connection — exactly when a repair retry is also
-      // more likely to be needed). This request already has its own
-      // answer back by this point; each repair is dispatched as its own
-      // independent, gate-managed unit of work instead. Nothing here
-      // needs to wait for it: the piece's own promise (`resolveFn`, wired
-      // up in `translateBatch`) is what the real caller awaits via
-      // `resultPromises`, entirely independent of whether THIS
-      // `handleBatch()` call's own returned promise has settled.
-      // `handleBatch` never throws (its own catch block below resolves
-      // pending pieces instead), so no unhandled rejection risk either.
+      // Through the shared gate but NOT awaited: this call already holds a
+      // slot, so awaiting children deadlocks at low limits. Callers await
+      // each piece's own promise, and handleBatch never throws.
       missing.forEach((p) => {
         void concurrencyGate.run(() =>
           handleBatch(
@@ -702,17 +454,12 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
       // requests for identical (already-transformed) piece text.
       const batches: PendingRequest[][] = [];
       let currentBatch: PendingRequest[] = [];
-      /** Content length (pre-`transformPiece`) — what `maxBatchChars` actually budgets. See `HARD_MAX_WIRE_CHARS`'s own doc comment. */
+      /** Content length (pre-`transformPiece`), budgeted by `maxBatchChars`. */
       let currentChars = 0;
       /** Wire length (post-`transformPiece`) — the hard ceiling only, independent of the content budget above. */
       let currentWireChars = 0;
       const resultPromises: Array<Promise<{ text: string; detectedLanguage: string | null } | null>> = [];
-      // Populated by the same per-piece transform as the return statement
-      // below — computed eagerly, as each `resultPromises[i]` settles
-      // (see the `.forEach` right after this loop), instead of only once
-      // every piece in the whole call has settled. Returning this array
-      // at the end (rather than re-deriving it from `resultPromises` again)
-      // means the eager computation isn't wasted duplicate work.
+      // Filled in as each `resultPromises[i]` settles (see below) and returned as-is.
       const outcomes: PieceOutcome[] = new Array(pieces.length);
 
       for (const piece of pieces) {
@@ -733,20 +480,10 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
         const promise = new Promise<{ text: string; detectedLanguage: string | null } | null>((resolve) => {
           resolveFn = (result, wasSuspicious, failureMessage) => {
             if (failureMessage) failureMessages.set(promise, failureMessage);
-            // Reliability fix, found via a live incident: recording every
-            // piece's final classification here — success and genuine
-            // failure count as `false`, a confirmed-suspicious result as
-            // `true` — is what lets a sustained run of suspicious results
-            // (the real live shape of a broken/rejected auth key: Google
-            // silently echoing everything back rather than a clean HTTP
-            // rejection) get reclassified as a genuine `'network'` failure
-            // once it's overwhelmingly more likely to be provider breakage
-            // than a page's content coincidentally matching its own target
-            // language. Deliberately NOT added to `suspiciousPromises` in
-            // that case, so the outcome-kind check below reports
-            // `'network'` instead of `'suspicious'` — the only change
-            // needed for `translateLoop.ts`'s existing failure-surfacing
-            // logic to correctly start counting these as real failures.
+            // Success and real failures record `false`, confirmed-suspicious
+            // `true`. Once the window is over threshold, suspicious results are
+            // reported as `'network'` (likely provider breakage, e.g. broken
+            // auth) by leaving them out of `suspiciousPromises`.
             const overThreshold = recordSuspiciousSample(!!wasSuspicious);
             if (wasSuspicious && !overThreshold) suspiciousPromises.add(promise);
             // The service answered; it just kept sending the text back. Saying
@@ -765,10 +502,8 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
 
         const pending: PendingRequest = { wireText, originalText: piece.join(''), resolve: resolveFn };
         currentBatch.push(pending);
-        // Content against the content budget, wire against the hard
-        // ceiling — whichever trips first closes the batch. See
-        // `HARD_MAX_WIRE_CHARS`'s doc comment for why these are two
-        // separate bounds rather than one.
+        // Content against the content budget, wire against the hard ceiling;
+        // whichever trips first closes the batch.
         currentChars += pending.originalText.length;
         currentWireChars += wireText.length;
         if (
@@ -784,14 +519,9 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
       }
       if (currentBatch.length > 0) batches.push(currentBatch);
 
-      // Each `resultPromises[idx]` already resolves independently, as soon
-      // as ITS OWN underlying sub-batch's HTTP response is parsed (see
-      // `handleBatch`'s `p.resolve(result)`) — not when every sub-batch in
-      // this whole call finishes. Attaching the per-piece transform here,
-      // rather than only in the `Promise.all(resultPromises)` block below,
-      // is what actually delivers that per-piece timing to the caller via
-      // `onPieceComplete`, instead of uniformly holding every piece back
-      // until the slowest one settles.
+      // Each piece resolves as soon as its own sub-batch is parsed; attaching
+      // the transform here delivers `onPieceComplete` per piece instead of
+      // holding every piece until the slowest settles.
       resultPromises.forEach((resultPromise, idx) => {
         resultPromise.then((result) => {
           const piece = pieces[idx];
@@ -817,9 +547,6 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
 
       options.onBatchStart?.();
       try {
-        // concurrencyGate is shared with the individual-piece repair retry
-        // above, and with every other translateBatch() call sharing this
-        // provider instance — see createConcurrencyGate's doc comment.
         await Promise.all(
           batches.map((batch) =>
             concurrencyGate.run(() =>
@@ -828,9 +555,7 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
           ),
         );
 
-        // Every entry was already computed the instant its own
-        // `resultPromises[idx]` settled (see above) — this await is only
-        // to know that ALL of them have, not to (re-)compute anything.
+        // Outcomes are already computed; this only waits for all to settle.
         await Promise.all(resultPromises);
         return outcomes;
       } finally {

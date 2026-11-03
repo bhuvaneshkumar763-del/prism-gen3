@@ -4,16 +4,10 @@ export interface ShadowHost {
 }
 
 /**
- * Creates the shadow-DOM host + mount point every injected UI surface
- * (bubble, hover tooltip, selection popup) needs: remove a stale host from
- * a prior mount, create the host div, attach an 'open' shadow root, inject
- * the surface's styles, and append a mount point ready for `solid-js/web`'s
- * `render()`.
- *
- * 'open' (not 'closed'): none of these surfaces hold user data beyond what's
- * already visible on the page, so the isolation benefit of a closed root is
- * marginal, and 'open' keeps `host.shadowRoot` reachable from outside for
- * tests.
+ * Creates the shadow-DOM host + mount point every injected UI surface needs,
+ * replacing any stale host with the same id. 'open' rather than 'closed':
+ * these surfaces hold nothing beyond what's on the page, and tests can reach
+ * `host.shadowRoot`.
  */
 export function createShadowHost(hostId: string, styles: string): ShadowHost {
   document.getElementById(hostId)?.remove();

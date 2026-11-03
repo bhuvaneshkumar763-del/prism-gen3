@@ -1,39 +1,14 @@
 import type { Config, ConfigKey } from './schema';
 
 /**
- * Hand-rolled replacement for the `zod`-based `configSchema` (round-5 bloat
- * audit). Measured directly: `zod` was 51% of the shipped extension's bytes
- * (202KB of a 393KB build) and landed THREE separate times — once each in
- * `content-scripts/content.js`, `background.js`, and the options page's own
- * chunk — because content scripts can't share a chunk with the background
- * graph. Combined with the content script's `allFrames: true`
- * (`entrypoints/content.ts`), that meant ~67KB of validation-library code was
- * parsed in every iframe of every page visited, to do exactly three things:
- * validate one stored value's type on load (`configStore.ts`'s `initConfig`),
- * validate a whole partial object on import/restore
- * (`configStore.ts`'s `applyValidatedConfig`), and the same on a settings-file
- * import (`backup.ts`'s `parseBackup`). 23 flat keys — strings, booleans,
- * string arrays, two enums, two string-keyed records, one small nullable
- * object — need none of zod's transforms, coercion, defaults, or refinements.
+ * Hand-rolled config validators: a plain table, no schema library (one cost
+ * too much bundle size, duplicated into every content-script frame).
+ * `configValidators` is a mapped type over `Config`, so a field without a
+ * validator is a compile error.
  *
- * This file is deliberately just a validator table, not a schema-builder
- * abstraction: no generic combinator library, because there's nothing here
- * generic enough to warrant one. `configValidators` below is typed as
- * `{ [K in ConfigKey]: Validator<Config[K]> }` — a mapped type over the SAME
- * `Config` interface `schema.ts` hand-writes now that it's no longer derived
- * via `z.infer`. That mapped type is what keeps the two files honest: adding
- * a field to `Config` without adding its validator here is a compile error,
- * the same static coupling `z.infer` used to give for free.
- *
- * Two zod behaviors preserved deliberately, not by accident, because real
- * call sites depend on them:
- *   1. Unknown keys are silently dropped, never rejected — a settings file
- *      exported by a newer build must still import cleanly on an older one.
- *      `validatePartialConfig` builds its result by iterating
- *      `configValidators`, never the input object, so this falls out
- *      naturally rather than needing an explicit "delete extra keys" step.
- *   2. `bubblePosition`'s inner object also strips unknown keys, and the
- *      whole value stays nullable.
+ * Unknown keys are dropped, never rejected, so a settings file from a newer
+ * build still imports on an older one. `bubblePosition`'s inner object
+ * strips unknown keys too, and the whole value stays nullable.
  */
 
 export interface ValidationOk<T> {
@@ -87,7 +62,7 @@ export function enumOf<T extends string>(...allowed: T[]): Validator<T> {
       : fail(`expected one of ${allowed.join(', ')}`);
 }
 
-/** A string-keyed record whose values each pass `valueValidator`. Unknown-shaped entries fail the whole record — there's no per-entry drop here, unlike the top-level partial-config behavior, since a corrupt record means a corrupt object, not "an extra field." */
+/** A string-keyed record whose values each pass `valueValidator`. One bad entry fails the whole record: a corrupt record is a corrupt object, not an extra field. */
 export function recordOf<T>(valueValidator: Validator<T>): Validator<Record<string, T>> {
   return (v) => {
     if (!isPlainObject(v)) return fail('expected an object');
@@ -101,7 +76,7 @@ export function recordOf<T>(valueValidator: Validator<T>): Validator<Record<stri
   };
 }
 
-/** An object with exactly the given known keys, each validated; unknown keys are dropped, not rejected (same rationale as the top-level partial-config behavior — see this file's header comment). The whole value may also be `null`. */
+/** An object with exactly the given known keys, each validated; unknown keys are dropped, not rejected. The whole value may also be `null`. */
 export function nullableObject<S extends Record<string, unknown>>(
   shape: {
     [K in keyof S]: Validator<S[K]>;
@@ -120,12 +95,7 @@ export function nullableObject<S extends Record<string, unknown>>(
   };
 }
 
-/**
- * The direct replacement for `configSchema.shape` — one validator per config
- * key, used by `configStore.ts`'s `initConfig` to check a single stored value
- * in isolation. The mapped type over `Config` (see header comment) is what
- * makes an added-but-unvalidated field a compile error.
- */
+/** One validator per config key, used to check a single stored value in isolation. */
 export const configValidators: { [K in ConfigKey]: Validator<Config[K]> } = {
   targetLanguage: str,
   sourceLanguage: str,
@@ -162,13 +132,9 @@ export interface PartialConfigErr {
 }
 
 /**
- * The direct replacement for `configSchema.partial().safeParse(...)` —
- * validates whatever subset of `Config`'s keys are present on `input` (an
- * import/backup/restore payload), silently ignoring anything else on it.
- * Keys ABSENT from `input` are absent from the result too (not present with
- * an `undefined` value) — `configStore.ts`'s `applyValidatedConfig` and
- * `backup.ts`'s `parseBackup` both rely on iterating only the keys that were
- * actually supplied.
+ * Validates whatever subset of `Config`'s keys is present on `input` (an
+ * import/backup payload), ignoring anything else. Keys absent from `input`
+ * are absent from the result, not present as `undefined`; callers rely on it.
  */
 export function validatePartialConfig(input: unknown): PartialConfigOk | PartialConfigErr {
   if (!isPlainObject(input)) return { ok: false, path: '', message: 'expected an object' };
@@ -182,7 +148,7 @@ export function validatePartialConfig(input: unknown): PartialConfigOk | Partial
   return { ok: true, value };
 }
 
-/** Convenience used by callers that want the old `.parse()`-style "throw on failure" behavior instead of checking `.ok`. */
+/** `validatePartialConfig`, but throws on failure instead of returning `.ok: false`. */
 export function parsePartialConfigOrThrow(input: unknown): Partial<Config> {
   const result = validatePartialConfig(input);
   if (!result.ok) {

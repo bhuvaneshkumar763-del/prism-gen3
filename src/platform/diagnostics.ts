@@ -3,12 +3,8 @@ import { translationCache } from './cache/translationCache';
 import { configStore } from './configStore';
 
 /**
- * On-device diagnostics — probes what actually works *in the browser it's
- * running in*, rather than assuming. The old repo added an equivalent
- * panel after two separate real-world bug reports were each misdiagnosed
- * more than once before someone actually looked at the raw storage/
- * capability state — see that project's history for the account. Built
- * here from Session 1 rather than reactively, per the Gen 3 plan.
+ * On-device diagnostics: probes what actually works in the running browser
+ * (storage round trip, cache, API availability) instead of assuming.
  */
 
 const REDACTED_KEY_SUFFIXES = ['ApiKey'];

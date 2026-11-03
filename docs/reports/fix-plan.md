@@ -28,12 +28,14 @@ _From [senior-engineer-audit.md](senior-engineer-audit.md). The owner asked for 
 
 | Release | Content | Status |
 |---|---|---|
-| **2 (0.3.2)** | The reading bugs and release safety, below | **In progress** |
-| 3 (0.3.3) | Diary comments cut to short "why" notes (proven by identical builds); copied rules made into shared helpers | Next |
-| 4 (0.3.4) | Release, CI and tooling hardening (tested release script, AMO duplicate handling, guard scripts, Safari/Xcode) | |
-| 5 (0.3.5) | Structural refactors behind locked-down tests (split `createPageTranslator`, structured errors, one frame model, cache accounting) | |
-| 6 (0.3.6) | UI and iPhone redesign (popup, bubble, selection popup, Settings) | |
-| 7 (0.3.7) | Every remaining audit finding, each fixed or closed with a reason | |
+| 2 | The reading bugs and release safety, below | **Shipped as 0.3.2-beta.0** |
+| 3 | Diary comments cut to short "why" notes (proven by identical builds); copied rules made into shared helpers | **Shipped as 0.3.2-beta.1** |
+| 4 | Release, CI and tooling hardening (tested release script, AMO duplicate handling, guard scripts, Safari/Xcode) | Next |
+| 5 | Structural refactors behind locked-down tests (split `createPageTranslator`, structured errors, one frame model, cache accounting) | |
+| 6 | UI and iPhone redesign (popup, bubble, selection popup, Settings) | |
+| 7 | Every remaining audit finding, each fixed or closed with a reason | |
+
+**Versions:** the owner asked for the work to continue without waiting for them, so each release ships as the next `0.3.2-beta.N`. **Stable 0.3.2 waits for the owner's iPhone check** of the latest beta; it is never tagged on a desktop check alone.
 
 The detail for every release is in [release-programme.md](release-programme.md).
 
@@ -214,12 +216,15 @@ Both need N-1's saved pages first.
 
 Each earlier fix landed in one place and missed its copy. When a fix touches one of these rules, move every caller to one shared helper in the same change.
 
-| Rule | Has it | Missing it |
-|---|---|---|
-| `sentText` staleness check | translateLoop | attributeTranslator |
-| Generation guard | attributeTranslator | titleTranslator |
-| `.catch` on fire-and-forget | `openSettings` | `applyListPatch` |
-| `isTrustedSender` check | each handler by hand | an `onTrustedMessage` wrapper |
+| Rule | Status |
+|---|---|
+| `sentText` staleness check | Shared by translateLoop and attributeTranslator (0.3.2-beta.1) |
+| Generation guard | attributeTranslator and titleTranslator (0.3.2-beta.1) |
+| `.catch` on fire-and-forget saves | Bubble Always chip and popup list saves roll back (0.3.2-beta.1) |
+| `isTrustedSender` check | One `onTrustedMessage` wrapper (0.3.2-beta.1) |
+| Failed-open retry | configStore and translationCache (0.3.2-beta.1) |
+| Provider-removal migration | Backups run `applyConfigMigrations` (0.3.2-beta.1) |
+| Hover capability, viewport size, `HAS_LETTER` | One definition each in `src/shared/` (0.3.2-beta.1) |
 
 Apex hostname matching, base language-tag equality and the response-count check were unified in Release 1.
 

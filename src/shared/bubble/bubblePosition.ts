@@ -1,17 +1,10 @@
 /**
- * Pure geometry for the floating bubble's drag/edge-docking behavior —
- * extracted from the pre-rewrite fork's `FloatingBubble.tsx` (see that
- * repo's `applyState`/`previewAt`/`positionPanel`/pointerup-snap logic) so
- * it's testable without a DOM. happy-dom has no `visualViewport`, stubs
- * `setPointerCapture`, and returns zeros from `getBoundingClientRect()` —
- * a DOM-level drag test would be theatre. `components/bubble/FloatingBubble.tsx`
- * calls these functions from real pointer event handlers and only writes
- * the returned coordinates to `style.left`/`style.top`.
+ * Pure geometry for the floating bubble's drag/edge-docking, kept DOM-free
+ * because happy-dom can't fake viewport/pointer geometry meaningfully.
+ * `FloatingBubble.tsx` calls these from real pointer handlers.
  *
- * Position is stored as a dock side + vertical fraction (`BubblePosition`),
- * not raw x/y, so the ball stays pinned to a screen edge regardless of
- * viewport size or orientation — the same reasoning the fork's version
- * documents.
+ * Position is a dock side + vertical fraction, not raw x/y, so the ball stays
+ * pinned to an edge whatever the viewport size or orientation.
  */
 
 export const BALL_SIZE = 40;
@@ -60,27 +53,22 @@ export function normalizeBubblePosition(raw: unknown): BubblePosition {
 }
 
 /**
- * The docked point for a given position — the fork's `applyState()`. Uses
- * `maxY = height - BALL - 4`; deliberately a different constant than
- * `clampDragPoint`'s `-2` below. That asymmetry is preserved from the fork
- * on purpose, not a typo to "fix" — see this module's header comment.
+ * The docked point for a given position. Uses `maxY = height - BALL - 4`,
+ * deliberately a different inset than `clampDragPoint`'s `-2`.
  */
 export function resolveDockedPoint(position: BubblePosition, viewport: Viewport, ballSize = BALL_SIZE): Point {
   const maxY = viewport.height - ballSize - 4;
   const maxX = viewport.width - ballSize - 4;
   const rawX = position.side === 'right' ? viewport.width - ballSize - 6 : 6;
-  // Unlike clampDragPoint (a live drag, always kept in-bounds by construction),
-  // this is a stored side+fraction reapplied on every reflow/resize — on a
-  // viewport narrower than ballSize+6 (an embedded iframe, a heavily
-  // split/snapped window), the unclamped right-side x went negative with no
-  // self-correction. min(4, maxX) keeps this from inverting into an empty
-  // range on a viewport narrower than the ball itself.
+  // Clamped because a stored position is reapplied on every resize, and on a
+  // viewport narrower than the ball the right-side x would go negative.
+  // Math.max(4, maxX) keeps the range from inverting.
   const x = clamp(rawX, 4, Math.max(4, maxX));
   const y = clamp(Math.round(position.yFrac * maxY), 4, maxY);
   return { x, y };
 }
 
-/** Clamps a free-drag point to the viewport — the fork's `previewAt()`. Uses `maxY = height - BALL - 2`. */
+/** Clamps a free-drag point to the viewport. Uses `maxY = height - BALL - 2`. */
 export function clampDragPoint(point: Point, viewport: Viewport, ballSize = BALL_SIZE): Point {
   const maxX = viewport.width - ballSize - 2;
   const maxY = viewport.height - ballSize - 2;
@@ -111,7 +99,7 @@ export interface PanelPositionInput {
   viewport: Viewport;
 }
 
-/** Room-left/room-right panel placement, clamped to the viewport — the fork's `positionPanel()`. */
+/** Room-left/room-right panel placement, clamped to the viewport. */
 export function computePanelPosition({ ballRect, panelSize, viewport }: PanelPositionInput): Point {
   const panelWidth = panelSize.width || DEFAULT_PANEL_WIDTH;
   const panelHeight = panelSize.height || DEFAULT_PANEL_HEIGHT;

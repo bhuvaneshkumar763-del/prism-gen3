@@ -10,6 +10,7 @@ import {
   type SelectionPanelPlacement,
 } from '../../src/shared/ui/selectionPanelPlacement';
 import { createShadowHost } from '../../src/shared/ui/shadowHost';
+import { viewportSize } from '../../src/shared/ui/viewport';
 import { withTimeout } from '../../src/shared/withTimeout';
 import { copyText } from './copyText';
 import { SelectionPopup } from './SelectionPopup';
@@ -18,16 +19,13 @@ import { SELECTION_POPUP_STYLES } from './selectionPopupStyles';
 const HOST_ID = 'prism-selection-popup-host';
 
 /**
- * How long keyboard-driven selection changes settle before the popup reacts.
- * A run of Shift+Arrow presses is one gesture, not N — without this, each
- * keystroke ran its own language detection. Mouse selection needs no
- * debounce: a mouseup already marks the end of the gesture.
+ * Lets keyboard selection settle, so a run of Shift+Arrow presses runs one
+ * language detection, not N. Mouse needs none: mouseup ends the gesture.
  */
 const KEYUP_DEBOUNCE_MS = 150;
 
-// Same bound used everywhere else this project calls `i18n.detectLanguage`
-// — real bug, fixed once already (beta.20): Firefox's implementation can
-// simply never resolve or reject (Mozilla bug 1712214).
+// Same bound as every other `i18n.detectLanguage` call: Firefox's can never
+// settle (Mozilla bug 1712214).
 const DETECT_LANGUAGE_TIMEOUT_MS = 3000;
 
 export interface SelectionPopupController {
@@ -45,86 +43,48 @@ export interface MountSelectionPopupOptions {
   getSourceLanguage(): string;
   getTargetLanguage(): string;
   /**
-   * Hide the trigger for a selection with nothing translatable in it (a
-   * lone character, or only punctuation/digits/whitespace). Matches TWP's
-   * `dontShowIfIsNotValidText` — the only one of their selection-popup
-   * visibility settings that defaults on. Omit (or return true) to keep
-   * this filter active.
+   * Hide the trigger for a selection with nothing translatable in it (a lone
+   * character, or only punctuation/digits/whitespace). Defaults on when omitted.
    */
   getSkipInvalidText?(): boolean;
-  /**
-   * Hide the trigger when the selection is already confidently detected as
-   * the target language — matches TWP's `dontShowIfSelectedTextIsTargetLang`.
-   * Default off in TWP too (confirmed against their real source), so
-   * omitting this keeps today's behavior unchanged.
-   */
+  /** Hide the trigger when the selection is detected as the target language. Default off. */
   getSkipTargetLanguageText?(): boolean;
   /**
-   * Show the floating button automatically when text is selected. False
-   * attaches no selection listeners at all — used when the user has turned
-   * the button off, so an explicit right-click can still translate without
-   * quietly turning the button back on. Default true.
+   * Show the button automatically on selection (default true). False attaches
+   * no selection listeners, so right-click translate still works with the
+   * button turned off.
    */
   autoTrigger?: boolean;
 }
 
 /**
- * Wires up "translate selected text": detects a text selection on
- * `mouseup`, shows a small trigger button near it, and on click translates
- * just that selection via the same `Translator` port every other surface
- * uses. See `SelectionPopup.tsx`'s header comment for what's deliberately
- * NOT built here (drag, replace-in-place, per-selection pickers, ...).
+ * Wires up "translate selected text": on a mouse or keyboard selection, shows
+ * a trigger near it that translates just that text via the shared `Translator`.
  */
 export function mountSelectionPopup(options: MountSelectionPopupOptions): SelectionPopupController {
   const { host, mountPoint } = createShadowHost(HOST_ID, SELECTION_POPUP_STYLES);
 
   let selectedText = '';
-  // Real bug, found via an audit: this popup used to always send
-  // `options.getSourceLanguage()` (the global `sourceLanguage` config
-  // value, which defaults to the literal string 'auto') as the translate
-  // request's source language, regardless of what was actually selected.
-  // `translateLoop.ts` fixed the equivalent problem for whole-page
-  // translation (beta.29) by using a freshly-detected language instead of
-  // 'auto', since Google's own auto-detection can silently fail (echo the
-  // input back unchanged, HTTP 200, no error) for short non-Latin
-  // selections. `detectSelectionLanguage` below already exists and runs on
-  // every selection change for the skip-target-language-text feature —
-  // this reuses that same detection for the actual translate request too,
-  // instead of discarding it.
+  // Sent as the source language instead of 'auto': Google's auto-detection
+  // can silently echo short non-Latin text back unchanged (HTTP 200).
   let selectedTextLanguage = 'und';
-  // Bumped whenever the visible selection changes (new mouseup) or a new
-  // translate click starts — a resolving handleTranslateClick() checks its
-  // own snapshot against the current value before applying its result, so
-  // a slower/earlier request can't clobber what the user is looking at now
-  // (e.g. select A, click translate, select B before A resolves — A's
-  // stale result must not overwrite B's state).
+  // Bumped on each selection change or translate start; async work applies
+  // its result only if its snapshot still matches, so stale results are dropped.
   let requestId = 0;
   /**
-   * The selection the user dismissed with Escape. Kept dismissed until the
-   * selection actually changes or the user makes a fresh mouse selection.
-   * Needed because a physical keypress is keydown AND keyup: Escape's
-   * keydown hides the trigger, then its own keyup (and any later incidental
-   * key, like Shift) re-read the still-present selection and brought it
-   * straight back.
+   * The selection dismissed with Escape, kept dismissed until it changes or a
+   * fresh mouse selection: otherwise Escape's own keyup re-reads the
+   * still-present selection and brings the trigger straight back.
    */
   let dismissedText: string | null = null;
   /**
-   * The page selection (as `getSelectionInfo` reads it) that the current
-   * view — the trigger, or an open panel — belongs to. Compared against a
-   * fresh read of the page selection, never against `selectedText`: for a
-   * right-click request `selectedText` is the browser's own `selectionText`,
-   * which normalises whitespace differently from `Selection.toString()`, so
-   * the two can differ for the very same selection.
+   * The page selection (per `getSelectionInfo`) the current view belongs to.
+   * Not `selectedText`: on right-click that is the browser's `selectionText`,
+   * whose whitespace differs from `Selection.toString()`.
    */
   let shownForSelection: string | null = null;
-  // Speed fix, found via a UI audit: this used to be a plain object that
-  // `renderNow()` fed into a brand-new `render()` after `dispose()`-ing the
-  // old one — on EVERY state change. The popup listens for `keyup` on the
-  // whole document, so typing into any form field on any site tore down and
-  // rebuilt this tree once per keystroke, even though the popup was already
-  // hidden. Rendered once now, from a store: setting a field to the value it
-  // already has notifies nothing, so an already-hidden popup costs nothing.
-  // Same pattern `mountBubble.ts` and `mountHoverTooltip.ts` moved to.
+  // Rendered once from a store: setting a field to its current value notifies
+  // nothing, so document-wide keyups cost nothing while the popup is hidden.
   const [state, setState] = createStore({
     buttonVisible: false,
     buttonTop: 0,
@@ -171,18 +131,14 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
           if (!e.isTrusted) return;
           void handleCopy();
         },
-        // Security: reject a synthetic click driving the actual translate
-        // request through the user's configured provider — see onMouseUp's
-        // isTrusted comment below for why this matters here too.
+        // Security: a synthetic click must not spend the user's provider
+        // quota (see onMouseUp).
         onTranslateClick: (e) => {
           if (!e.isTrusted) return;
           void handleTranslateClick();
         },
-        // Consistency with onTranslateClick above, NOT a defense: this
-        // path spends nothing, and a page that wants the popup gone has
-        // far better options (it owns the document). The translate guard
-        // exists because a synthetic click there would spend the user's
-        // own provider quota; nothing comparable is at stake here.
+        // For consistency, not defense: closing spends nothing, and the page
+        // owns the document anyway.
         onCloseClick: (e) => {
           if (!e.isTrusted) return;
           setState({ buttonVisible: false, panelOpen: false });
@@ -191,24 +147,12 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
     mountPoint,
   );
 
-  /**
-   * Improvement, found via a UI audit: copying the result was the most
-   * useful action a translated snippet was missing. Previously listed as a
-   * v1 scope cut in explicitly-out-of-scope — that doc is updated to match.
-   */
   let copyResetTimer: ReturnType<typeof setTimeout> | null = null;
   async function handleCopy(): Promise<void> {
     const copied = await copyText(state.translatedText);
     setState({ copyStatus: copied ? 'copied' : 'failed' });
     if (copyResetTimer) clearTimeout(copyResetTimer);
     copyResetTimer = setTimeout(() => setState({ copyStatus: 'idle' }), 1500);
-  }
-
-  function currentViewport() {
-    return {
-      width: window.visualViewport?.width || window.innerWidth,
-      height: window.visualViewport?.height || window.innerHeight,
-    };
   }
 
   async function translateText(text: string): Promise<void> {
@@ -230,7 +174,7 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
       translatedText: '',
       errorMessage: null,
       copyStatus: 'idle',
-      panel: placeSelectionPanel(anchor, currentViewport()),
+      panel: placeSelectionPanel(anchor, viewportSize()),
     });
     selectedTextLanguage = await detectSelectionLanguage(text);
     if (thisRequestId !== requestId) return; // superseded by a newer selection or request
@@ -256,17 +200,9 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
   }
 
   /**
-   * `window.getSelection()` cannot see into a shadow root — real gap, given
-   * page translation itself (`collectTextNodes.ts`) deliberately crosses
-   * shadow boundaries. A user can highlight text inside a site's sealed
-   * comment widget and the "translate this" trigger never appears at all.
-   * Chromium supports the non-standard `ShadowRoot.getSelection()`;
-   * Firefox/Safari don't (`typeof shadowRoot.getSelection !== 'function'`
-   * there), so this is purely additive — falls straight back to
-   * `window.getSelection()` everywhere it isn't available, same as before
-   * this existed. Walks the event's `composedPath()` (innermost first) so
-   * a selection inside a NESTED shadow tree resolves to its own closest
-   * root, not an ancestor's.
+   * `window.getSelection()` can't see into shadow roots, which page translation
+   * crosses. Uses Chromium's non-standard `ShadowRoot.getSelection()` where it
+   * exists (falling back elsewhere), innermost root first along `composedPath()`.
    */
   function resolveActiveSelection(path: readonly EventTarget[]): Selection | null {
     for (const node of path) {
@@ -283,17 +219,13 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
   }
 
   function hideTrigger(): void {
-    // A no-op for the DOM when already hidden — the store only notifies on
-    // an actual change. That's what makes a keystroke in a text field free.
+    // Free when already hidden: the store only notifies on an actual change.
     setState({ buttonVisible: false, panelOpen: false });
   }
 
   /**
-   * Best-effort — `withTimeout`-guarded against the same real Firefox hang
-   * risk as every other `i18n.detectLanguage` call in this codebase, and
-   * never throws: a detection failure just means the target-language skip
-   * check below can't fire, falling through to "show the trigger anyway,"
-   * the same safe default `originalLanguageTracker.ts` uses.
+   * Best-effort and never throws: on failure or timeout it returns 'und', so
+   * the target-language skip can't fire and the trigger shows anyway.
    */
   async function detectSelectionLanguage(text: string): Promise<string> {
     try {
@@ -305,15 +237,12 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
     }
   }
 
-  /** Shared by the mouse and keyboard paths below — the trigger's own show/hide logic doesn't care how the selection changed. */
+  /** Shared by the mouse and keyboard paths below. */
   async function updateFromCurrentSelection(path: readonly EventTarget[]): Promise<void> {
     const info = getSelectionInfo(resolveActiveSelection(path));
-    // Nothing changed: this exact text is already being offered or shown. An
-    // incidental key (Shift, an arrow that doesn't extend it, the key-up of
-    // the key that opened the context menu) must not reset the view. It used
-    // to — closing an open translation on any keystroke, and bumping the
-    // request counter below, which could make an in-flight right-click
-    // translation silently give up. Checked BEFORE that bump for this reason.
+    // This text is already offered or shown: an incidental key must not reset
+    // the view. Checked before the requestId bump, which would abandon an
+    // in-flight right-click translation.
     if (info && info.text === shownForSelection && (state.buttonVisible || state.panelOpen)) return;
     const thisRequestId = ++requestId;
     if (!info) {
@@ -331,10 +260,8 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
       }
       dismissedText = null; // the selection changed — that dismissal was for the old one
     }
-    // Always detected now (not just when getSkipTargetLanguageText is on)
-    // — the result also becomes the source language for the actual
-    // translate request below, see this file's `selectedTextLanguage`
-    // declaration comment for why.
+    // Always detected: it is also the translate request's source language
+    // (see `selectedTextLanguage`).
     const detected = await detectSelectionLanguage(info.text);
     if (thisRequestId !== requestId) return; // superseded by a newer selection — discard
     if (
@@ -348,7 +275,7 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
     selectedText = info.text;
     shownForSelection = info.text;
     selectedTextLanguage = detected;
-    const viewport = currentViewport();
+    const viewport = viewportSize();
     const trigger = placeSelectionTrigger(info.rect, viewport);
     setState({
       buttonVisible: true,
@@ -363,12 +290,8 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
   }
 
   function onMouseUp(e: MouseEvent): void {
-    // Security: a page can dispatch a synthetic 'mouseup' at the document
-    // to fake "the user just finished selecting text," feeding
-    // attacker-controlled content into `selectedText` and, via the
-    // trigger, into a real translate request through the user's
-    // configured (possibly paid) provider. Real user interaction always
-    // has isTrusted:true; only script-dispatched events don't.
+    // Security: a page's synthetic mouseup could feed its own text into a
+    // translate request on the user's (possibly paid) provider.
     if (!e.isTrusted) return;
     // Ignore mouseup inside our own shadow host (e.g. releasing a click
     // on the trigger button) so it doesn't immediately re-hide itself.
@@ -381,20 +304,14 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
   }
 
   /**
-   * Real gap: the trigger only ever listened for `mouseup`, so selecting
-   * text via keyboard (Shift+Arrow, Ctrl/Cmd+A, Shift+Home/End) never
-   * showed it at all — the feature was silently mouse-only. Any keyup
-   * can plausibly have changed the selection; `updateFromCurrentSelection`
-   * itself already no-ops (hides the trigger) for a collapsed/empty
-   * selection, so there's no need to enumerate every selection-extending
-   * key combination here.
+   * Keyboard selection (Shift+Arrow, Ctrl/Cmd+A, …). Any keyup may have changed
+   * the selection; `updateFromCurrentSelection` handles empty ones, so keys
+   * aren't filtered here.
    */
   let keyupTimer: ReturnType<typeof setTimeout> | null = null;
   function onKeyUp(e: KeyboardEvent): void {
     if (!e.isTrusted) return;
-    // Captured NOW, not inside the timer: `composedPath()` returns an empty
-    // array once the event has finished dispatching, which would silently
-    // lose the shadow-root selection lookup below.
+    // Captured now: `composedPath()` is empty once dispatch has finished.
     const path = e.composedPath();
     if (path.includes(host)) return;
     if (keyupTimer) clearTimeout(keyupTimer);
@@ -404,11 +321,7 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
     }, KEYUP_DEBOUNCE_MS);
   }
 
-  /**
-   * Escape dismisses the trigger or the result panel — the standard way to
-   * close a transient popup, and previously the only way to close this one
-   * was a mouse click on its × button.
-   */
+  /** Escape dismisses the trigger or the result panel. */
   function onKeyDown(e: KeyboardEvent): void {
     if (!e.isTrusted || e.key !== 'Escape') return;
     if (!state.buttonVisible && !state.panelOpen) return;

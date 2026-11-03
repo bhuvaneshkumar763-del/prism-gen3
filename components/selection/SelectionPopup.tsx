@@ -3,20 +3,9 @@ import { TRANSLATE_ICON_PATH } from '../../src/shared/ui/icons';
 import type { SelectionPanelPlacement } from '../../src/shared/ui/selectionPanelPlacement';
 
 /**
- * "Translate selected text": a small button appears near a text selection;
- * clicking it translates just that selection and shows the result in a
- * panel underneath. Pure presentation — `mountSelectionPopup.ts` owns
- * selection detection/positioning/the actual translate call.
- *
- * Scope decision (Session 6): a fresh, deliberately simpler design than
- * the old repo's ~1300-line `translateSelected.js`/583-line
- * `SelectionPopup.tsx` — no drag-to-move, no editable replace-in-place, no
- * listen/copy actions, no cross-frame focus arbitration, no per-selection
- * service/language pickers (uses the page's configured provider/target
- * language). Real and functional, not a placeholder: it detects a
- * selection, translates it, and shows the result — the rest is a
- * documented follow-up, matching the same "diverge and say why" call
- * already made for the floating bubble.
+ * "Translate selected text": a button near the selection opens a panel with
+ * the translation and a Copy action. Presentation only; `mountSelectionPopup.ts`
+ * owns selection detection, positioning and the translate call.
  */
 export interface SelectionPopupProps {
   buttonVisible: boolean;
@@ -62,8 +51,7 @@ export function SelectionPopup(props: SelectionPopupProps) {
             'max-width': `${props.panel.maxWidth}px`,
             'max-height': `${props.panel.maxHeight}px`,
           }}
-          // Announces the translation when it lands, rather than leaving a
-          // screen-reader user with a silent "Translating…" that never ends.
+          // Announces the translation when it lands.
           role="status"
           aria-live="polite"
         >

@@ -1,20 +1,12 @@
 /**
- * Single source of truth for "what providers exist and what can they do."
- * Kept as a fresh, small file rather than reproducing the old repo's exact
- * shape — but the idea (one capability registry other code derives
- * behavior from, instead of hand-maintained per-provider branches
- * scattered across the config schema/UI/registry) is a real, proven win,
- * kept on purpose.
- *
- * Zero browser-API imports here on purpose (see src/engine/README.md) —
- * this needs to be importable from anywhere, including a future
- * page-translation engine that needs a provider's `batchingHint`
- * synchronously, without a message round trip.
+ * Single source of truth for which providers exist and what they can do;
+ * other code derives behavior from here instead of per-provider branches.
+ * Browser-API-free so anything can read it synchronously.
  */
 
 export type ProviderId = 'google' | 'googleCloudTranslate';
 
-/** How a future page-translation engine should batch DOM text nodes for this provider, if it wants something other than one-node-per-piece. */
+/** How page translation should batch DOM text nodes for this provider, if not one node per piece. */
 export interface BatchingHint {
   /** Group sibling text nodes under the same block-level ancestor into one multi-string piece for real context. */
   groupByBlock: boolean;
@@ -37,32 +29,14 @@ export const providerDescriptors: ProviderDescriptor[] = [
     id: 'google',
     displayName: 'Google (free)',
     requiresKey: false,
-    // Re-enabled (round-3 audit follow-up), after being removed post-launch
-    // for a real bug: Google's endpoint genuinely reflows translated text
-    // across a piece's internal `<a i=N>` node boundaries for some
-    // language pairs (confirmed live; a real en->zh request produced
-    // duplicated/merged word fragments). Simply re-enabling grouping
-    // WITHOUT addressing that would just reintroduce the same bug — what
-    // makes it safe now is `google.ts`'s own repair mechanism: a grouped
-    // response is checked for the exact shape reflow produces (fewer
-    // decoded entries than nodes sent), and if found, immediately repaired
-    // via a contained per-node re-request — never routed through the
-    // generic retry path, which would just resend the same multi-item wire
-    // text and could reflow again indefinitely. See google.ts's
-    // `needsRepair`/`repair` doc comments for the full mechanism, and the
-    // improvement-history ledger's Google-grouping entry for the
-    // measured accuracy win this restores (isolated one-node-per-piece
-    // translation loses sentence context — e.g. "left" translated as the
-    // direction instead of the verb in "She left the party").
+    // Grouping gives sentence context ("She left the party"). It is safe
+    // only because google.ts detects a response reflowed across `<a i=N>`
+    // boundaries and repairs it with a per-node re-request.
     batchingHint: { groupByBlock: true, maxGroupChars: 2000 },
   },
-  // The real, official Google Cloud API (user's own key/billing) — the
-  // closest match to what Arc's browser translate feature actually uses,
-  // confirmed live (see the ADR above). No batchingHint: multi-string
-  // pieces here are joined with a plain separator character and sent as
-  // one text blob — the model has no structural marker distinguishing the
-  // joined segments, so there's a real (if modest) risk of it translating
-  // across the separator inconsistently.
+  // Official Google Cloud API (user's own key/billing). No batchingHint:
+  // multi-string pieces are joined with a plain separator the model has no
+  // structural reason to respect.
   { id: 'googleCloudTranslate', displayName: 'Google Cloud Translation API', requiresKey: true },
 ];
 

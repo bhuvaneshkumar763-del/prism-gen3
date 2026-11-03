@@ -324,4 +324,80 @@ describe('createTitleTranslator', () => {
 
     expect(translateBatch).not.toHaveBeenCalled();
   });
+
+  it("keeps the newer title's translation when an older title's response lands last (fast chapter skip)", async () => {
+    setDocumentTitle('Chapter 0');
+    mockTranslateOnce(ok(['Capítulo 0']));
+    const titleTranslator = newTranslator({ getSourceLanguage: () => 'en', isPageVisible: () => true });
+    await titleTranslator.start('es');
+
+    const resolvers = new Map<string, (outcomes: PieceOutcome[]) => void>();
+    translateBatch.mockImplementation(
+      (request) =>
+        new Promise((resolve) => {
+          resolvers.set(request.pieces[0]?.[0] ?? '', resolve);
+        }),
+    );
+    setDocumentTitle('Chapter 1');
+    titleTranslator.catchUp();
+    await flushAsyncWork();
+    setDocumentTitle('Chapter 2');
+    titleTranslator.catchUp();
+    await flushAsyncWork();
+
+    resolvers.get('Chapter 2')?.([ok(['Capítulo 2'])]);
+    await flushAsyncWork();
+    expect(document.title).toBe('Capítulo 2');
+
+    resolvers.get('Chapter 1')?.([ok(['Capítulo 1'])]);
+    await flushAsyncWork();
+    expect(document.title).toBe('Capítulo 2');
+  });
+
+  it('does not apply a response from before a restore() and re-translate to another language', async () => {
+    setDocumentTitle('Hello World');
+    let resolveFrench!: (outcomes: PieceOutcome[]) => void;
+    translateBatch.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveFrench = resolve;
+        }),
+    );
+    const titleTranslator = newTranslator({ getSourceLanguage: () => 'en', isPageVisible: () => true });
+    const frenchStart = titleTranslator.start('fr');
+    titleTranslator.restore();
+    mockTranslateOnce(ok(['Hallo Welt']));
+    await titleTranslator.start('de');
+    expect(document.title).toBe('Hallo Welt');
+
+    resolveFrench([ok(['Bonjour le monde'])]);
+    await frenchStart;
+    await flushAsyncWork();
+
+    expect(document.title).toBe('Hallo Welt');
+  });
+
+  it('does not start watching when restore() lands while start() is awaiting the first request', async () => {
+    vi.useFakeTimers();
+    try {
+      setDocumentTitle('Hello World');
+      let resolveStart!: (outcomes: PieceOutcome[]) => void;
+      translateBatch.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveStart = resolve;
+          }),
+      );
+      const titleTranslator = newTranslator({ getSourceLanguage: () => 'en', isPageVisible: () => true });
+      const started = titleTranslator.start('es');
+      titleTranslator.restore();
+      resolveStart([ok(['Hola Mundo'])]);
+      await started;
+
+      expect(document.title).toBe('Hello World');
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

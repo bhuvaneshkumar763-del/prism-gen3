@@ -1,57 +1,12 @@
 /**
- * IndexedDB-backed translation cache — avoids re-requesting a translation
- * for text this extension has already translated (identical provider +
- * source + target language + text), size-budgeted with oldest-first
- * eviction so it can't grow unbounded on a heavy browsing session.
+ * IndexedDB-backed translation cache: one database, one object store, keyed
+ * by provider + language pair + text, size-budgeted with oldest-first eviction.
+ * A single store keeps eviction to one cursor scan, at the cost of not being
+ * able to cheaply drop one language pair's entries.
  *
- * Deliberately simpler than the old repo's per-(service, sourceLanguage,
- * targetLanguage) database-per-triple design (`getDataBaseName` + a
- * separate `cacheList` database to enumerate them, since
- * `indexedDB.databases()` isn't implemented everywhere): one database, one
- * object store, the triple folded into the cache key by the caller. Real
- * engineering trade-off, not a corner cut — a single store makes
- * size-budget eviction a single cursor scan instead of a fan-out across N
- * per-triple databases, at the cost of not being able to cheaply drop just
- * one language pair's entries (not a real use case this project has).
- *
- * Standard Web APIs only (`indexedDB`) — no `chrome`/`browser` — but lives
- * in `src/platform/` rather than `src/engine/` anyway: it's an I/O
- * side-effecting adapter over a specific storage backend, the same category
- * of thing `src/platform/storage/localBackend.ts` already is, not
- * translation-domain logic.
- *
- * Post-launch speed pass: this used to open and close a fresh IndexedDB
- * connection on EVERY `get()`/`set()` call, and `set()` unconditionally ran
- * a full cursor-scan eviction sweep on every write — real, measured cost on
- * the critical path of every translated piece, every tick (see the CLAUDE.md
- * writeup for the investigation). Fixed two ways: (1) the connection is now
- * opened once, lazily, and kept alive for the life of this cache instance
- * — every call reuses it; (2) instead of debouncing eviction to "every N
- * writes" (which would make eviction non-deterministic and break the
- * existing recency/budget tests below, which rely on eviction happening
- * exactly when a write pushes the store over budget), an in-memory running
- * total is maintained and updated incrementally on every write/eviction —
- * `evictUntilUnderBudget()` checks that O(1) counter instead of re-scanning
- * the whole store, and only pays for a real cursor scan once, lazily, the
- * first time any method is called on a given instance (to seed the counter
- * from whatever's already persisted from a prior session).
- *
- * Real regression that speed pass introduced, found via a user report (not
- * caught by the earlier verification — that ran on desktop Chrome, which
- * doesn't reclaim idle IndexedDB connections nearly as aggressively as
- * mobile does): keeping ONE connection alive for the life of the module
- * means the browser can close it out from under us at any time (memory
- * pressure, low storage — far more common on mobile). Every call after
- * that kept trying to open a transaction on the now-dead connection,
- * surfacing as "Attempt to get a record from database without an
- * in-progress transaction" on every single translate for the rest of that
- * context's lifetime — the old always-open-fresh/always-close design never
- * kept a connection around long enough to hit this at all. Fixed with
- * `db.onclose` (resets the cached connection promise so the NEXT call
- * transparently reopens) plus `withDb()`'s one-retry-on-failure wrapper
- * (covers the race where the connection closes between `getDb()`
- * resolving and the transaction actually being created, since `onclose`
- * fires asynchronously).
+ * The connection is opened lazily and reused; the browser may close it at any
+ * time (common on mobile), so `close` resets it and `withDb()` retries once.
+ * The byte total is seeded by one scan, then maintained incrementally.
  */
 
 const DB_NAME = 'prism-translation-cache';
@@ -107,9 +62,9 @@ function scanTotalBytes(db: IDBDatabase): Promise<number> {
 export interface TranslationCache {
   get(key: string): Promise<string | null>;
   set(key: string, value: string): Promise<void>;
-  /** One IndexedDB transaction for the whole batch instead of one per key — see getMany's doc comment. */
+  /** Reads the whole batch in one IndexedDB transaction. */
   getMany(keys: string[]): Promise<Array<string | null>>;
-  /** One IndexedDB transaction (and one eviction pass) for the whole batch instead of one per key — see setMany's doc comment. */
+  /** Writes the whole batch in one IndexedDB transaction, then runs one eviction pass. */
   setMany(entries: Array<{ key: string; value: string }>): Promise<void>;
   getSizeBytes(): Promise<number>;
   evictUntilUnderBudget(maxBytes?: number): Promise<void>;
@@ -118,62 +73,82 @@ export interface TranslationCache {
 
 export function createTranslationCache(defaultMaxBytes: number = DEFAULT_MAX_BYTES): TranslationCache {
   let dbPromise: Promise<IDBDatabase> | null = null;
-  /** Seeded lazily (once) from a real scan, then kept accurate incrementally — see the module header comment. */
+  /** Seeded lazily from one scan, then kept accurate incrementally; null means "rescan". */
   let runningTotalBytes: number | null = null;
   /**
-   * Shares one in-flight `scanTotalBytes()` scan across concurrent callers
-   * instead of each starting its own — without this, two `set()` calls
-   * landing before the first scan resolves (e.g. a batch of cache misses
-   * written via `Promise.all`) would each independently scan and then
-   * independently overwrite `runningTotalBytes`, silently dropping
-   * whichever one finished first.
+   * Shares one in-flight scan across concurrent callers, so parallel writes
+   * don't each scan and overwrite `runningTotalBytes` with a stale result.
    */
   let scanInFlight: Promise<number> | null = null;
 
   function getDb(): Promise<IDBDatabase> {
     if (!dbPromise) {
-      dbPromise = openDb().then((db) => {
-        // The browser can close this connection at any time (memory
-        // pressure, low storage) — reset the cached promise so the NEXT
-        // call transparently reopens instead of every future call failing
-        // for the rest of this context's lifetime. The running total is
-        // also invalidated: a reopened connection may reflect state from
-        // after other contexts wrote to it while this one was closed.
+      const opening = openDb().then((db) => {
+        // The browser can close this connection at any time. Reset so the
+        // next call reopens, and drop the total: other contexts may have
+        // written while this one was closed.
         db.addEventListener('close', () => {
           dbPromise = null;
           runningTotalBytes = null;
-          // A scan in flight against the now-dead connection is doomed to
-          // reject, but scanInFlight itself isn't cleared until that
-          // rejection's own .finally() runs. A caller that calls
-          // ensureRunningTotal() against the newly-reopened connection in
-          // that window would otherwise see scanInFlight still set and
-          // await — inheriting the OLD scan's failure even though a healthy
-          // new connection now exists.
+          // A scan on the dead connection will reject, but scanInFlight is
+          // only cleared in its .finally(); clear it now so callers on the
+          // reopened connection don't inherit that failure.
           scanInFlight = null;
         });
         return db;
       });
+      // Forget a failed open so one transient failure doesn't turn the
+      // cache off until the background restarts; the next call retries.
+      opening.catch(() => {
+        if (dbPromise === opening) dbPromise = null;
+      });
+      dbPromise = opening;
     }
     return dbPromise;
   }
 
   /**
-   * Runs `operation` against a live connection, retrying ONCE with a fresh
-   * connection if it fails. Covers the race where the connection closes
-   * between `getDb()` resolving and the transaction actually being
-   * created — `db.onclose` above only handles reopening on the NEXT call,
-   * not a connection that dies mid-flight during THIS one.
+   * Runs `operation`, retrying once on a fresh connection. Covers a connection
+   * that closes between `getDb()` resolving and the transaction starting,
+   * which the `close` listener alone can't catch. A failed open, first or on
+   * the retry, goes to `onOpenFailure`.
    */
-  async function withDb<T>(operation: (db: IDBDatabase) => Promise<T>): Promise<T> {
-    const db = await getDb();
+  async function withDb<T>(
+    operation: (db: IDBDatabase) => Promise<T>,
+    onOpenFailure: (error: unknown) => T,
+  ): Promise<T> {
+    let db: IDBDatabase;
+    try {
+      db = await getDb();
+    } catch (e) {
+      return onOpenFailure(e);
+    }
     try {
       return await operation(db);
     } catch (e) {
       console.warn('[prism] translation cache operation failed, retrying with a fresh connection', e);
       dbPromise = null;
-      const freshDb = await getDb();
+      let freshDb: IDBDatabase;
+      try {
+        freshDb = await getDb();
+      } catch (openError) {
+        return onOpenFailure(openError);
+      }
       return operation(freshDb);
     }
+  }
+
+  /** The cache is best-effort: on the translation path a failed open is a miss or a no-op, never an error. */
+  function treatAsMiss<T>(fallback: T): (error: unknown) => T {
+    return (error) => {
+      console.warn('[prism] translation cache unavailable, continuing without it', error);
+      return fallback;
+    };
+  }
+
+  /** For `clear` and `getSizeBytes`, whose callers show the failure to the user. */
+  function rethrow(error: unknown): never {
+    throw error;
   }
 
   async function ensureRunningTotal(db: IDBDatabase): Promise<number> {
@@ -189,69 +164,50 @@ export function createTranslationCache(defaultMaxBytes: number = DEFAULT_MAX_BYT
   }
 
   /**
-   * One IndexedDB transaction for the whole key list, instead of `keys.map(get)`
-   * opening one transaction per key — a translatePieces tick with ~40 cache
-   * lookups paid for ~40 separate transaction setups/commits for what's
-   * conceptually one read. Same recency-touch and miss-on-failure behavior
-   * as `get()`, just batched.
-   *
-   * Speed fix, found via audit: this used to run the whole thing — reads
-   * AND the per-hit `lastUsed` touch — inside one `readwrite` transaction,
-   * so a fully-cached page revisit (the exact case a cache exists to make
-   * fast) issued one IndexedDB WRITE per text node and paid the commit
-   * latency of that write before the results this function is meant to
-   * return could resolve. Reads now run in their own `readonly`
-   * transaction, resolving as soon as they're done; the recency touch
-   * moves to a separate `readwrite` transaction that is deliberately NOT
-   * awaited here — same "best-effort, logged not fatal" character the
-   * touch always had, just no longer gating the read it was piggybacking
-   * on.
+   * Batched `get()`. Reads run in a `readonly` transaction and resolve as soon
+   * as they finish; the recency touch is a separate, un-awaited `readwrite`
+   * transaction so a warm-cache read never waits on a write.
    */
   async function getMany(keys: string[]): Promise<Array<string | null>> {
     if (keys.length === 0) return [];
-    return withDb((db) => {
-      const hits: CacheRecord[] = [];
-      return new Promise<Array<string | null>>((resolve, reject) => {
-        const tx = db.transaction(STORE_NAME, 'readonly');
-        const store = tx.objectStore(STORE_NAME);
-        const results: Array<string | null> = new Array(keys.length).fill(null);
-        keys.forEach((key, i) => {
-          const request = store.get(key);
-          request.onsuccess = () => {
-            const record = request.result as CacheRecord | undefined;
-            if (!record) return; // stays null — a real cache miss
-            results[i] = record.value;
-            hits.push(record);
-          };
+    return withDb(
+      (db) => {
+        const hits: CacheRecord[] = [];
+        return new Promise<Array<string | null>>((resolve, reject) => {
+          const tx = db.transaction(STORE_NAME, 'readonly');
+          const store = tx.objectStore(STORE_NAME);
+          const results: Array<string | null> = new Array(keys.length).fill(null);
+          keys.forEach((key, i) => {
+            const request = store.get(key);
+            request.onsuccess = () => {
+              const record = request.result as CacheRecord | undefined;
+              if (!record) return; // stays null — a real cache miss
+              results[i] = record.value;
+              hits.push(record);
+            };
+          });
+          tx.oncomplete = () => resolve(results);
+          tx.onerror = () => reject(tx.error);
+        }).then((results) => {
+          if (hits.length > 0) touchLastUsed(db, hits);
+          return results;
         });
-        tx.oncomplete = () => resolve(results);
-        tx.onerror = () => reject(tx.error);
-      }).then((results) => {
-        if (hits.length > 0) touchLastUsed(db, hits);
-        return results;
-      });
-    });
+      },
+      treatAsMiss(new Array<string | null>(keys.length).fill(null)),
+    );
   }
 
   /**
-   * How stale `lastUsed` must be before a hit is worth re-writing for.
-   * Speed fix, found via a round-6 audit: this used to re-`put()` EVERY
-   * hit record unconditionally — the full record, including `value` (the
-   * translated text itself), not just the timestamp — so a warm-cache page
-   * revisit (the exact case this cache exists to make fast) still wrote
-   * hundreds of KB back to IndexedDB on every load. Oldest-first eviction
-   * only needs recency accurate to "roughly how long ago," not to the
-   * millisecond, so skipping the write for anything already fresher than
-   * this bounds that cost without weakening eviction in practice.
+   * How stale `lastUsed` must be before a hit is re-written. Eviction only
+   * needs rough recency, and skipping fresh hits avoids re-writing every
+   * cached value on each warm-cache page load.
    */
   const LAST_USED_TOUCH_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 
   /**
-   * Fire-and-forget: bumps `lastUsed` on a cache hit so oldest-first
-   * eviction reflects real recency, not just insertion order. Never
-   * awaited by a caller — a stale `lastUsed` on a rare failure here only
-   * makes THAT entry a slightly earlier eviction candidate later, not a
-   * correctness problem, so there's nothing worth blocking a read for.
+   * Fire-and-forget: bumps `lastUsed` so eviction reflects real recency. A
+   * failure only makes that entry an earlier eviction candidate, so it's
+   * logged rather than surfaced.
    */
   function touchLastUsed(db: IDBDatabase, hits: CacheRecord[]): void {
     const now = Date.now();
@@ -277,18 +233,13 @@ export function createTranslationCache(defaultMaxBytes: number = DEFAULT_MAX_BYT
   }
 
   /**
-   * One IndexedDB transaction (and one `evictUntilUnderBudget()` eviction
-   * pass) for the whole batch, instead of one transaction-pair-plus-eviction
-   * PER entry — `set()`'s old per-key path was the dominant cost of a
-   * translatePieces tick with several cache misses (up to 2N transactions
-   * for N fresh pieces). Resolves on tx.oncomplete, same reasoning as the
-   * single-key set() this replaces: crediting the byte counter before the
-   * write is actually confirmed lets a failed write (e.g. quota exceeded)
-   * drift the counter from what's really on disk.
+   * Batched `set()`: one transaction and one eviction pass for the whole batch.
+   * The byte counter is credited only after tx.oncomplete, so a failed write
+   * (e.g. quota exceeded) can't drift it from what's on disk.
    */
   async function setMany(entries: Array<{ key: string; value: string }>): Promise<void> {
     if (entries.length === 0) return;
-    await withDb(async (db) => {
+    const written = await withDb(async (db) => {
       await ensureRunningTotal(db);
       const sizes = entries.map(({ key, value }) => estimateSize(key, value));
 
@@ -311,8 +262,9 @@ export function createTranslationCache(defaultMaxBytes: number = DEFAULT_MAX_BYT
 
       const delta = sizes.reduce((sum, size, i) => sum + size - (previousSizes[i] ?? 0), 0);
       runningTotalBytes = (runningTotalBytes ?? 0) + delta;
-    });
-    await evictUntilUnderBudget(defaultMaxBytes);
+      return true;
+    }, treatAsMiss(false));
+    if (written) await evictUntilUnderBudget(defaultMaxBytes);
   }
 
   async function set(key: string, value: string): Promise<void> {
@@ -320,7 +272,7 @@ export function createTranslationCache(defaultMaxBytes: number = DEFAULT_MAX_BYT
   }
 
   async function getSizeBytes(): Promise<number> {
-    return withDb((db) => ensureRunningTotal(db));
+    return withDb((db) => ensureRunningTotal(db), rethrow);
   }
 
   async function evictUntilUnderBudget(maxBytes: number = defaultMaxBytes): Promise<void> {
@@ -328,14 +280,9 @@ export function createTranslationCache(defaultMaxBytes: number = DEFAULT_MAX_BYT
       const total = await ensureRunningTotal(db);
       if (total <= maxBytes) return;
 
-      // Track the walk's progress locally and only commit it to
-      // runningTotalBytes once tx.oncomplete confirms every delete in this
-      // walk actually landed — cursor.delete() has no error handler of its
-      // own, and an aborted transaction rolls back every delete performed in
-      // it (including earlier ones in the same walk) without undoing any
-      // JS-side decrement already applied. Decrementing eagerly, per
-      // cursor.delete() call, let a mid-walk failure permanently under-count
-      // the real total.
+      // Commit the decrement only after tx.oncomplete: cursor.delete() has no
+      // error handler, and an aborted transaction rolls back every delete in
+      // the walk without undoing a JS-side decrement.
       let remaining = total;
       await new Promise<void>((resolve, reject) => {
         const tx = db.transaction(STORE_NAME, 'readwrite');
@@ -354,7 +301,7 @@ export function createTranslationCache(defaultMaxBytes: number = DEFAULT_MAX_BYT
         tx.onerror = () => reject(tx.error);
       });
       runningTotalBytes = remaining;
-    });
+    }, treatAsMiss(undefined));
   }
 
   async function clear(): Promise<void> {
@@ -366,6 +313,7 @@ export function createTranslationCache(defaultMaxBytes: number = DEFAULT_MAX_BYT
           tx.oncomplete = () => resolve();
           tx.onerror = () => reject(tx.error);
         }),
+      rethrow,
     );
     runningTotalBytes = 0;
   }

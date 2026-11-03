@@ -4,58 +4,27 @@ import type { PieceOutcome, TranslateBatchRequest, TranslateError } from '../../
 import type { Result } from '../../shared/result';
 
 /**
- * The single typed messaging contract for the whole extension — every
- * message this extension sends is a named entry here, compile-time
- * checked at both ends (payload shape AND response shape). Built on
- * `@webext-core/messaging`'s `defineExtensionMessaging`, which also
- * unifies the two message-sending directions this codebase needs into one
- * API: `sendMessage(type, data)` for content-script/popup → background
- * (`runtime.sendMessage`), and `sendMessage(type, data, tabId)` for
- * popup/background → a specific tab's content script (`tabs.sendMessage`)
- * — see `tabTarget.ts` for where that `tabId` comes from.
- *
- * Lives in `src/platform/`, not `src/shared/`, even though `ProtocolMap`
- * itself is just types — `defineExtensionMessaging()` below is a real call
- * that binds to `browser.runtime` at module-evaluation time, which is
- * exactly the kind of browser-API touch that belongs behind the platform
- * boundary (see `src/engine/README.md`), not in a "pure types" file that
- * happens to also do that.
+ * The single typed messaging contract for the extension: every message is a
+ * named entry here, with payload and response types checked at both ends.
+ * `sendMessage(type, data)` goes to the background; `sendMessage(type, data,
+ * tabId)` goes to that tab's content script (see `tabTarget.ts`). Lives in
+ * `src/platform/` because `defineExtensionMessaging()` binds to `browser.runtime`.
  */
 interface ProtocolMap {
   /** Popup/content-script → background: translate one string through the configured provider. */
   translateText(data: { text: string; sourceLanguage: string; targetLanguage: string }): Result<string, TranslateError>;
   /**
-   * Content-script (via remoteTranslator.ts) → background: translate a
-   * batch of grouped pieces. `requestId` correlates this call's own
-   * `translatePiecesProgress` notifications (below) — more than one
-   * `translatePieces` call (the main tick, `attributeTranslator.ts`,
-   * `titleTranslator.ts`) can be in flight concurrently from the same
-   * frame, so a bare per-frame flag wouldn't disambiguate them. Not part
-   * of the engine's own `TranslateBatchRequest` shape (that type is
-   * shared with every in-process `Translator` implementation, most of
-   * which have no messaging boundary to correlate across) — added here,
-   * at the one seam that actually needs it.
+   * Content script (via remoteTranslator.ts) → background: translate a batch
+   * of grouped pieces. `requestId` correlates this call's
+   * `translatePiecesProgress` notifications, since several calls can be in
+   * flight from one frame at once.
    */
   translatePieces(data: TranslateBatchRequest & { requestId: number }): PieceOutcome[];
   /**
-   * Background → a tab's content script: fired as each piece of an
-   * in-flight `translatePieces` call resolves, well before that call's own
-   * response. This is the seam that makes incremental write-back
-   * (`translateLoop.ts`'s `onPieceComplete`, and the equivalent inside
-   * `google.ts`'s own grouped-piece repair) actually take effect in the
-   * real extension instead of only in unit tests: a function property
-   * (`onPieceComplete` itself) cannot survive `chrome.runtime`'s
-   * structured-clone message serialization, so without this relay the
-   * callback the engine passes into `translateBatch()` is silently never
-   * invoked in production, and the whole point of beta.34's per-piece
-   * write-back — visible text appearing progressively instead of only
-   * once the entire tick resolves — never actually happened outside a
-   * test's in-process mock translator. Fire-and-forget, no response
-   * expected; a progress notification that arrives for an
-   * abandoned/superseded request is simply ignored (the content script
-   * only forwards it to a still-live `onPieceComplete` for that
-   * `requestId`, keyed the same way the underlying batch/generation
-   * checks already are).
+   * Background → a tab's content script: sent as each piece of a
+   * `translatePieces` call resolves, so text appears progressively.
+   * `onPieceComplete` can't cross the message boundary, so this relays it.
+   * Fire-and-forget; notifications for a finished request are ignored.
    */
   translatePiecesProgress(data: { requestId: number; index: number; outcome: PieceOutcome }): void;
   /** Popup/background → a tab's content script: translate the whole page. */
@@ -75,35 +44,22 @@ interface ProtocolMap {
   openOptionsPage(data: { section?: string } | undefined): void;
   /** Popup → a tab's content script: the detected source language ('und' if not yet resolved), for the "Always translate from {language}" toggle. */
   getOriginalLanguage(): string;
-  /** Popup → a tab's content script: non-null once the page translator has confirmed translation is actually failing OR the browser is offline (see translateLoop.ts's `getLastError`/`getLastErrorKind`) — closes the gap where a translate click that fails after the popup already resolved shows nothing wrong. `kind` distinguishes "offline, will resume automatically" from "the provider is actually broken." */
+  /** Popup → a tab's content script: non-null once translation is confirmed failing or the browser is offline; `kind` tells "offline, will resume" from "provider broken". */
   getPageError(): { message: string; kind: ErrorKind } | null;
-  /** Popup → a tab's content script: is there real translate work still queued or in flight (see translateLoop.ts's `isWorking`)? `pageTranslate`'s own response resolves as soon as work is queued, not once it's done — the popup polls this afterward so its busy indicator reflects real activity instead of clearing itself in ~zero frames, same real bug this fixed for the bubble (`entrypoints/content.ts`). */
+  /** Popup → a tab's content script: whether translate work is still queued or in flight. `pageTranslate` resolves once work is queued, so the popup polls this for its busy indicator. */
   getPageWorking(): boolean;
   /**
-   * A tab's MAIN-FRAME content script → background: reports its own
-   * auto-translate-on-load decision once resolved, so a same-origin
-   * sub-frame in the same tab can inherit it instead of running an
-   * independent (and possibly different) detection — closes a real gap
-   * where an iframe got no auto-translate decision of its own at all.
-   * Cross-origin frames never call this (or its query counterpart below) —
-   * scoped to same-origin by the caller, not by anything server-side here.
+   * A tab's main-frame content script → background: reports its
+   * auto-translate-on-load decision so a same-origin sub-frame can inherit it
+   * instead of detecting independently. Same-origin scoping is the caller's job.
    */
   reportFrameLanguageDecision(data: FrameLanguageDecision): void;
   /** A same-origin sub-frame → background: asks for the main frame's decision, if it's reported one yet. */
   getFrameLanguageDecision(): FrameLanguageDecision | null;
   /**
-   * Content script → background: detect this tab's language via
-   * `browser.tabs.detectLanguage()` — a background-only, privileged API a
-   * content script can't call directly. TWP's real, current source
-   * (confirmed live) uses this as its *primary* detection method, falling
-   * back to a content-script text-sample heuristic only when it's
-   * unavailable; this project previously only ever had the fallback.
-   * Inspects the browser's own view of the tab's actual content rather
-   * than a client-side `innerText` slice we build ourselves — real gap on
-   * pages where nav/header chrome (often in the site's UI language)
-   * dominates the first few thousand characters of body text before
-   * reaching the real content. Returns `'und'` on any failure (no throw),
-   * same convention as every other detection path in this codebase.
+   * Content script → background: detect the tab's language via the
+   * background-only `browser.tabs.detectLanguage()`, which sees the real
+   * content rather than a nav-heavy text sample. Returns `'und'` on failure.
    */
   detectTabLanguage(): string;
 }
@@ -112,45 +68,14 @@ export interface FrameLanguageDecision {
   shouldTranslate: boolean;
   targetLanguage: string;
   /**
-   * Accuracy fix, found via audit: this used to carry only `targetLanguage`
-   * — a same-origin sub-frame that inherited a positive decision then
-   * called `translatePage(targetLanguage)` with no explicit source
-   * language, silently falling back to the literal `'auto'` for every
-   * request in that frame. That's exactly the input the `getSourceLanguage`
-   * fix in `content.ts` (its own doc comment, right above where
-   * `originalLanguageTracker` feeds it) replaced for the MAIN frame,
-   * because Google's own auto-detection silently no-ops for a real
-   * fraction of pieces on some sites — an iframe was never covered by that
-   * fix, since it never ran its own detection (nor should it: this
-   * protocol message's whole purpose, per the doc comment above, is so a
-   * sub-frame inherits the main frame's ALREADY-detected language instead
-   * of running an independent, possibly different one). Reporting it here
-   * lets the sub-frame pass it straight through to its own
-   * `translatePage()` call as an explicit source language.
+   * The main frame's detected source language, so a sub-frame passes it as an
+   * explicit source instead of falling back to `'auto'`.
    */
   originalLanguage: string;
   /**
-   * Reliability/privacy fix, found via a round-4 audit: `frameLanguageDecisions`
-   * (background.ts) is keyed by tabId alone and only ever overwritten by
-   * the main frame's NEXT report — never explicitly cleared on navigation.
-   * On an ordinary full-page navigation, the new main frame and a same-
-   * origin sub-frame both start loading concurrently; if the sub-frame's
-   * content script runs first (very plausible — it's typically a smaller
-   * document), its very first `getFrameLanguageDecision` poll can find the
-   * PREVIOUS page's still-present entry and accept it immediately as if it
-   * were current, with no way to tell it's stale. Concretely: navigating
-   * from a site NOT on `neverTranslateSites` to one that IS could still
-   * have that new site's sub-frame translate, because it inherited the old
-   * page's positive decision before the new main frame ever got a chance
-   * to report its own (correct, negative) one. Stamped with the reporting
-   * frame's own origin at report time so a sub-frame can reject a decision
-   * that doesn't match its OWN main frame's CURRENT origin (read via
-   * `window.top.location.origin`, already proven same-origin-accessible by
-   * this exact call site) instead of trusting any truthy value blindly —
-   * a stale same-origin, different-page decision (a rarer, lower-stakes
-   * accuracy edge case, not the neverTranslateSites/privacy one above) is
-   * NOT covered by this check and is accepted as a known, smaller residual
-   * gap rather than adding a per-navigation generation counter for it.
+   * The reporting main frame's origin. The background's entry isn't cleared on
+   * navigation, so a sub-frame rejects a decision whose origin doesn't match
+   * its current top origin. A stale same-origin decision is a known, accepted gap.
    */
   mainFrameOrigin: string;
 }
@@ -158,28 +83,32 @@ export interface FrameLanguageDecision {
 export const { sendMessage, onMessage } = defineExtensionMessaging<ProtocolMap>();
 
 /**
- * Real gap, found via a security audit: `@webext-core/messaging`'s
- * `onMessage` does no sender validation of its own — checked its actual
- * implementation directly, not assumed. A message that matches one of this
- * extension's own message shapes, sent by ANY other installed extension
- * (via `chrome.runtime.sendMessage(thisExtensionId, ...)` to the
- * background, or `chrome.tabs.sendMessage(tabId, ...)` straight to a
- * content script), would be processed exactly like one from this
- * extension's own content script/popup/background. Concrete risk: another
- * extension could trigger a translate/restore on the user's active tab, or
- * relay arbitrary text through `translatePieces` to spend the user's own
- * configured provider quota (including a paid Google Cloud Translate key),
- * with nothing telling the user it wasn't this extension's own UI that
- * asked.
- *
- * `sender.id` is always this extension's own `browser.runtime.id` for a
- * message this extension's own code sends — `chrome.runtime.sendMessage`
- * with no explicit target extension ID implicitly targets the calling
- * extension itself, and `chrome.tabs.sendMessage` still stamps the
- * sender's own extension ID regardless of which tab it targets — so this
- * never rejects a real, legitimate caller. Used by every `onMessage`
- * handler in both `entrypoints/background.ts` and `entrypoints/content.ts`.
+ * Defence in depth, not a block on a known attack path: other extensions'
+ * messages arrive on `runtime.onMessageExternal`, which nothing here listens
+ * to, and `tabs.sendMessage` reaches only this extension's own content
+ * scripts. Accepts only this extension's own `sender.id`.
  */
 export function isTrustedSender(sender: Browser.runtime.MessageSender): boolean {
   return sender.id === browser.runtime.id;
+}
+
+const UNTRUSTED_SENDER_ERROR = '[prism] rejected a message from an untrusted sender';
+
+/**
+ * `onMessage`, but the handler runs only for an `isTrustedSender` sender, so
+ * no handler can forget the check. An untrusted sender gets an error, or with
+ * `onUntrusted: 'ignore'` an empty answer (for fire-and-forget notifications).
+ */
+export function onTrustedMessage<TType extends keyof ProtocolMap>(
+  type: TType,
+  handler: Parameters<typeof onMessage<TType>>[1],
+  options: { onUntrusted?: 'throw' | 'ignore' } = {},
+): () => void {
+  return onMessage(type, (message) => {
+    if (!isTrustedSender(message.sender)) {
+      if (options.onUntrusted === 'ignore') return;
+      throw new Error(UNTRUSTED_SENDER_ERROR);
+    }
+    return handler(message);
+  });
 }

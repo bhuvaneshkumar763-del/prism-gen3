@@ -30,25 +30,18 @@ import {
 } from '../../src/shared/config/siteOverrides';
 import { COMMON_LANGUAGES, languageName, translationDirection } from '../../src/shared/languages';
 import { TRANSLATE_ICON_PATH } from '../../src/shared/ui/icons';
+import { canHover } from '../../src/shared/ui/pointer';
+import { viewportSize } from '../../src/shared/ui/viewport';
 import type { BubbleViewState } from './bubbleState';
 
 /**
- * The always-on floating translate bubble. Full parity with the
- * pre-rewrite fork's version (draggable, edge-docked, a hover/long-press
- * panel with From/To/Service pickers and Always/Settings/Hide chips) plus
- * one state the fork never had: a "Translation failed" state (see
- * `props.state.errorMessage`) that takes priority over the normal
- * translated/original rendering so a false "Translated" success is never
- * shown while a batch has actually been failing (see
- * `src/engine/pageTranslator/translateLoop.ts`'s `onError` doc comment).
+ * The always-on floating translate bubble: draggable, edge-docked, with a
+ * hover/long-press panel. The failed state (`props.state.errorMessage`) wins
+ * over "translated", so a failing batch never shows false success.
  *
- * Rendered exactly once by `mountBubble.ts` into a shadow root — `props.state`
- * is the reactive store itself (not spread primitives), so this component's
- * JSX re-renders fine-grained on every `mountBubble.ts` `update()` without
- * this component ever being torn down and recreated. Everything else here
- * (drag position, pinned/panel, target/source language, service, always-on)
- * is local `createSignal` state seeded once from `configStore` in the
- * component body and kept live via `configStore.onChanged` — never a direct
+ * Rendered once by `mountBubble.ts`; `props.state` is the reactive store
+ * itself, so each `update()` re-renders fine-grained. All other state is local
+ * signals seeded from `configStore` and kept live via `onChanged`, never a
  * `configStore.get()` read inside JSX (see `scripts/check-solid-reactivity.mjs`).
  */
 
@@ -57,25 +50,12 @@ export interface FloatingBubbleProps {
   hostname: string;
   shadowHost: HTMLElement;
   /**
-   * `sourceLanguage`, when passed, forces that language for this one
-   * retranslate — the From picker's use — rather than persisting into
-   * every future request the way it used to (real bug: that forced
-   * mistranslation of already-correct content, see `onSourceLanguageChange`
-   * below).
+   * `sourceLanguage` forces that language for this one retranslate (the From
+   * picker); it is not carried into later requests (see `onSourceLanguageChange`).
    */
   onTranslate(targetLanguage: string, sourceLanguage?: string): void;
   onRestore(): void;
   onClose(): void;
-}
-
-function vw(): number {
-  return window.visualViewport?.width || window.innerWidth;
-}
-function vh(): number {
-  return window.visualViewport?.height || window.innerHeight;
-}
-function viewport() {
-  return { width: vw(), height: vh() };
 }
 
 function uniq(codes: Array<string | null | undefined>): string[] {
@@ -93,11 +73,6 @@ function uniq(codes: Array<string | null | undefined>): string[] {
 function displayLanguageName(code: string): string {
   return code === 'auto' ? 'Detect' : languageName(code);
 }
-
-// Touch browsers keep `:hover` stuck on the last tapped element, so a tap on
-// the ball used to leave the panel open over the page text (mobile Chrome on
-// sangtacviet.vip). Only trust `:hover` on devices whose primary pointer hovers.
-const canHover = () => typeof matchMedia === 'function' && matchMedia('(hover: hover)').matches;
 
 export function FloatingBubble(props: FloatingBubbleProps) {
   let wrap!: HTMLDivElement;
@@ -138,7 +113,7 @@ export function FloatingBubble(props: FloatingBubbleProps) {
     const point = computePanelPosition({
       ballRect: { left: r.left, top: r.top, width: r.width, height: r.height },
       panelSize: { width: panel.offsetWidth, height: panel.offsetHeight },
-      viewport: viewport(),
+      viewport: viewportSize(),
     });
     panel.style.left = `${point.x}px`;
     panel.style.top = `${point.y}px`;
@@ -150,32 +125,28 @@ export function FloatingBubble(props: FloatingBubbleProps) {
   }
 
   function applyState(): Point {
-    const point = resolveDockedPoint(dockState, viewport(), BALL_SIZE);
+    const point = resolveDockedPoint(dockState, viewportSize(), BALL_SIZE);
     wrap.style.left = `${point.x}px`;
     wrap.style.top = `${point.y}px`;
-    wrap.classList.toggle('right', isRightEdge(point.x, vw(), BALL_SIZE));
-    // Only measure the panel while it's actually showing — the measurement
-    // is a forced layout read, and the panel is hidden nearly all the time.
-    // Every way of opening it (pointerenter, focusin, long-press, ArrowDown)
-    // already re-measures right before it appears, so nothing goes stale.
+    wrap.classList.toggle('right', isRightEdge(point.x, viewportSize().width, BALL_SIZE));
+    // Measuring the panel forces layout, so only do it while it's showing;
+    // every way of opening it re-measures right before it appears.
     if (isPanelOpen()) positionPanelNow();
     return point;
   }
 
   function previewAt(x: number, y: number): Point {
-    const point = clampDragPoint({ x, y }, viewport(), BALL_SIZE);
+    const point = clampDragPoint({ x, y }, viewportSize(), BALL_SIZE);
     wrap.style.left = `${point.x}px`;
     wrap.style.top = `${point.y}px`;
-    wrap.classList.toggle('right', isRightEdge(point.x, vw(), BALL_SIZE));
+    wrap.classList.toggle('right', isRightEdge(point.x, viewportSize().width, BALL_SIZE));
     positionPanelNow();
     return point;
   }
 
   /**
-   * Speed fix, found via a UI audit: resize and visualViewport resize/scroll
-   * used to run applyState() synchronously on every event, each one a
-   * forced layout read — and on iOS visualViewport fires continuously during
-   * pinch-zoom and as the toolbar collapses. Now at most once per frame.
+   * Coalesces resize and visualViewport resize/scroll (continuous on iOS
+   * during pinch-zoom) to one layout-reading applyState() per frame.
    */
   let reflowFrame: number | null = null;
   function reflow(): void {
@@ -187,11 +158,8 @@ export function FloatingBubble(props: FloatingBubbleProps) {
   }
 
   function handlePrimaryAction(): void {
-    // No-op while offline — translateLoop.ts already auto-resumes the
-    // instant connectivity returns (see connectivity.ts), and the button
-    // is disabled in this state anyway (see the JSX below); this guard is
-    // the belt-and-braces version in case handlePrimaryAction is ever
-    // reachable some other way.
+    // No-op offline: translateLoop.ts auto-resumes when connectivity returns
+    // (see connectivity.ts). The button is disabled too; this guards other callers.
     if (props.state.errorKind === 'offline') return;
     if (props.state.errorMessage) {
       props.onTranslate(targetLanguage());
@@ -206,13 +174,9 @@ export function FloatingBubble(props: FloatingBubbleProps) {
 
   let actionBusy = false;
   function toggleTranslate(): void {
-    // actionBusy alone (a fixed 600ms local guard) only protects against a
-    // rapid double click/tap — a real translation on a slow page/provider
-    // easily outlasts 600ms, and the ball button (unlike the panel's
-    // .primary button) has no `disabled` binding, since disabling it would
-    // also block the pointerdown/pointermove/pointerup drag handlers this
-    // same element uses to reposition the bubble. Checking the real
-    // props.state.busy here closes that gap without losing drag-while-busy.
+    // actionBusy (600ms) stops a double tap; props.state.busy covers a long
+    // translation. The ball can't use `disabled` like .primary does, because
+    // that would also block its drag handlers.
     if (actionBusy || props.state.busy) return;
     actionBusy = true;
     setTimeout(() => {
@@ -286,12 +250,11 @@ export function FloatingBubble(props: FloatingBubbleProps) {
       }
       if (moved) {
         const previousDockState = dockState;
-        dockState = positionFromDragPoint(pos, viewport(), BALL_SIZE);
+        dockState = positionFromDragPoint(pos, viewportSize(), BALL_SIZE);
         pos = applyState();
         configStore.set('bubblePosition', dockState).catch(() => {
-          // Save failed — revert to the last-persisted position instead of
-          // leaving the ball wherever it visually landed but never saved,
-          // which would silently reset to the old spot on next page load.
+          // Save failed: revert to the last persisted position rather than
+          // show one that would silently reset on the next page load.
           dockState = previousDockState;
           pos = applyState();
         });
@@ -303,15 +266,9 @@ export function FloatingBubble(props: FloatingBubbleProps) {
       }
     };
     /**
-     * A drag interrupted by the browser taking over (e.g. this ball sits
-     * near a screen edge and an OS/browser edge gesture — like Chrome's own
-     * back-swipe — claims the pointer sequence mid-drag) used to leave
-     * `dragging`/`moved` stuck true with no `pointerup` ever firing:
-     * `previewAt()`'s last call is left applied as the *visual* position
-     * (drawn directly via style, not persisted), so the ball can render at
-     * a stale, never-saved spot until something else repositions it, and a
-     * later click can be misread as "moved" from `onDocPointerDown`'s
-     * pinned-state check. Snap back to the last real committed position.
+     * The browser can claim the pointer mid-drag (e.g. an edge back-swipe)
+     * without a `pointerup`: reset the drag state and snap back from the
+     * unsaved preview to the last committed position.
      */
     const onPointerCancel = (e: PointerEvent) => {
       dragging = false;
@@ -340,13 +297,9 @@ export function FloatingBubble(props: FloatingBubbleProps) {
         e.preventDefault();
         toggleTranslate();
       } else if (e.key === 'ArrowDown') {
-        // Real gap: the panel's only "open" triggers were :hover (mouse)
-        // and a 450ms pointer long-press (touch) — a keyboard/screen-reader
-        // user could reach the ball but had no way to open the panel at
-        // all, since its controls sit at visibility:hidden until one of
-        // those two fires and aren't in the tab order until then either.
-        // ArrowDown is the standard disclosure-widget convention for "open
-        // and move into the revealed content."
+        // The keyboard way in: hover and long-press are pointer-only, and the
+        // hidden panel's controls aren't in the tab order. ArrowDown is the
+        // disclosure-widget convention for "open and move into it".
         e.preventDefault();
         setPinned(true);
         positionPanelNow();
@@ -356,13 +309,9 @@ export function FloatingBubble(props: FloatingBubbleProps) {
     };
     ball.addEventListener('keydown', onKeydown);
 
-    // Escape from ANYWHERE in the bubble, not just the ball — real gap,
-    // found via a UI audit: this used to live in the ball's own handler, so
-    // once ArrowDown had moved focus into the panel (see above), Escape did
-    // nothing. Returning focus to the ball is the standard disclosure
-    // pattern, and now actually closes it: the panel is shown on
-    // `.panel:focus-within`, not `.wrap:focus-within`, so focus resting on
-    // the ball no longer holds it open (see bubbleStyles.ts).
+    // Escape anywhere in the bubble (focus may be inside the panel) closes it
+    // and returns focus to the ball. The panel opens on `.panel:focus-within`,
+    // so focus on the ball doesn't hold it open (see bubbleStyles.ts).
     const onWrapKeydown = (e: KeyboardEvent) => {
       if (!e.isTrusted || e.key !== 'Escape') return;
       setPinned(false);
@@ -370,10 +319,8 @@ export function FloatingBubble(props: FloatingBubbleProps) {
     };
     wrap.addEventListener('keydown', onWrapKeydown);
 
-    // Tabbing out of the bubble entirely closes a panel ArrowDown pinned
-    // open. Previously only a pointer press elsewhere did, so a keyboard
-    // user who tabbed away left it floating over the page. `relatedTarget`
-    // is where focus is going; still inside the bubble means keep it open.
+    // Tabbing out of the bubble closes a panel ArrowDown pinned open.
+    // `relatedTarget` is where focus is going; inside the bubble keeps it open.
     const onWrapFocusOut = (e: FocusEvent) => {
       if (!wrap.contains(e.relatedTarget as Node | null)) setPinned(false);
     };
@@ -394,11 +341,8 @@ export function FloatingBubble(props: FloatingBubbleProps) {
       else if (name === 'sourceLanguageByHost') {
         setSourceLanguageSignal(resolveSourceLanguageForHost(value as Record<string, string>, props.hostname, 'auto'));
       } else if (name === 'bubblePosition') {
-        // Real gap: this header comment always claimed position stayed
-        // live-synced via onChanged, but nothing here actually handled the
-        // key — dragging the bubble in one tab left every other open tab's
-        // bubble stale until its next reload. Also fires (harmlessly,
-        // idempotently) for this instance's own writes in onPointerUp.
+        // Keeps other tabs' bubbles in sync after a drag; also fires
+        // (idempotently) for this instance's own write in onPointerUp.
         dockState = normalizeBubblePosition(value as BubblePosition);
         pos = applyState();
       }
@@ -435,20 +379,22 @@ export function FloatingBubble(props: FloatingBubbleProps) {
     if (!e.isTrusted) return;
     e.stopPropagation();
     const snapshot = readListsSnapshot(configStore);
-    if (!alwaysOn()) {
-      void applyListPatch(configStore, addSiteToAlwaysTranslate(snapshot, props.hostname));
-      if (props.state.pageState !== 'translated') props.onTranslate(targetLanguage());
-    } else {
-      void applyListPatch(configStore, removeSiteFromAlwaysTranslate(snapshot, props.hostname));
-    }
-    setAlwaysOn(!alwaysOn());
+    const previous = alwaysOn();
+    const patch = previous
+      ? removeSiteFromAlwaysTranslate(snapshot, props.hostname)
+      : addSiteToAlwaysTranslate(snapshot, props.hostname);
+    applyListPatch(configStore, patch).catch((e2) => {
+      console.warn('[prism] failed to save always-translate site', e2);
+      setAlwaysOn(previous);
+    });
+    if (!previous && props.state.pageState !== 'translated') props.onTranslate(targetLanguage());
+    setAlwaysOn(!previous);
   }
 
   /**
-   * Handled, not fired with `void` — real bug, caught by CI: when nothing
-   * answers (a restarting service worker, an extension context invalidated
-   * by an update) an unhandled rejection surfaces as an "Uncaught (in
-   * promise)" error in the host page's own console.
+   * Rejection handled, not `void`ed: when nothing answers (restarting service
+   * worker, context invalidated by an update) it would otherwise show up as
+   * "Uncaught (in promise)" in the host page's console.
    */
   function openSettings(section?: string): void {
     sendMessage('openOptionsPage', section ? { section } : undefined).catch((e) => {
@@ -465,11 +411,8 @@ export function FloatingBubble(props: FloatingBubbleProps) {
   function onHideClick(e: MouseEvent): void {
     if (!e.isTrusted) return;
     e.stopPropagation();
-    // props.onClose() below hides the bubble in this session's DOM
-    // immediately regardless — that's the correct, expected UX for the
-    // click itself. A failed persist just means it can reappear on the
-    // next page load instead of staying hidden; nothing else to roll back
-    // here since this component holds no local "hidden" signal of its own.
+    // onClose() hides the bubble now regardless; a failed persist only means
+    // it can reappear on the next page load, so there is nothing to roll back.
     configStore
       .set('bubbleByHost', setBubbleVisibilityForHost(configStore.get('bubbleByHost'), props.hostname, false))
       .catch((e2) => console.warn('[prism] failed to save bubble-hidden preference', e2));
@@ -477,17 +420,10 @@ export function FloatingBubble(props: FloatingBubbleProps) {
   }
 
   /**
-   * Force-retranslates the current page from `code` right now — a one-off
-   * correction for when auto-detection got the whole page wrong, not a
-   * standing rule. `code` is still persisted to `sourceLanguageByHost` (so
-   * the picker shows what you last chose, and it still feeds the
-   * auto-translate-on-load decision), but it's no longer sent as the
-   * source language on every future request the way it used to be: real
-   * bug, confirmed against the live Google endpoint — a forced source
-   * language on an already-correct-language fragment ("History" sent as
-   * source=vi) came back mistranslated ("Association"), while the same
-   * text sent as source=auto came back unchanged. A fresh page load goes
-   * back to auto regardless of what's picked here.
+   * One-off retranslate from `code`, to correct bad auto-detection. `code` is
+   * saved to `sourceLanguageByHost` (picker display, auto-translate-on-load)
+   * but not sent on later requests: a forced source on text already in another
+   * language mistranslates it (Google: "History" with source=vi → "Association").
    */
   function onSourceLanguageChange(e: Event): void {
     if (!e.isTrusted) return;
@@ -541,21 +477,12 @@ export function FloatingBubble(props: FloatingBubbleProps) {
     props.onTranslate(targetLanguage());
   }
 
-  // Real bug this replaced: `pageState` used to flip to 'translated'
-  // (turning the bubble green) the instant a translate was requested, well
-  // before any actual translation happened — `busy` (now driven by
-  // translateLoop.ts's real `isWorking`/`onWorkingChange` activity signal,
-  // see content.ts) must also have cleared before this counts as done.
+  // `pageState` can turn 'translated' before any work is done, so `busy`
+  // (translateLoop.ts's `onWorkingChange`, via content.ts) must also be clear.
   const translated = () => !props.state.errorMessage && props.state.pageState === 'translated' && !props.state.busy;
   const errored = () => Boolean(props.state.errorMessage);
   const offline = () => errored() && props.state.errorKind === 'offline';
-  /**
-   * What clicking the ball will actually do — real gap, found via a UI
-   * audit: its accessible name was hard-coded to "Translate this page", so a
-   * screen-reader user heard that even on a translated page (where a click
-   * RESTORES it), a failed one (retries), or offline (does nothing). Mirrors
-   * handlePrimaryAction's own branching above.
-   */
+  /** The ball's accessible name: what a click will do. Mirrors handlePrimaryAction. */
   const ballLabel = () => {
     if (offline()) return 'Offline — waiting for connection';
     if (errored()) return props.state.busy ? 'Retrying…' : 'Retry translation';
@@ -572,21 +499,15 @@ export function FloatingBubble(props: FloatingBubbleProps) {
     return translationDirection(from, targetLanguage()) ?? 'Page translated';
   };
   const primaryLabel = () => {
-    // No "Retry" while offline — translateLoop.ts already auto-resumes the
-    // instant connectivity returns (see handlePrimaryAction above), so a
-    // retry button here would just be a no-op the user has to notice does
-    // nothing.
+    // No "Retry" offline: translateLoop.ts auto-resumes on reconnect.
     if (offline()) return 'Waiting for connection…';
     if (errored()) return props.state.busy ? 'Retrying…' : 'Retry';
     if (translated()) return props.state.busy ? 'Restoring…' : 'Show original';
     return props.state.busy ? 'Translating…' : 'Translate page';
   };
-  // Perceived-speed fix: shown only while genuinely busy AND there's a real
-  // fraction to show — `progress` is `null` before the current cycle knows
-  // its total yet (the brief gap the existing spinner already covers), and
-  // this hides on `busy` going `false`, not on `progress` reaching `1` (see
-  // `onProgressChange`'s doc comment, translateLoop.ts, for why `progress`
-  // can legitimately settle short of `1` even on a fully finished translate).
+  // `progress` is null until the cycle knows its total. Hide on `busy` going
+  // false, not on reaching 1: `progress` can settle short of 1 on a finished
+  // translate (see `onProgressChange` in translateLoop.ts).
   const showProgress = () => props.state.busy && props.state.progress !== null && props.state.progress < 1;
 
   return (
