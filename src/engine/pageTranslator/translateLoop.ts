@@ -1,11 +1,21 @@
 import { HAS_LETTER } from '../../shared/text';
 import { connectivity } from '../connectivity';
 import type { BatchingHint } from '../providers/descriptors';
-import type { Translator } from '../translator';
+import type { PieceOutcome, Translator } from '../translator';
 import { createAttributeTranslator } from './attributeTranslator';
-import { restoreBoundaryText } from './boundaryText';
 import { collectTextNodes, isNoTranslateNode } from './collectTextNodes';
 import { createDedupeTracker } from './dedupe';
+import {
+  backoffDelay,
+  batchFailed,
+  batchSucceeded,
+  type ErrorKind,
+  type ErrorState,
+  INITIAL_ERROR_STATE,
+  shownError,
+  wentOffline,
+  withWarning,
+} from './errorState';
 import {
   groupNodesForBatching,
   isWordElementText,
@@ -14,16 +24,23 @@ import {
   slotsForGroup,
 } from './grouping';
 import { createMutationWatcher } from './mutationWatcher';
+import { createProgress } from './progress';
 import { createResweepScheduler } from './resweep';
+import { createTickScheduler } from './scheduler';
 import { createTitleTranslator } from './titleTranslator';
 import { prioritizeByViewport } from './viewportPriority';
+import { createRestoreLedger, createSlotWriter } from './writeBack';
+
+export type { ErrorKind } from './errorState';
+export { pruneDisconnectedRestoreEntries } from './writeBack';
 
 /**
  * The page-translation engine: collect text nodes, batch-translate them via an
  * injected `Translator`, splice results back, and keep watching for new or
  * changed content. Engine-pure (no extension APIs). Attributes and the tab
  * title aren't `Text` nodes, so attributeTranslator.ts and titleTranslator.ts
- * handle them.
+ * handle them. The tick timer is scheduler.ts's, the error state
+ * errorState.ts's, done/total progress.ts's and the DOM writes writeBack.ts's.
  */
 
 // Provider concurrency is capped separately (DEFAULT_MAX_CONCURRENT); this keeps
@@ -35,35 +52,15 @@ const MAX_NODES_PER_BLOCK_TICK = 5000;
 // on a churning page `viewportDirty` stays set every tick, and each reorder
 // forces layout reads across the whole queue.
 const LARGE_QUEUE_REORDER_THROTTLE_MS = 500;
-/** See `originalWhitespace` in `runTranslationTick` for why this is punctuation-aware. */
-const LEADING_NON_LETTER_OR_DIGIT = /^[^\p{L}\p{N}]+/u;
-
-/**
- * Drops a `nodesToRestore` entry once its node has been disconnected for two
- * CONSECUTIVE resweep ticks: recycled list widgets detach and reattach the
- * same node within one tick, and pruning it then would make it unrestorable.
- */
-export function pruneDisconnectedRestoreEntries(
-  nodesToRestore: Map<Text, string>,
-  disconnectedLastTick: WeakSet<Text>,
-): void {
-  for (const node of nodesToRestore.keys()) {
-    if (!node.isConnected) {
-      if (disconnectedLastTick.has(node)) {
-        nodesToRestore.delete(node);
-      } else {
-        disconnectedLastTick.add(node);
-      }
-    } else {
-      disconnectedLastTick.delete(node);
-    }
-  }
-}
+/** How often an offline page re-checks connectivity (connectivity.onChange() usually wakes it first). */
+const OFFLINE_RECHECK_MS = 2000;
+/** The idle poll while nothing is queued. */
+const IDLE_TICK_MS = 2000;
+/** A missing piece isn't retried sooner than this after its last requeue. */
+const MISSING_RESULT_COOLDOWN_MS = 1500;
+const MAX_MISSING_RESULT_ATTEMPTS = 3;
 
 export type PageLanguageState = 'original' | 'translated';
-
-/** `'offline'` when the browser itself has no connectivity (distinct from `'provider'`, a confirmed-broken/misconfigured provider while online) — see `setError`. */
-export type ErrorKind = 'offline' | 'provider' | null;
 
 export interface PageTranslatorOptions {
   translator: Translator;
@@ -74,6 +71,9 @@ export interface PageTranslatorOptions {
   /** See `NoTranslateOptions.translatePreTags`. Omitted means `<pre>` is skipped. */
   getTranslatePreTags?(): boolean;
 }
+
+const isGenuineFailure = (o: PieceOutcome | undefined): boolean => !!o && !o.ok && o.error.kind !== 'suspicious';
+const failureMessage = (o: PieceOutcome | undefined): string => (o && !o.ok ? o.error.message : 'translation failed');
 
 export function createPageTranslator(options: PageTranslatorOptions) {
   const dedupe = createDedupeTracker();
@@ -92,9 +92,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
    * every request fights Google's per-request auto-detect. Read per tick.
    */
   let sourceLanguageOverride: string | null = null;
-  // Keyed by node so onResweep can prune nodes the page removed; otherwise a
-  // long-lived SPA would keep every detached Text node it translated.
-  let nodesToRestore = new Map<Text, string>();
+  const ledger = createRestoreLedger();
   let currentTargetLanguage = '';
   /**
    * Set when viewport ordering may be stale (a scroll or a newly queued node) and
@@ -109,12 +107,10 @@ export function createPageTranslator(options: PageTranslatorOptions) {
    * otherwise a slow reply for the old language overwrites the new one.
    */
   let cycleGeneration = 0;
-  let translationRoutineHandle: ReturnType<typeof setTimeout> | null = null;
+  const scheduler = createTickScheduler(() => void translationRoutine());
 
   /** The last content this engine processed for a tracked node; see `queueOrRequeueIfChanged`. */
   const lastSeenText = new WeakMap<Text, string>();
-  /** Nodes onResweep saw disconnected on the previous tick; see `pruneDisconnectedRestoreEntries`. */
-  const disconnectedLastTick = new WeakSet<Text>();
   const requeueAt = new WeakMap<Text, number>();
   const missingResultAttempts = new WeakMap<Text, number>();
   /** One pending cooldown-retry timer per node in `noteMissingResult`. */
@@ -124,6 +120,13 @@ export function createPageTranslator(options: PageTranslatorOptions) {
   const errorListeners = new Set<(message: string | null, kind: ErrorKind) => void>();
   const workingListeners = new Set<(working: boolean) => void>();
   const progressListeners = new Set<(done: number, total: number) => void>();
+
+  const progress = createProgress((done, total) => {
+    progressListeners.forEach((cb) => {
+      cb(done, total);
+    });
+  });
+  let errors: ErrorState = INITIAL_ERROR_STATE;
 
   /**
    * Busy signal for the UI. `pageLanguageState` flips to 'translated' before any
@@ -146,126 +149,54 @@ export function createPageTranslator(options: PageTranslatorOptions) {
   }
 
   /**
-   * Real "N of M" progress: `totalPieces` is set once per cycle and
-   * `completedPieces` only counts up. `completedNodes` keeps it once per node,
-   * since a node is written twice per tick (`onPieceComplete` and the final loop).
-   */
-  let totalPieces = 0;
-  let completedPieces = 0;
-  let completedNodes = new WeakSet<Text>();
-  /** Coalesces a resolved batch's burst of completions into one notification per microtask drain. */
-  let progressNotifyScheduled = false;
-
-  function notifyProgress(): void {
-    if (progressNotifyScheduled) return;
-    progressNotifyScheduled = true;
-    queueMicrotask(() => {
-      progressNotifyScheduled = false;
-      const total = totalPieces;
-      const done = completedPieces;
-      progressListeners.forEach((cb) => {
-        cb(done, total);
-      });
-    });
-  }
-
-  function recordPieceCompleted(node: Text): void {
-    if (completedNodes.has(node)) return;
-    completedNodes.add(node);
-    completedPieces++;
-    notifyProgress();
-  }
-
-  function resetProgress(): void {
-    totalPieces = 0;
-    completedPieces = 0;
-    completedNodes = new WeakSet<Text>();
-    givenUpNodes = new Set<Text>();
-    translatedChars = 0;
-    notifyProgress();
-  }
-
-  /**
    * Working = work queued or in flight and no real error surfaced. After an error
    * surfaces, nodes keep retrying in the background, so the spinner yields to the
    * error panel; the untranslated-share warning doesn't count as an error here.
    */
   function recomputeWorking(): void {
-    setWorking(
-      (queue.length > 0 || inFlightGeneration !== null) && (lastErrorMessage === null || errorIsUntranslatedWarning),
-    );
+    setWorking((queue.length > 0 || inFlightGeneration !== null) && errors.error === null);
   }
 
-  // A failing provider must surface an error, not retry forever in silence while
-  // the page reports 'translated'; a few consecutive failures are tolerated first.
-  const CONSECUTIVE_FAILURES_BEFORE_SURFACING = 3;
-  let consecutiveBatchFailures = 0;
-  let lastErrorMessage: string | null = null;
-  let lastErrorKind: ErrorKind = null;
-  // Consecutive ticks with an error surfaced; drives the backoff at the tick's
-  // tail. Separate from consecutiveBatchFailures (failed batches), and keeps
-  // growing while offline, since the provider hasn't recovered just by that.
-  let surfacedErrorStreak = 0;
-
-  /**
-   * Pieces given up on (echoed back or left out 3 times) are normally a few
-   * endonyms; when they are a large share of the page by characters (a degraded
-   * Google echoes most of it), warn. A report, not an outage: no backoff,
-   * `working` unaffected, and any real error outranks it.
-   */
-  const UNTRANSLATED_SHARE_TO_WARN = 0.25;
-  const MIN_UNTRANSLATED_CHARS_TO_WARN = 200;
-  let givenUpNodes = new Set<Text>();
-  let translatedChars = 0;
-  let errorIsUntranslatedWarning = false;
-
-  function untranslatedWarning(): string | null {
-    let untranslatedChars = 0;
-    for (const node of givenUpNodes) {
-      if (node.isConnected) untranslatedChars += node.data.trim().length;
-      else givenUpNodes.delete(node);
-    }
-    const share = untranslatedChars / (untranslatedChars + translatedChars);
-    if (untranslatedChars < MIN_UNTRANSLATED_CHARS_TO_WARN || share < UNTRANSLATED_SHARE_TO_WARN) return null;
-    return `About ${Math.round(share * 100)}% of this page came back untranslated. Try again; if it keeps happening, switch provider in Settings.`;
-  }
-
-  function refreshUntranslatedWarning(): void {
-    if (lastErrorMessage !== null && !errorIsUntranslatedWarning) return;
-    const message = untranslatedWarning();
-    setError(message, message ? 'provider' : null, message !== null);
-  }
-
-  function setError(
-    message: string | null,
-    kind: ErrorKind = message ? 'provider' : null,
-    isUntranslatedWarning = false,
-  ): void {
-    errorIsUntranslatedWarning = isUntranslatedWarning;
-    if (message === lastErrorMessage && kind === lastErrorKind) return;
-    lastErrorMessage = message;
-    lastErrorKind = kind;
+  /** Moves to `next`; listeners and `working` are updated only when what the bubble shows changed. */
+  function setErrors(next: ErrorState): void {
+    const before = shownError(errors);
+    errors = next;
+    const after = shownError(next);
+    if (before?.message === after?.message && before?.kind === after?.kind) return;
     errorListeners.forEach((cb) => {
-      cb(message, kind);
+      cb(after?.message ?? null, after?.kind ?? null);
     });
     recomputeWorking();
   }
 
-  function wakeRoutine(delayMs = 0): void {
-    if (translationRoutineHandle) clearTimeout(translationRoutineHandle);
-    translationRoutineHandle = setTimeout(translationRoutine, delayMs);
+  /** A real error outranks the warning, and clearing it recomputes the warning, so it's only computed when it can show. */
+  function refreshUntranslatedWarning(): void {
+    if (errors.error !== null) return;
+    setErrors(withWarning(errors, progress.untranslatedWarning()));
+  }
+
+  function wakeRoutine(): void {
+    scheduler.schedule(0);
+  }
+
+  function enqueue(node: Text): void {
+    progress.track(node);
+    viewportDirty = true;
+    // A node changing repeatedly before it's spliced out must not be queued twice
+    // (a wasted request and two racing write-backs).
+    if (queuedSet.has(node)) return;
+    queue.push(node);
+    queuedSet.add(node);
   }
 
   function queueNode(node: Text): boolean {
     if (dedupe.isTracked(node)) return false;
     dedupe.track([node]);
     lastSeenText.set(node, node.data);
-    queue.push(node);
-    queuedSet.add(node);
     // Nodes found after the initial sweep need their original recorded too, or
     // restorePage() leaves them translated.
-    nodesToRestore.set(node, node.data);
-    viewportDirty = true;
+    ledger.record(node);
+    enqueue(node);
     recomputeWorking();
     return true;
   }
@@ -279,16 +210,26 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     lastSeenText.set(node, node.data);
     // The content changed, so this is now its pre-translation text (for restore
     // and the hover-original tooltip).
-    nodesToRestore.set(node, node.data);
-    viewportDirty = true;
-    // A node changing repeatedly before it's spliced out must not be queued twice
-    // (a wasted request and two racing write-backs).
-    if (!queuedSet.has(node)) {
-      queue.push(node);
-      queuedSet.add(node);
-    }
+    ledger.record(node);
+    enqueue(node);
     recomputeWorking();
     wakeRoutine();
+  }
+
+  /**
+   * Puts a whole failed batch back at the front, bypassing noteMissingResult's
+   * per-node cooldown and cap (meant for one missing piece), so it's retried
+   * until the error surfaces or the provider recovers. A node that left the DOM
+   * forgets `lastSeenText`, so it's requeued if it reappears unchanged.
+   */
+  function requeueBatch(batch: readonly Text[]): void {
+    const requeued: Text[] = [];
+    for (const node of batch) {
+      if (node.isConnected) requeued.push(node);
+      else lastSeenText.delete(node);
+    }
+    for (const node of requeued) queuedSet.add(node);
+    queue.unshift(...requeued);
   }
 
   /**
@@ -307,8 +248,8 @@ export function createPageTranslator(options: PageTranslatorOptions) {
 
   /**
    * Retries a node whose piece came back missing or suspicious, up to 3 attempts.
-   * Inside the 1500ms cooldown it schedules a later retry instead of dropping the
-   * node, which resweep couldn't rescue (`lastSeenText` already matches).
+   * Inside the cooldown it schedules a later retry instead of dropping the node,
+   * which resweep couldn't rescue (`lastSeenText` already matches).
    */
   function noteMissingResult(node: Text): void {
     if (!node.isConnected) {
@@ -319,7 +260,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     const text = (node.textContent ?? '').trim();
     if (!text || !HAS_LETTER.test(text)) return;
     const last = requeueAt.get(node);
-    if (last !== undefined && Date.now() - last < 1500) {
+    if (last !== undefined && Date.now() - last < MISSING_RESULT_COOLDOWN_MS) {
       if (!cooldownRetryScheduled.has(node)) {
         cooldownRetryScheduled.add(node);
         // Generation-checked so the retry can't fire into a restored or newer cycle.
@@ -330,15 +271,15 @@ export function createPageTranslator(options: PageTranslatorOptions) {
             if (scheduledGeneration !== cycleGeneration) return;
             noteMissingResult(node);
           },
-          1500 - (Date.now() - last),
+          MISSING_RESULT_COOLDOWN_MS - (Date.now() - last),
         );
       }
       return;
     }
     const attempts = (missingResultAttempts.get(node) ?? 0) + 1;
-    if (attempts > 3) {
-      // Give up after 3 tries — usually a genuinely untranslatable fragment.
-      givenUpNodes.add(node);
+    if (attempts > MAX_MISSING_RESULT_ATTEMPTS) {
+      // Usually a genuinely untranslatable fragment.
+      progress.gaveUp(node);
       refreshUntranslatedWarning();
       return;
     }
@@ -346,10 +287,14 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     requeueChangedTextNode(node);
   }
 
+  function recordFailure(rawMessage: string): void {
+    setErrors(batchFailed(errors, rawMessage));
+  }
+
   /**
-   * Prevents re-entrant ticks: `wakeRoutine()` can't stop a tick that's mid-await,
-   * and two concurrent ticks double the request rate. Keyed by generation so a
-   * new cycle's tick may run while an abandoned cycle's batch still resolves.
+   * Prevents re-entrant ticks: a wake can't stop a tick that's mid-await, and
+   * two concurrent ticks double the request rate. Keyed by generation so a new
+   * cycle's tick may run while an abandoned cycle's batch still resolves.
    */
   let runningForGeneration: number | null = null;
 
@@ -366,333 +311,208 @@ export function createPageTranslator(options: PageTranslatorOptions) {
       if (runningForGeneration === myGeneration) runningForGeneration = null;
       // runTranslationTick's stale-generation bail-outs return before its tail
       // scheduling; rescheduling here keeps a non-empty queue from stranding.
-      if (!scheduledSuccessor && pageLanguageState === 'translated' && queue.length > 0) {
-        translationRoutineHandle = setTimeout(translationRoutine, 0);
-      }
+      if (!scheduledSuccessor && pageLanguageState === 'translated' && queue.length > 0) scheduler.schedule(0);
     }
   }
 
   /** Resolves `true` if it scheduled the next tick itself, `false` if it bailed out early — see `translationRoutine`'s `finally`. */
   async function runTranslationTick(): Promise<boolean> {
-    if (translationRoutineHandle) clearTimeout(translationRoutineHandle);
-
+    const hasWork = pageLanguageState === 'translated' && queue.length > 0;
     // Offline: every request would fail, so send nothing and report at once (no
     // failure threshold). The queue stays put; connectivity.onChange() wakes us.
-    if (pageLanguageState === 'translated' && queue.length > 0 && !connectivity.isOnline()) {
-      setError('Offline — translation will resume automatically once your connection is back.', 'offline');
-      surfacedErrorStreak++;
-      translationRoutineHandle = setTimeout(translationRoutine, 2000);
+    if (hasWork && !connectivity.isOnline()) {
+      setErrors(wentOffline(errors));
+      scheduler.backOff(OFFLINE_RECHECK_MS);
       return true;
     }
+    if (hasWork && !(await translateNextBatch())) return false;
 
-    if (pageLanguageState === 'translated' && queue.length > 0) {
-      // Translate what the user is looking at first. Worth it even when the queue
-      // fits in one tick: the provider dispatches groups FIFO, so earlier pieces
-      // resolve first. Throttled only for large queues (LARGE_QUEUE_REORDER_THROTTLE_MS).
-      const isLargeQueue = queue.length > MAX_PIECES_PER_TICK;
-      const reorderThrottled = isLargeQueue && Date.now() - lastReorderTime < LARGE_QUEUE_REORDER_THROTTLE_MS;
-      if (queue.length > 1 && viewportDirty && !reorderThrottled) {
-        queue = prioritizeByViewport(queue, { top: 0, bottom: window.innerHeight });
-        viewportDirty = false;
-        lastReorderTime = Date.now();
-      }
-      const batch = queue.splice(0, MAX_PIECES_PER_TICK);
-      const batchingHint = options.getBatchingHint();
-      // The slice happens before grouping, so a block straddling the cut would go
-      // as two context-free fragments; push its trailing nodes back to group whole.
-      if (batchingHint?.groupByBlock && queue.length > 0) {
-        // biome-ignore lint/style/noNonNullAssertion: length just checked
-        const straddledBlock = nearestBlockAncestor(queue[0]!);
-        if (straddledBlock !== null) {
-          let cut = batch.length;
-          // biome-ignore lint/style/noNonNullAssertion: cut is always in bounds
-          while (cut > 0 && nearestBlockAncestor(batch[cut - 1]!) === straddledBlock) cut--;
-          // `cut > 0` is a starvation guard: a block bigger than MAX_PIECES_PER_TICK
-          // would otherwise trim the batch to empty every tick. Such a block is split.
-          if (cut > 0 && cut < batch.length) {
-            queue.unshift(...batch.splice(cut));
-          } else if (cut === 0 && batch[0] && isWordElementText(batch[0])) {
-            // The whole batch is one word-per-element chapter bigger than a
-            // tick. Take the rest of it too, so grouping splits it at sentence
-            // ends instead of at this node count.
-            let extra = 0;
-            while (
-              extra < queue.length &&
-              batch.length + extra < MAX_NODES_PER_BLOCK_TICK &&
-              // biome-ignore lint/style/noNonNullAssertion: extra is always in bounds
-              nearestBlockAncestor(queue[extra]!) === straddledBlock
-            ) {
-              extra++;
-            }
-            batch.push(...queue.splice(0, extra));
-          }
-        }
-      }
-      for (const node of batch) queuedSet.delete(node);
-      const groups = groupNodesForBatching(batch, batchingHint);
-      // What is actually sent per group: one string per node, except a
-      // word-per-element run, which goes as one string (see grouping.ts's
-      // `slotsForGroup`). `outcome.value[i]` below indexes these slots.
-      const slotGroups = groups.map(slotsForGroup);
-      const requestedUnderGeneration = cycleGeneration;
-      inFlightGeneration = requestedUnderGeneration;
-      recomputeWorking();
-      // Google drops trailing whitespace and sometimes a leading run of punctuation
-      // (". The program…" loses its period), so each slot's boundary text is captured
-      // here and restored at write-back. Digits are excluded so "3D …" stays intact.
-      const originalWhitespace = new Map<Text, { leading: string; trailing: string }>();
-      /**
-       * The exact text sent per node. Write-back requeues instead of writing when a
-       * node's `.data` changed in flight, so a live update isn't clobbered by a
-       * stale translation.
-       */
-      const sentText = new Map<Text, string>();
-      slotGroups.forEach((slots) => {
-        slots.forEach((slot) => {
-          // A run's boundary text is its whole sent string's, kept on the
-          // node the translation is written into.
-          const text = slot.text;
-          const leading = text.match(LEADING_NON_LETTER_OR_DIGIT)?.[0] ?? '';
-          const trailing = text.slice(text.trimEnd().length);
-          // biome-ignore lint/style/noNonNullAssertion: a slot always has a node
-          if (leading || trailing) originalWhitespace.set(slot.nodes[0]!, { leading, trailing });
-          for (const node of slot.nodes) sentText.set(node, node.data);
-        });
-      });
-
-      /**
-       * Restores the node's boundary text and writes the translation. Called from
-       * `onPieceComplete` and again by the final loop; the repeat assigns an
-       * identical string, which is harmless.
-       */
-      function writeTranslatedNode(node: Text, rawTranslated: string): void {
-        // Changed by the page while in flight: translate the current content instead.
-        if (sentText.get(node) !== node.data) {
-          requeueChangedTextNode(node);
-          return;
-        }
-        // Counted here, not for a requeued stale node.
-        if (!completedNodes.has(node)) translatedChars += node.data.trim().length;
-        recordPieceCompleted(node);
-        givenUpNodes.delete(node);
-        const original = originalWhitespace.get(node);
-        // See `restoreBoundaryText` for how the source's leading mark is
-        // carried without doubling and the translation's own marks are kept.
-        const translated = original ? restoreBoundaryText(original, rawTranslated) : rawTranslated;
-        mutationWatcher.noteOwnWrite(node, translated);
-        node.data = translated;
-        lastSeenText.set(node, translated);
-        // So this tick's second write pass doesn't mistake our own write for a page change.
-        sentText.set(node, translated);
-        missingResultAttempts.delete(node);
-      }
-
-      /**
-       * Writes one slot. A word run's translation goes into its first node and the
-       * rest of the run (words and punctuation) is emptied, recorded in
-       * `nodesToRestore`; if the page changed any of it in flight, it's requeued.
-       */
-      function writeSlot(slot: PieceSlot, rawTranslated: string): void {
-        const [head, ...tail] = slot.nodes;
-        if (!head) return;
-        if (tail.length === 0 && slot.separators.length === 0) {
-          writeTranslatedNode(head, rawTranslated);
-          return;
-        }
-        if (slot.nodes.some((n) => !n.isConnected || sentText.get(n) !== n.data)) {
-          for (const node of slot.nodes) if (node.isConnected) requeueChangedTextNode(node);
-          return;
-        }
-        writeTranslatedNode(head, rawTranslated);
-        if (head.data !== sentText.get(head)) return;
-        // The run's translation stands for every word in it, not just the head.
-        for (const node of tail) if (!completedNodes.has(node)) translatedChars += node.data.trim().length;
-        for (const node of [...tail, ...slot.separators]) {
-          if (!node.isConnected || node.data === '') continue;
-          if (!nodesToRestore.has(node)) nodesToRestore.set(node, node.data);
-          mutationWatcher.noteOwnWrite(node, '');
-          node.data = '';
-          lastSeenText.set(node, '');
-          sentText.set(node, '');
-        }
-        for (const node of tail) {
-          recordPieceCompleted(node);
-          missingResultAttempts.delete(node);
-        }
-      }
-
-      try {
-        const outcomes = await options.translator.translateBatch({
-          sourceLanguage: sourceLanguageOverride ?? options.getSourceLanguage(),
-          // Lets the provider prefer its own per-piece detection over a
-          // page-level GUESS (see google.ts), while still honouring a
-          // source the user picked by hand in the bubble.
-          sourceLanguageIsExplicit: sourceLanguageOverride !== null,
-          targetLanguage: currentTargetLanguage,
-          pieces: slotGroups.map((slots) => slots.map((slot) => slot.text)),
-          dontSortResults: options.getDontSortResults?.() ?? false,
-          // Writes each piece as soon as its own sub-request completes instead of
-          // waiting for the slowest. Only early writes of successes; everything else is
-          // handled by the loop after this await.
-          onPieceComplete: (groupIdx, outcome) => {
-            if (requestedUnderGeneration !== cycleGeneration) return;
-            const slots = slotGroups[groupIdx];
-            if (!slots || !outcome.ok) return;
-            slots.forEach((slot, slotIdx) => {
-              if (!slot.nodes[0]?.isConnected) return;
-              const raw = outcome.value[slotIdx];
-              if (raw) writeSlot(slot, raw);
-            });
-          },
-        });
-
-        // Restored or re-translated meanwhile: these results belong to an abandoned
-        // cycle, and the new cycle translates the current content itself.
-        if (requestedUnderGeneration !== cycleGeneration) return false;
-
-        // A broken provider usually doesn't throw: translateBatch resolves with an
-        // `ok: false` outcome per piece, so "every outcome failed" is the signal. The
-        // catch below covers only genuine exceptions (e.g. messaging breaking).
-        const failedOutcomes = outcomes.filter((o) => !o?.ok);
-        const allFailed = outcomes.length > 0 && failedOutcomes.length === outcomes.length;
-        // An all-'suspicious' batch got real 200s (e.g. endonyms Google won't
-        // translate), so it isn't an outage: it goes through noteMissingResult's
-        // bounded retry instead of the retry-forever branch.
-        const allFailedAreSuspicious =
-          allFailed && failedOutcomes.every((o) => o && !o.ok && o.error.kind === 'suspicious');
-        if (allFailed && !allFailedAreSuspicious) {
-          consecutiveBatchFailures++;
-          if (consecutiveBatchFailures >= CONSECUTIVE_FAILURES_BEFORE_SURFACING) {
-            const firstFailure = outcomes.find((o) => !o?.ok);
-            const message = firstFailure && !firstFailure.ok ? firstFailure.error.message : 'translation failed';
-            setError(toUserFacingErrorMessage(message));
-            surfacedErrorStreak++;
-          }
-          // Requeue the whole batch, bypassing noteMissingResult's per-node cooldown and
-          // cap (meant for one missing piece), so it's retried until the error surfaces
-          // or the provider recovers. Disconnected nodes forget lastSeenText (see below).
-          batch.forEach((n) => {
-            if (!n.isConnected) lastSeenText.delete(n);
-          });
-          {
-            const requeued = batch.filter((n) => n.isConnected);
-            for (const node of requeued) queuedSet.add(node);
-            queue.unshift(...requeued);
-          }
-        } else {
-          // A degraded provider yields MIXED batches, so only a tick with no genuine
-          // (non-'suspicious') failure resets the counters and clears the error;
-          // otherwise a partial outage would never surface.
-          const hasGenuineFailure = failedOutcomes.some((o) => o && !o.ok && o.error.kind !== 'suspicious');
-          if (!hasGenuineFailure) {
-            consecutiveBatchFailures = 0;
-            surfacedErrorStreak = 0;
-            if (!errorIsUntranslatedWarning) setError(null);
-            refreshUntranslatedWarning();
-          } else {
-            consecutiveBatchFailures++;
-            if (consecutiveBatchFailures >= CONSECUTIVE_FAILURES_BEFORE_SURFACING) {
-              const firstGenuineFailure = outcomes.find((o) => o && !o.ok && o.error.kind !== 'suspicious');
-              const message =
-                firstGenuineFailure && !firstGenuineFailure.ok
-                  ? firstGenuineFailure.error.message
-                  : 'translation failed';
-              setError(toUserFacingErrorMessage(message));
-              surfacedErrorStreak++;
-            }
-          }
-          slotGroups.forEach((slots, groupIdx) => {
-            const outcome = outcomes[groupIdx];
-            slots.forEach((slot, slotIdx) => {
-              for (const node of slot.nodes) {
-                if (node.isConnected) continue;
-                // Left the DOM while in flight: forget lastSeenText so the node requeues
-                // if it reappears with the same untranslated text.
-                lastSeenText.delete(node);
-              }
-              if (!slot.nodes[0]?.isConnected) {
-                // A run that lost its first node has nowhere to write; its
-                // remaining words go back through as a fresh run.
-                for (const node of slot.nodes) if (node.isConnected) requeueChangedTextNode(node);
-                return;
-              }
-              const rawTranslated = outcome?.ok ? outcome.value[slotIdx] : undefined;
-              // Usually already written by onPieceComplete; unconditional so this doesn't
-              // depend on the translator supporting incremental delivery.
-              if (rawTranslated) {
-                writeSlot(slot, rawTranslated);
-              } else {
-                for (const node of slot.nodes) if (node.isConnected) noteMissingResult(node);
-              }
-            });
-          });
-        }
-      } catch (e) {
-        // Same abandoned-cycle check as the success path — don't requeue an
-        // old cycle's nodes into a queue that now belongs to a new one.
-        if (requestedUnderGeneration !== cycleGeneration) return false;
-        console.error('[prism] translation batch failed', e);
-        // Transient failure (network blip, background restart) — retry
-        // next tick. Same `lastSeenText` cleanup for disconnected nodes as
-        // the `allFailed` branch above, and for the same reason.
-        batch.forEach((n) => {
-          if (!n.isConnected) lastSeenText.delete(n);
-        });
-        {
-          const requeued = batch.filter((n) => n.isConnected);
-          for (const node of requeued) queuedSet.add(node);
-          queue.unshift(...requeued);
-        }
-        consecutiveBatchFailures++;
-        if (consecutiveBatchFailures >= CONSECUTIVE_FAILURES_BEFORE_SURFACING) {
-          setError(toUserFacingErrorMessage(e instanceof Error ? e.message : String(e)));
-          surfacedErrorStreak++;
-        }
-      } finally {
-        // Only the cycle that set this may clear it — see
-        // `inFlightGeneration`'s declaration comment.
-        if (inFlightGeneration === requestedUnderGeneration) inFlightGeneration = null;
-        recomputeWorking();
-      }
-    }
-
-    // With an error surfaced, back off: 8s, 12s, 18s, ... capped at 30s.
-    let nextDelay: number;
-    if (lastErrorMessage !== null && !errorIsUntranslatedWarning) {
-      nextDelay = Math.min(30000, 8000 * 1.5 ** (surfacedErrorStreak - 1));
-    } else if (consecutiveBatchFailures > 0) {
-      // Space out pre-surfacing retries so a short blip can clear: rapid retries of
-      // one stuck batch aren't independent signals of a broken provider.
-      nextDelay = Math.min(4000, 1000 * 2 ** (consecutiveBatchFailures - 1));
+    const backoff = backoffDelay(errors);
+    if (backoff !== null) {
+      scheduler.backOff(backoff);
     } else {
       // 0ms (still yields) while work remains; provider concurrency is capped
       // elsewhere. Requiring 'translated' stops a stray queue entry busy-spinning.
-      nextDelay = pageLanguageState === 'translated' && queue.length > 0 ? 0 : 2000;
+      scheduler.clearBackoff();
+      scheduler.schedule(pageLanguageState === 'translated' && queue.length > 0 ? 0 : IDLE_TICK_MS);
     }
-    translationRoutineHandle = setTimeout(translationRoutine, nextDelay);
     return true;
   }
 
-  /**
-   * Maps raw provider errors to plain language. Unrecognized messages pass
-   * through unchanged, since they're still useful diagnostics.
-   */
-  function toUserFacingErrorMessage(raw: string): string {
-    if (/kept sending text back untranslated/i.test(raw)) {
-      return 'The translation service keeps sending text back untranslated. Prism keeps retrying; if it keeps happening, switch provider in Settings.';
+  /** Splices the next tick's nodes off the front of the queue, what the user is looking at first. */
+  function takeBatch(batchingHint: BatchingHint | undefined): Text[] {
+    // Worth it even when the queue fits in one tick: the provider dispatches
+    // groups FIFO, so earlier pieces resolve first. Throttled only for large
+    // queues (LARGE_QUEUE_REORDER_THROTTLE_MS).
+    const isLargeQueue = queue.length > MAX_PIECES_PER_TICK;
+    const reorderThrottled = isLargeQueue && Date.now() - lastReorderTime < LARGE_QUEUE_REORDER_THROTTLE_MS;
+    if (queue.length > 1 && viewportDirty && !reorderThrottled) {
+      queue = prioritizeByViewport(queue, { top: 0, bottom: window.innerHeight });
+      viewportDirty = false;
+      lastReorderTime = Date.now();
     }
-    if (/no result for this piece/i.test(raw)) {
-      return "Couldn't reach the translation service — retrying automatically.";
+    const batch = queue.splice(0, MAX_PIECES_PER_TICK);
+    // The slice happens before grouping, so a block straddling the cut would go
+    // as two context-free fragments; push its trailing nodes back to group whole.
+    if (batchingHint?.groupByBlock && queue.length > 0) {
+      // biome-ignore lint/style/noNonNullAssertion: length just checked
+      const straddledBlock = nearestBlockAncestor(queue[0]!);
+      if (straddledBlock !== null) {
+        let cut = batch.length;
+        // biome-ignore lint/style/noNonNullAssertion: cut is always in bounds
+        while (cut > 0 && nearestBlockAncestor(batch[cut - 1]!) === straddledBlock) cut--;
+        // `cut > 0` is a starvation guard: a block bigger than MAX_PIECES_PER_TICK
+        // would otherwise trim the batch to empty every tick. Such a block is split.
+        if (cut > 0 && cut < batch.length) {
+          queue.unshift(...batch.splice(cut));
+        } else if (cut === 0 && batch[0] && isWordElementText(batch[0])) {
+          // The whole batch is one word-per-element chapter bigger than a
+          // tick. Take the rest of it too, so grouping splits it at sentence
+          // ends instead of at this node count.
+          let extra = 0;
+          while (
+            extra < queue.length &&
+            batch.length + extra < MAX_NODES_PER_BLOCK_TICK &&
+            // biome-ignore lint/style/noNonNullAssertion: extra is always in bounds
+            nearestBlockAncestor(queue[extra]!) === straddledBlock
+          ) {
+            extra++;
+          }
+          batch.push(...queue.splice(0, extra));
+        }
+      }
     }
-    // A rejection (bad API key, refused request) won't change on retry, so
-    // don't say "retrying".
-    const rejected = /rejected \(HTTP (\d+)\)(?::\s*(.+))?$/.exec(raw);
-    if (rejected) {
-      return rejected[2]
-        ? `The translation service rejected the request: ${rejected[2]}`
-        : `The translation service rejected the request (HTTP ${rejected[1]}).`;
+    for (const node of batch) queuedSet.delete(node);
+    return batch;
+  }
+
+  const writerDeps = {
+    ledger,
+    noteOwnWrite(node: Text, text: string): void {
+      mutationWatcher.noteOwnWrite(node, text);
+      lastSeenText.set(node, text);
+    },
+    requeue: requeueChangedTextNode,
+    onTranslated(node: Text, sourceChars: number): void {
+      progress.translated(node, sourceChars);
+      missingResultAttempts.delete(node);
+    },
+  };
+
+  /** Sends one batch and handles its results. Resolves `false` if the cycle moved on meanwhile. */
+  async function translateNextBatch(): Promise<boolean> {
+    const batchingHint = options.getBatchingHint();
+    const batch = takeBatch(batchingHint);
+    // What is actually sent per group: one string per node, except a
+    // word-per-element run, which goes as one string (see grouping.ts's
+    // `slotsForGroup`). `outcome.value[i]` below indexes these slots.
+    const slotGroups = groupNodesForBatching(batch, batchingHint).map(slotsForGroup);
+    const requestedUnderGeneration = cycleGeneration;
+    inFlightGeneration = requestedUnderGeneration;
+    recomputeWorking();
+    const writeSlot = createSlotWriter(slotGroups, writerDeps);
+
+    try {
+      const outcomes = await options.translator.translateBatch({
+        sourceLanguage: sourceLanguageOverride ?? options.getSourceLanguage(),
+        // Lets the provider prefer its own per-piece detection over a
+        // page-level GUESS (see google.ts), while still honouring a
+        // source the user picked by hand in the bubble.
+        sourceLanguageIsExplicit: sourceLanguageOverride !== null,
+        targetLanguage: currentTargetLanguage,
+        pieces: slotGroups.map((slots) => slots.map((slot) => slot.text)),
+        dontSortResults: options.getDontSortResults?.() ?? false,
+        // Writes each piece as soon as its own sub-request completes instead of
+        // waiting for the slowest. Only early writes of successes; everything else is
+        // handled after this await.
+        onPieceComplete: (groupIdx, outcome) => {
+          if (requestedUnderGeneration !== cycleGeneration) return;
+          const slots = slotGroups[groupIdx];
+          if (!slots || !outcome.ok) return;
+          slots.forEach((slot, slotIdx) => {
+            if (!slot.nodes[0]?.isConnected) return;
+            const raw = outcome.value[slotIdx];
+            if (raw) writeSlot(slot, raw);
+          });
+        },
+      });
+
+      // Restored or re-translated meanwhile: these results belong to an abandoned
+      // cycle, and the new cycle translates the current content itself.
+      if (requestedUnderGeneration !== cycleGeneration) return false;
+      handleOutcomes(batch, slotGroups, outcomes, writeSlot);
+    } catch (e) {
+      // Same abandoned-cycle check as the success path — don't requeue an
+      // old cycle's nodes into a queue that now belongs to a new one.
+      if (requestedUnderGeneration !== cycleGeneration) return false;
+      console.error('[prism] translation batch failed', e);
+      // Transient failure (network blip, background restart): retry next tick.
+      requeueBatch(batch);
+      recordFailure(e instanceof Error ? e.message : String(e));
+    } finally {
+      // Only the cycle that set this may clear it — see
+      // `inFlightGeneration`'s declaration comment.
+      if (inFlightGeneration === requestedUnderGeneration) inFlightGeneration = null;
+      recomputeWorking();
     }
-    return raw;
+    return true;
+  }
+
+  function handleOutcomes(
+    batch: readonly Text[],
+    slotGroups: readonly PieceSlot[][],
+    outcomes: readonly PieceOutcome[],
+    writeSlot: (slot: PieceSlot, rawTranslated: string) => void,
+  ): void {
+    // A broken provider usually doesn't throw: translateBatch resolves with an
+    // `ok: false` outcome per piece, so "every outcome failed" is the signal.
+    const failedOutcomes = outcomes.filter((o) => !o?.ok);
+    const allFailed = outcomes.length > 0 && failedOutcomes.length === outcomes.length;
+    // An all-'suspicious' batch got real 200s (e.g. endonyms Google won't
+    // translate), so it isn't an outage: it goes through noteMissingResult's
+    // bounded retry below instead of the retry-forever requeue.
+    const allFailedAreSuspicious =
+      allFailed && failedOutcomes.every((o) => o && !o.ok && o.error.kind === 'suspicious');
+    if (allFailed && !allFailedAreSuspicious) {
+      recordFailure(failureMessage(failedOutcomes[0]));
+      requeueBatch(batch);
+      return;
+    }
+
+    // A degraded provider yields MIXED batches, so only a tick with no genuine
+    // (non-'suspicious') failure resets the counters and clears the error;
+    // otherwise a partial outage would never surface.
+    const firstGenuineFailure = outcomes.find(isGenuineFailure);
+    if (firstGenuineFailure) {
+      recordFailure(failureMessage(firstGenuineFailure));
+    } else {
+      setErrors(batchSucceeded(progress.untranslatedWarning()));
+    }
+
+    slotGroups.forEach((slots, groupIdx) => {
+      const outcome = outcomes[groupIdx];
+      slots.forEach((slot, slotIdx) => {
+        for (const node of slot.nodes) {
+          // Left the DOM while in flight: forget lastSeenText so the node requeues
+          // if it reappears with the same untranslated text.
+          if (!node.isConnected) lastSeenText.delete(node);
+        }
+        if (!slot.nodes[0]?.isConnected) {
+          // A run that lost its first node has nowhere to write; its
+          // remaining words go back through as a fresh run.
+          for (const node of slot.nodes) if (node.isConnected) requeueChangedTextNode(node);
+          return;
+        }
+        const rawTranslated = outcome?.ok ? outcome.value[slotIdx] : undefined;
+        // Usually already written by onPieceComplete; unconditional so this doesn't
+        // depend on the translator supporting incremental delivery.
+        if (rawTranslated) {
+          writeSlot(slot, rawTranslated);
+        } else {
+          for (const node of slot.nodes) if (node.isConnected) noteMissingResult(node);
+        }
+      });
+    });
   }
 
   /** Read fresh each call, not cached — the options.getTranslatePreTags() source (config) can change live via the settings page. */
@@ -732,8 +552,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     isTranslated: () => pageLanguageState === 'translated',
     isPageVisible: () => document.visibilityState === 'visible',
     onResweep() {
-      // Bound nodesToRestore's growth; see pruneDisconnectedRestoreEntries.
-      pruneDisconnectedRestoreEntries(nodesToRestore, disconnectedLastTick);
+      ledger.prune();
       // Same for attributeTranslator's `originals`.
       attributeTranslator.pruneDisconnected();
       const added = collectTextNodes(document.body, noTranslateOptions()).filter((n) =>
@@ -765,7 +584,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
   // Resume as soon as connectivity returns rather than wait out the backoff
   // (up to 30s); the offline error clears itself on the next tick.
   connectivity.onChange((online) => {
-    if (online && pageLanguageState === 'translated') wakeRoutine(0);
+    if (online && pageLanguageState === 'translated') scheduler.wakeNow();
   });
 
   function setState(next: PageLanguageState): void {
@@ -791,7 +610,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     cycleGeneration++;
 
     const nodes = collectTextNodes(document.body, noTranslateOptions());
-    nodesToRestore = new Map(nodes.map((node) => [node, node.data]));
+    ledger.reset(nodes);
     dedupe.reset();
     dedupe.track(nodes);
     nodes.forEach((node) => {
@@ -802,46 +621,33 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     // `queue` was filled directly, not via queueNode(), so mark it dirty here.
     viewportDirty = true;
 
-    // The real total, known up front from the synchronous collect above.
-    totalPieces = nodes.length;
-    completedPieces = 0;
-    completedNodes = new WeakSet<Text>();
-    givenUpNodes = new Set<Text>();
-    translatedChars = 0;
-    notifyProgress();
+    progress.reset();
+    for (const node of nodes) progress.track(node);
 
-    consecutiveBatchFailures = 0;
-    setError(null); // also recomputes `working` — queue is already populated above.
+    // `working` turns true when the first tick sends its batch.
+    setErrors(INITIAL_ERROR_STATE);
     setState('translated');
     mutationWatcher.enable();
     resweep.start();
+    scheduler.cancel();
     wakeRoutine();
     void titleTranslator.start(targetLanguage);
     void attributeTranslator.start(targetLanguage);
   }
 
   function restorePage(): void {
-    nodesToRestore.forEach((original, node) => {
-      if (node.isConnected && node.data !== original) {
-        mutationWatcher.noteOwnWrite(node, original);
-        node.data = original;
-      }
-    });
-    nodesToRestore = new Map();
+    ledger.restoreAll((node, original) => mutationWatcher.noteOwnWrite(node, original));
     queue = [];
     queuedSet = new WeakSet<Text>();
-    resetProgress();
+    progress.reset();
     cycleGeneration++;
-    if (translationRoutineHandle) clearTimeout(translationRoutineHandle);
-    translationRoutineHandle = null;
+    scheduler.cancel();
     mutationWatcher.disable();
     resweep.stop();
     titleTranslator.restore();
     attributeTranslator.restore();
-    consecutiveBatchFailures = 0;
     // A fresh translate after a restore starts its error backoff at 8s again.
-    surfacedErrorStreak = 0;
-    setError(null);
+    setErrors(INITIAL_ERROR_STATE);
     setState('original');
     // Nothing left from this cycle will recompute `working` (queue empty,
     // in-flight results discarded by generation), so clear it now.
@@ -860,23 +666,17 @@ export function createPageTranslator(options: PageTranslatorOptions) {
      * Translated text nodes and their pre-translation text. Allocates per node,
      * so the hover tooltip uses `findOriginalTextForElement` instead.
      */
-    getTranslatedNodes: (): ReadonlyArray<{ node: Text; original: string }> =>
-      Array.from(nodesToRestore, ([node, original]) => ({ node, original })),
+    getTranslatedNodes: (): ReadonlyArray<{ node: Text; original: string }> => ledger.entries(),
     /**
      * Original text of a translated node directly under `target`, or null. Walks
-     * `nodesToRestore` without allocating, since the hover tooltip calls it on
-     * every mouseover/mousemove.
+     * the ledger without allocating, since the hover tooltip calls it on every
+     * mouseover/mousemove.
      */
-    findOriginalTextForElement: (target: Element): string | null => {
-      for (const [node, original] of nodesToRestore) {
-        if (node.parentElement === target && node.data !== original) return original;
-      }
-      return null;
-    },
+    findOriginalTextForElement: (target: Element): string | null => ledger.findOriginalTextForElement(target),
     /** Non-null once failures reach `CONSECUTIVE_FAILURES_BEFORE_SURFACING` (at once when offline), or for the untranslated-share warning. */
-    getLastError: (): string | null => lastErrorMessage,
+    getLastError: (): string | null => shownError(errors)?.message ?? null,
     /** `'offline'` vs `'provider'` vs `null` — see the `ErrorKind` doc comment. */
-    getLastErrorKind: (): ErrorKind => lastErrorKind,
+    getLastErrorKind: (): ErrorKind => shownError(errors)?.kind ?? null,
     onError(cb: (message: string | null, kind: ErrorKind) => void): () => void {
       errorListeners.add(cb);
       return () => errorListeners.delete(cb);
@@ -888,8 +688,9 @@ export function createPageTranslator(options: PageTranslatorOptions) {
       return () => workingListeners.delete(cb);
     },
     /**
-     * `(done, total)` for the current cycle. `done` may settle short of `total`
-     * (given-up or removed nodes), so hide progress UI when `working` goes false.
+     * `(done, total)` for the current cycle; `total` grows as the page adds text.
+     * `done` may settle short of `total` (given-up or removed nodes), so hide
+     * progress UI when `working` goes false.
      */
     onProgressChange(cb: (done: number, total: number) => void): () => void {
       progressListeners.add(cb);
