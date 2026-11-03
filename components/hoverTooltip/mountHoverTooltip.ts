@@ -2,11 +2,30 @@ import { createSignal } from 'solid-js';
 import { render } from 'solid-js/web';
 import { canHover } from '../../src/shared/ui/pointer';
 import { createShadowHost } from '../../src/shared/ui/shadowHost';
+import { viewportSize } from '../../src/shared/ui/viewport';
 import { HoverTooltip } from './HoverTooltip';
+import { type HoverTooltipPlacement, placeHoverTooltip } from './hoverTooltipPlacement';
 import { HOVER_TOOLTIP_STYLES } from './hoverTooltipStyles';
 
 const HOST_ID = 'prism-hover-tooltip-host';
 const SHOW_DELAY_MS = 350;
+const HIDDEN_PLACEMENT: HoverTooltipPlacement = {
+  top: 0,
+  bottom: null,
+  left: 0,
+  right: null,
+  maxWidth: 0,
+  maxHeight: 0,
+};
+
+/** The hovered text's line height, which the tooltip keeps clear of; `normal` is about 1.2em. */
+function lineHeightOf(element: Element): number {
+  const style = getComputedStyle(element);
+  const lineHeight = Number.parseFloat(style.lineHeight);
+  if (Number.isFinite(lineHeight)) return lineHeight;
+  const fontSize = Number.parseFloat(style.fontSize);
+  return Number.isFinite(fontSize) ? fontSize * 1.2 : 20;
+}
 
 export interface HoverTooltipController {
   destroy(): void;
@@ -47,10 +66,12 @@ export function mountHoverTooltip(pageTranslator: TranslatedNodesSource): HoverT
 
   let showTimer: ReturnType<typeof setTimeout> | null = null;
   let currentTarget: EventTarget | null = null;
+  // Read once per target: getComputedStyle on every mousemove would be wasted work.
+  let currentLineHeight = 20;
 
   // Rendered once; props are getters over a signal, so the per-mousemove
   // `setState` updates the existing node instead of rebuilding the root.
-  const [state, setState] = createSignal({ visible: false, text: '', top: 0, left: 0 });
+  const [state, setState] = createSignal({ visible: false, text: '', placement: HIDDEN_PLACEMENT });
   const dispose = render(
     () =>
       HoverTooltip({
@@ -60,41 +81,39 @@ export function mountHoverTooltip(pageTranslator: TranslatedNodesSource): HoverT
         get text() {
           return state().text;
         },
-        get top() {
-          return state().top;
-        },
-        get left() {
-          return state().left;
+        get placement() {
+          return state().placement;
         },
       }),
     mountPoint,
   );
 
-  function renderState(visible: boolean, text: string, top: number, left: number): void {
-    setState({ visible, text, top, left });
+  function showAt(text: string, x: number, y: number): void {
+    setState({ visible: true, text, placement: placeHoverTooltip({ x, y }, currentLineHeight, viewportSize()) });
   }
 
   function hide(): void {
     if (showTimer) clearTimeout(showTimer);
     showTimer = null;
     currentTarget = null;
-    renderState(false, '', 0, 0);
+    if (state().visible) setState({ visible: false, text: '', placement: HIDDEN_PLACEMENT });
   }
 
   function onMouseOver(e: MouseEvent): void {
     const target = resolveEventTarget(e);
     if (!(target instanceof Element) || target === currentTarget) return;
-    currentTarget = target;
-    if (showTimer) clearTimeout(showTimer);
-
     const original = pageTranslator.findOriginalTextForElement(target);
+    // A target with no original never keeps the previous target's tooltip up.
+    hide();
+    currentTarget = target;
     if (!original) return;
+    currentLineHeight = lineHeightOf(target);
 
     showTimer = setTimeout(() => {
       // Cleared on fire so onMouseMove's `!showTimer` check can start
       // following the cursor.
       showTimer = null;
-      renderState(true, original, e.clientY + 16, e.clientX + 8);
+      showAt(original, e.clientX, e.clientY);
     }, SHOW_DELAY_MS);
   }
 
@@ -106,7 +125,7 @@ export function mountHoverTooltip(pageTranslator: TranslatedNodesSource): HoverT
     if (currentTarget && !showTimer) {
       // Visible for the current target: follow the cursor.
       const original = pageTranslator.findOriginalTextForElement(currentTarget as Element);
-      if (original) renderState(true, original, e.clientY + 16, e.clientX + 8);
+      if (original) showAt(original, e.clientX, e.clientY);
     }
   }
 

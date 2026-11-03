@@ -249,6 +249,84 @@ describe('mountHoverTooltip', () => {
     controller.destroy();
   });
 
+  /** The tooltip's box in viewport coordinates, from whichever edges it is anchored by. */
+  function tooltipBox(): { top: number | null; bottom: number | null; left: number; right: number } {
+    const el = tooltipShadowRoot()?.querySelector('.tooltip') as HTMLElement;
+    const vw = window.visualViewport?.width || window.innerWidth;
+    const vh = window.visualViewport?.height || window.innerHeight;
+    const maxWidth = Number.parseFloat(el.style.maxWidth);
+    const left = el.style.left ? Number.parseFloat(el.style.left) : vw - Number.parseFloat(el.style.right) - maxWidth;
+    return {
+      top: el.style.top ? Number.parseFloat(el.style.top) : null,
+      bottom: el.style.bottom ? vh - Number.parseFloat(el.style.bottom) : null,
+      left,
+      right: left + maxWidth,
+    };
+  }
+
+  it('sits above the hovered line when there is room, instead of covering the next line', () => {
+    const p = document.getElementById('target') as HTMLParagraphElement;
+    p.style.lineHeight = '20px';
+    const textNode = p.firstChild as Text;
+    const controller = mountHoverTooltip(makeSource([{ node: textNode, original: 'Hello' }]));
+
+    dispatchMouseEvent('mouseover', p, { clientX: 100, clientY: 300 });
+    vi.advanceTimersByTime(350);
+
+    const box = tooltipBox();
+    expect(box.top).toBeNull();
+    // Its bottom edge is clear of the line the cursor is on (at most one line tall above the cursor).
+    expect(box.bottom).not.toBeNull();
+    expect(box.bottom as number).toBeLessThanOrEqual(300 - 20);
+    controller.destroy();
+  });
+
+  it('goes below the hovered line when the line is at the very top of the screen', () => {
+    const p = document.getElementById('target') as HTMLParagraphElement;
+    p.style.lineHeight = '20px';
+    const textNode = p.firstChild as Text;
+    const controller = mountHoverTooltip(makeSource([{ node: textNode, original: 'Hello' }]));
+
+    dispatchMouseEvent('mouseover', p, { clientX: 100, clientY: 20 });
+    vi.advanceTimersByTime(350);
+
+    const box = tooltipBox();
+    expect(box.bottom).toBeNull();
+    expect(box.top as number).toBeGreaterThanOrEqual(20 + 20);
+    controller.destroy();
+  });
+
+  it('stays inside the viewport when the cursor is at the right edge', () => {
+    const vw = window.visualViewport?.width || window.innerWidth;
+    const p = document.getElementById('target') as HTMLParagraphElement;
+    const textNode = p.firstChild as Text;
+    const controller = mountHoverTooltip(makeSource([{ node: textNode, original: 'Hello' }]));
+
+    dispatchMouseEvent('mouseover', p, { clientX: vw - 4, clientY: 300 });
+    vi.advanceTimersByTime(350);
+
+    const box = tooltipBox();
+    expect(box.left).toBeGreaterThanOrEqual(8);
+    expect(box.right).toBeLessThanOrEqual(vw - 8);
+    controller.destroy();
+  });
+
+  it('hides when the pointer moves onto an element with no original text, even without a mouseout for the old one', () => {
+    document.body.innerHTML = '<p id="target">Hola</p><p id="plain">Plain</p>';
+    const p = document.getElementById('target') as HTMLParagraphElement;
+    const plain = document.getElementById('plain') as HTMLParagraphElement;
+    const textNode = p.firstChild as Text;
+    const controller = mountHoverTooltip(makeSource([{ node: textNode, original: 'Hello' }]));
+
+    dispatchMouseEvent('mouseover', p);
+    vi.advanceTimersByTime(350);
+    expect(tooltipShadowRoot()?.querySelector('.tooltip')).not.toBeNull();
+
+    dispatchMouseEvent('mouseover', plain);
+    expect(tooltipShadowRoot()?.querySelector('.tooltip')).toBeNull();
+    controller.destroy();
+  });
+
   it('destroy() removes the host and listeners', () => {
     const source: TranslatedNodesSource = makeSource([]);
     const controller = mountHoverTooltip(source);

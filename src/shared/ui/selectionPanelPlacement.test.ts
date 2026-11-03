@@ -45,8 +45,27 @@ describe('placeSelectionPanel', () => {
 });
 
 describe('placeSelectionTrigger', () => {
-  it('sits just below the selection', () => {
-    expect(placeSelectionTrigger({ top: 100, bottom: 120, left: 50 }, VIEWPORT)).toEqual({ top: 126, left: 50 });
+  it('sits just above the selected line, so it never covers the next line', () => {
+    expect(placeSelectionTrigger({ top: 100, bottom: 120, left: 50 }, VIEWPORT)).toEqual({
+      top: 100 - 6 - SELECTION_TRIGGER_SIZE,
+      left: 50,
+    });
+  });
+
+  it('goes below the selection when there is no room above it (a selection at the top of the screen)', () => {
+    expect(placeSelectionTrigger({ top: 20, bottom: 40, left: 50 }, VIEWPORT)).toEqual({ top: 46, left: 50 });
+  });
+
+  it("goes below the selection on touch screens, clear of iOS's own Copy menu above it", () => {
+    expect(placeSelectionTrigger({ top: 100, bottom: 120, left: 50 }, VIEWPORT, { preferBelow: true })).toEqual({
+      top: 126,
+      left: 50,
+    });
+  });
+
+  it('on touch screens still goes above when there is no room below', () => {
+    const t = placeSelectionTrigger({ top: 760, bottom: 790, left: 50 }, VIEWPORT, { preferBelow: true });
+    expect(t.top).toBe(760 - 6 - SELECTION_TRIGGER_SIZE);
   });
 
   it('stays on screen for a selection at the very bottom or right edge', () => {

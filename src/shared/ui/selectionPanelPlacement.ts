@@ -57,9 +57,23 @@ export function placeSelectionPanel(anchor: SelectionAnchor, viewport: Viewport)
   };
 }
 
-export function placeSelectionTrigger(anchor: SelectionAnchor, viewport: Viewport): { top: number; left: number } {
+/**
+ * Above the selected line when it fits, so it never covers the next line; below
+ * otherwise. On touch screens it prefers below, because iOS draws its own
+ * Copy / Look Up menu above the selection, on top of any page content.
+ */
+export function placeSelectionTrigger(
+  anchor: SelectionAnchor,
+  viewport: Viewport,
+  options: { preferBelow?: boolean } = {},
+): { top: number; left: number } {
+  const above = anchor.top - GAP - SELECTION_TRIGGER_SIZE;
+  const below = anchor.bottom + GAP;
+  const belowFits = below + SELECTION_TRIGGER_SIZE <= viewport.height - EDGE_MARGIN;
+  const aboveFits = above >= EDGE_MARGIN;
+  const preferred = options.preferBelow ? (belowFits || !aboveFits ? below : above) : aboveFits ? above : below;
   return {
-    top: clamp(anchor.bottom + GAP, EDGE_MARGIN, viewport.height - SELECTION_TRIGGER_SIZE - EDGE_MARGIN),
+    top: clamp(preferred, EDGE_MARGIN, viewport.height - SELECTION_TRIGGER_SIZE - EDGE_MARGIN),
     left: clamp(anchor.left, EDGE_MARGIN, viewport.width - SELECTION_TRIGGER_SIZE - EDGE_MARGIN),
   };
 }
