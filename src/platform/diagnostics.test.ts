@@ -1,6 +1,7 @@
 import { fakeBrowser } from '@webext-core/fake-browser';
 import { IDBFactory } from 'fake-indexeddb';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { type DiagnosticsReport, describeDiagnostics, formatCacheSize } from './diagnostics';
 
 // diagnostics.ts imports the module-level `configStore` singleton
 // directly (not injected) — like configStore.test.ts, each test needs a
@@ -39,11 +40,11 @@ describe('runDiagnostics', () => {
     expect(report.hasI18nDetectLanguage).toBe(true);
   });
 
-  it('reports true for scripting API and IndexedDB availability in this test environment', async () => {
+  it('reports IndexedDB availability, and does not check the scripting permission the extension never asks for', async () => {
     const runDiagnostics = await freshRunDiagnostics();
     const report = await runDiagnostics();
-    expect(report.hasScriptingApi).toBe(true);
     expect(report.hasIndexedDb).toBe(true);
+    expect(report).not.toHaveProperty('hasScriptingApi');
   });
 
   it('includes the effective config snapshot with API key fields redacted', async () => {
@@ -59,5 +60,51 @@ describe('runDiagnostics', () => {
     const report = await runDiagnostics();
     expect(report.effectiveConfig.pageTranslatorProvider).not.toBe('(redacted)');
     expect(report.effectiveConfig.libreTranslateBaseUrl).not.toBe('(redacted)');
+  });
+});
+
+describe('formatCacheSize', () => {
+  it('says "empty" for an empty cache', () => {
+    expect(formatCacheSize(0)).toBe('Empty');
+  });
+
+  it('shows small sizes in KB, never raw bytes', () => {
+    expect(formatCacheSize(300)).toBe('0.3 KB');
+    expect(formatCacheSize(1536)).toBe('1.5 KB');
+    expect(formatCacheSize(200 * 1024)).toBe('200 KB');
+  });
+
+  it('shows large sizes in MB', () => {
+    expect(formatCacheSize(5 * 1024 * 1024)).toBe('5.0 MB');
+    expect(formatCacheSize(Math.round(12.34 * 1024 * 1024))).toBe('12.3 MB');
+  });
+
+  it('says when the size could not be read', () => {
+    expect(formatCacheSize(null)).toBe('Unavailable');
+  });
+});
+
+describe('describeDiagnostics', () => {
+  const report: DiagnosticsReport = {
+    storageRoundTripOk: true,
+    cacheSizeBytes: 2048,
+    hasI18nDetectLanguage: true,
+    hasIndexedDb: false,
+    effectiveConfig: {},
+  };
+
+  it('describes each check in plain words', () => {
+    expect(describeDiagnostics(report)).toEqual([
+      { label: 'Saving settings', value: 'Working', status: 'ok' },
+      { label: 'Language detection', value: 'Available', status: 'ok' },
+      { label: 'Translation cache storage', value: 'Not available', status: 'fail' },
+      { label: 'Translation cache size', value: '2.0 KB', status: 'info' },
+    ]);
+  });
+
+  it('uses no developer API names', () => {
+    const text = JSON.stringify(describeDiagnostics({ ...report, storageRoundTripOk: false }));
+    expect(text).not.toMatch(/i18n|detectLanguage|scripting|IndexedDB|bytes|round trip/i);
+    expect(text).toContain('Not working');
   });
 });

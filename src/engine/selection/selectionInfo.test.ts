@@ -113,6 +113,20 @@ describe('isValidSelectionText', () => {
     expect(isValidSelectionText('こんにちは')).toBe(true);
   });
 
+  it('accepts a single hanzi, kana, hangul or other non-Latin letter — one character is a whole word in Chinese', () => {
+    expect(isValidSelectionText('字')).toBe(true);
+    expect(isValidSelectionText('あ')).toBe(true);
+    expect(isValidSelectionText('한')).toBe(true);
+    expect(isValidSelectionText('я')).toBe(true);
+  });
+
+  it('still rejects a single Latin letter or a single non-letter (CJK punctuation included)', () => {
+    expect(isValidSelectionText('é')).toBe(false);
+    expect(isValidSelectionText('x')).toBe(false);
+    expect(isValidSelectionText('。')).toBe(false);
+    expect(isValidSelectionText('7')).toBe(false);
+  });
+
   it('accepts text mixing letters with digits/punctuation', () => {
     expect(isValidSelectionText('Chapter 5')).toBe(true);
   });

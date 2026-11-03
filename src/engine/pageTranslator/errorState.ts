@@ -126,3 +126,14 @@ export function describeTranslateError(error: TranslateError): string {
       return "The chosen translation service isn't set up yet. Add its API key in Settings, or switch to Google (free).";
   }
 }
+
+/**
+ * The wording for a translation that runs once (selected text, the Settings
+ * test): the same plain message, without promising an automatic retry.
+ */
+export function describeOneOffTranslateError(error: TranslateError): string {
+  if (error.kind === 'suspicious' || error.kind === 'untranslated') {
+    return 'The translation service sent this text back untranslated. Try again; if it keeps happening, switch provider in Settings.';
+  }
+  return describeTranslateError(error).replace(/\s*(?:—|;)\s*(?:retrying|Prism will retry) automatically\.$/, '.');
+}

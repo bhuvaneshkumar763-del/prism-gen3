@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 import { render } from 'solid-js/web';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { configStore } from '../../src/platform/configStore';
-import { LONG_PRESS_MS } from '../../src/shared/bubble/bubblePosition';
+import { BALL_SIZE, LONG_PRESS_MS } from '../../src/shared/bubble/bubblePosition';
 import { trusted } from '../../tests/trustedEvent';
 import { BUBBLE_STYLES } from './bubbleStyles';
 import { FloatingBubble } from './FloatingBubble';
@@ -25,6 +25,7 @@ describe('FloatingBubble', () => {
     vi.unstubAllGlobals();
     dispose?.();
     container?.remove();
+    document.getElementById('prism-bubble-undo-host')?.remove();
     container = undefined;
     dispose = undefined;
   });
@@ -765,6 +766,313 @@ describe('FloatingBubble', () => {
       );
 
       expect(onTranslate).not.toHaveBeenCalled();
+    });
+  });
+  describe('touch use on a phone', () => {
+    function press(ball: HTMLElement, type: string) {
+      ball.dispatchEvent(
+        trusted(
+          new PointerEvent(type, { bubbles: true, composed: true, pointerId: 1, button: 0, clientX: 10, clientY: 10 }),
+        ),
+      );
+    }
+    function pinByLongPress(el: HTMLElement) {
+      const ball = el.querySelector('.ball') as HTMLButtonElement;
+      press(ball, 'pointerdown');
+      vi.advanceTimersByTime(LONG_PRESS_MS + 1);
+      press(ball, 'pointerup');
+      return el.querySelector('.panel') as HTMLElement;
+    }
+    /** What a finger tap on the page sends, in order. */
+    function tapPage(target: HTMLElement) {
+      const opts = { bubbles: true, composed: true, cancelable: true, pointerId: 2, button: 0 };
+      target.dispatchEvent(trusted(new PointerEvent('pointerdown', opts)));
+      target.dispatchEvent(trusted(new PointerEvent('pointerup', opts)));
+      target.dispatchEvent(trusted(new MouseEvent('mousedown', opts)));
+      target.dispatchEvent(trusted(new MouseEvent('mouseup', opts)));
+      target.dispatchEvent(trusted(new MouseEvent('click', opts)));
+    }
+    function pageListener(types: string[]) {
+      const seen: string[] = [];
+      const record = (e: Event) => seen.push(e.type);
+      for (const type of types) document.body.addEventListener(type, record);
+      return {
+        seen,
+        remove: () => {
+          for (const type of types) document.body.removeEventListener(type, record);
+        },
+      };
+    }
+
+    it('a tap outside that closes the pinned panel does not reach the page, so a reader site does not also turn the page', () => {
+      vi.useFakeTimers();
+      const { el } = mount();
+      const panel = pinByLongPress(el);
+      expect(panel.classList.contains('pinned')).toBe(true);
+      const outside = document.createElement('p');
+      document.body.append(outside);
+      const page = pageListener(['pointerdown', 'pointerup', 'mousedown', 'mouseup', 'click']);
+
+      tapPage(outside);
+
+      expect(panel.classList.contains('pinned')).toBe(false);
+      expect(page.seen).toEqual([]);
+      page.remove();
+      outside.remove();
+    });
+
+    it('only that first tap is swallowed: the next outside tap reaches the page', () => {
+      vi.useFakeTimers();
+      const { el } = mount();
+      pinByLongPress(el);
+      const outside = document.createElement('p');
+      document.body.append(outside);
+      const page = pageListener(['click']);
+
+      tapPage(outside);
+      tapPage(outside);
+
+      expect(page.seen).toEqual(['click']);
+      page.remove();
+      outside.remove();
+    });
+
+    it('a closing gesture that never becomes a click (a scroll) stops swallowing once it ends', () => {
+      vi.useFakeTimers();
+      const { el } = mount();
+      pinByLongPress(el);
+      const outside = document.createElement('p');
+      document.body.append(outside);
+      const opts = { bubbles: true, composed: true, pointerId: 2, button: 0 };
+      outside.dispatchEvent(trusted(new PointerEvent('pointerdown', opts)));
+      outside.dispatchEvent(trusted(new PointerEvent('pointercancel', opts)));
+      vi.advanceTimersByTime(2000);
+      const page = pageListener(['click']);
+
+      outside.dispatchEvent(trusted(new MouseEvent('click', { bubbles: true, cancelable: true })));
+
+      expect(page.seen).toEqual(['click']);
+      page.remove();
+      outside.remove();
+    });
+
+    it('an outside tap with the panel closed reaches the page untouched', () => {
+      mount();
+      const outside = document.createElement('p');
+      document.body.append(outside);
+      const page = pageListener(['pointerdown', 'click']);
+
+      tapPage(outside);
+
+      expect(page.seen).toEqual(['pointerdown', 'click']);
+      page.remove();
+      outside.remove();
+    });
+
+    it("a tap on the ball doesn't reach the page as a click either", () => {
+      const { el } = mount();
+      const page = pageListener(['click']);
+
+      (el.querySelector('.ball') as HTMLElement).dispatchEvent(
+        trusted(new MouseEvent('click', { bubbles: true, composed: true })),
+      );
+
+      expect(page.seen).toEqual([]);
+      page.remove();
+    });
+
+    function undoToast(): ShadowRoot | null {
+      return document.getElementById('prism-bubble-undo-host')?.shadowRoot ?? null;
+    }
+    function undoButton(): HTMLButtonElement {
+      const button = undoToast()?.querySelector<HTMLButtonElement>('button.undo');
+      if (!button) throw new Error('no Undo button');
+      return button;
+    }
+    function clickHide(el: HTMLElement) {
+      const hideChip = Array.from(el.querySelectorAll('.chip')).find((chip) => chip.textContent?.includes('Hide'));
+      (hideChip as HTMLElement).dispatchEvent(trusted(new MouseEvent('click', { bubbles: true })));
+    }
+
+    it('Hide shows an undo toast, and Undo puts the setting back', async () => {
+      await configStore.set('bubbleByHost', { 'other.org': false });
+      const { el } = mount();
+
+      clickHide(el);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(configStore.get('bubbleByHost')).toEqual({ 'other.org': false, 'example.com': false });
+      const toast = undoToast();
+      expect(toast?.querySelector('.toast')?.textContent).toContain('Bubble hidden on this site');
+      const undo = undoButton();
+      expect(undo.textContent).toBe('Undo');
+
+      undo.dispatchEvent(trusted(new MouseEvent('click', { bubbles: true })));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(configStore.get('bubbleByHost')).toEqual({ 'other.org': false });
+      expect(undoToast()).toBeNull();
+    });
+
+    it("Undo restores a site's earlier 'show' override rather than dropping it", async () => {
+      await configStore.set('bubbleByHost', { 'example.com': true });
+      const { el } = mount();
+
+      clickHide(el);
+      undoButton().dispatchEvent(trusted(new MouseEvent('click', { bubbles: true })));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(configStore.get('bubbleByHost')).toEqual({ 'example.com': true });
+    });
+
+    it('the undo toast goes away by itself after about 5 seconds', () => {
+      vi.useFakeTimers();
+      const { el } = mount();
+      clickHide(el);
+      expect(undoToast()).not.toBeNull();
+
+      vi.advanceTimersByTime(4900);
+      expect(undoToast()).not.toBeNull();
+      vi.advanceTimersByTime(200);
+      expect(undoToast()).toBeNull();
+    });
+
+    it('a synthetic click on Undo does nothing', async () => {
+      const { el } = mount();
+      clickHide(el);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      undoButton().dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(configStore.get('bubbleByHost')).toEqual({ 'example.com': false });
+    });
+
+    it('the ball is at least 44×44', () => {
+      const { el } = mount();
+      const wrap = el.querySelector('.wrap') as HTMLElement;
+      expect(wrap.style.width).toBe(`${BALL_SIZE}px`);
+      expect(wrap.style.height).toBe(`${BALL_SIZE}px`);
+      expect(BUBBLE_STYLES).toMatch(/\.wrap \{[^}]*width: 44px; height: 44px;/);
+    });
+
+    it('fades while the page scrolls, and comes back when the ball is touched', () => {
+      const { el } = mount();
+      const wrap = el.querySelector('.wrap') as HTMLElement;
+      expect(wrap.classList.contains('dim')).toBe(false);
+
+      document.body.dispatchEvent(new Event('touchmove', { bubbles: true, composed: true }));
+      expect(wrap.classList.contains('dim')).toBe(true);
+
+      press(el.querySelector('.ball') as HTMLElement, 'pointerdown');
+      expect(wrap.classList.contains('dim')).toBe(false);
+      expect(BUBBLE_STYLES).toMatch(/\.wrap\.dim \.ball \{ opacity: \.2/);
+    });
+
+    it('does not fade for a scroll the user did not make (translated text reflowing the page), or for dragging the ball', () => {
+      const { el } = mount();
+      const wrap = el.querySelector('.wrap') as HTMLElement;
+
+      document.dispatchEvent(new Event('scroll'));
+      (el.querySelector('.ball') as HTMLElement).dispatchEvent(
+        new Event('touchmove', { bubbles: true, composed: true }),
+      );
+
+      expect(wrap.classList.contains('dim')).toBe(false);
+    });
+
+    it('a long-press does not start an iOS text selection or callout on the ball', () => {
+      const ballRule = BUBBLE_STYLES.match(/\n {2}\.ball \{([^}]*)\}/)?.[1] ?? '';
+      expect(ballRule).toContain('-webkit-touch-callout: none');
+      expect(ballRule).toContain('-webkit-user-select: none');
+      expect(ballRule).toContain('user-select: none');
+    });
+
+    it('a tap while busy pulses the ball instead of doing nothing visible', () => {
+      vi.useFakeTimers();
+      const { el } = mount({
+        state: {
+          pageState: 'original',
+          busy: true,
+          errorMessage: null,
+          errorKind: null,
+          progress: null,
+          originalLanguage: 'und',
+        },
+      });
+      const ball = el.querySelector('.ball') as HTMLElement;
+
+      press(ball, 'pointerdown');
+      press(ball, 'pointerup');
+
+      expect(ball.classList.contains('nudge')).toBe(true);
+      vi.advanceTimersByTime(1000);
+      expect(ball.classList.contains('nudge')).toBe(false);
+    });
+
+    it('a tap when not busy does not pulse', () => {
+      const { el } = mount();
+      const ball = el.querySelector('.ball') as HTMLElement;
+      press(ball, 'pointerdown');
+      press(ball, 'pointerup');
+      expect(ball.classList.contains('nudge')).toBe(false);
+    });
+
+    it('stays at the visible right edge, at its normal on-screen size, while the page is pinch-zoomed', async () => {
+      await configStore.set('bubblePosition', { side: 'right', yFrac: 0.5 });
+      const pinchZoomed = {
+        width: 187.5,
+        height: 350,
+        offsetLeft: 120,
+        offsetTop: 260,
+        scale: 2,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      };
+      const real = Object.getOwnPropertyDescriptor(window, 'visualViewport');
+      Object.defineProperty(window, 'visualViewport', { configurable: true, get: () => pinchZoomed });
+      onTestFinished(() => {
+        if (real) Object.defineProperty(window, 'visualViewport', real);
+        else delete (window as { visualViewport?: unknown }).visualViewport;
+      });
+      const { el } = mount();
+      const wrap = el.querySelector('.wrap') as HTMLElement;
+      const size = BALL_SIZE / 2;
+
+      expect(wrap.style.width).toBe(`${size}px`);
+      // Docked right in the visible area, then moved to where that area sits on the page.
+      expect(Number.parseFloat(wrap.style.left)).toBeCloseTo(120 + 187.5 - size - 6);
+      const top = Number.parseFloat(wrap.style.top);
+      expect(top).toBeGreaterThanOrEqual(260);
+      expect(top + size).toBeLessThanOrEqual(260 + 350);
+      expect(wrap.classList.contains('right')).toBe(true);
+    });
+
+    it('white text on the translated green meets 4.5:1', () => {
+      const rule = BUBBLE_STYLES.match(/\.wrap\.translated \{([^}]*)\}/)?.[1] ?? '';
+      const colors = [...rule.matchAll(/#([0-9a-f]{6})/gi)].map((m) => m[1]);
+      expect(colors.length).toBe(2);
+      const luminance = (hex: string) => {
+        const channel = (i: number) => {
+          const c = Number.parseInt(hex.slice(i, i + 2), 16) / 255;
+          return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+        };
+        return 0.2126 * channel(0) + 0.7152 * channel(2) + 0.0722 * channel(4);
+      };
+      for (const hex of colors) expect(1.05 / (luminance(hex ?? '') + 0.05)).toBeGreaterThanOrEqual(4.5);
+    });
+
+    it('white text on the default accent colours meets 4.5:1', () => {
+      const luminance = (hex: string) => {
+        const channel = (i: number) => {
+          const c = Number.parseInt(hex.slice(i, i + 2), 16) / 255;
+          return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+        };
+        return 0.2126 * channel(0) + 0.7152 * channel(2) + 0.0722 * channel(4);
+      };
+      for (const name of ['accent', 'accent2']) {
+        const hex = BUBBLE_STYLES.match(new RegExp(`--${name}: #([0-9a-f]{6})`, 'i'))?.[1] ?? '';
+        expect(1.05 / (luminance(hex) + 0.05), name).toBeGreaterThanOrEqual(4.5);
+      }
     });
   });
 });

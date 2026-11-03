@@ -2,6 +2,16 @@
 import { render } from 'solid-js/web';
 import { afterEach, describe, expect, it } from 'vitest';
 import { HoverTooltip } from './HoverTooltip';
+import type { HoverTooltipPlacement } from './hoverTooltipPlacement';
+
+const PLACEMENT: HoverTooltipPlacement = {
+  top: null,
+  bottom: 42,
+  left: 17,
+  right: null,
+  maxWidth: 320,
+  maxHeight: 200,
+};
 
 describe('HoverTooltip', () => {
   let container: HTMLDivElement | undefined;
@@ -22,15 +32,19 @@ describe('HoverTooltip', () => {
   }
 
   it('renders nothing when not visible', () => {
-    const el = mount({ visible: false, text: 'Hello', top: 10, left: 10 });
+    const el = mount({ visible: false, text: 'Hello', placement: PLACEMENT });
     expect(el.querySelector('.tooltip')).toBeNull();
   });
 
   it('renders the text and position when visible', () => {
-    const el = mount({ visible: true, text: 'Hello world', top: 42, left: 17 });
+    const el = mount({ visible: true, text: 'Hello world', placement: PLACEMENT });
     const tooltip = el.querySelector('.tooltip') as HTMLDivElement;
     expect(tooltip.textContent).toBe('Hello world');
-    expect(tooltip.style.top).toBe('42px');
+    expect(tooltip.style.bottom).toBe('42px');
     expect(tooltip.style.left).toBe('17px');
+    expect(tooltip.style.top).toBe('');
+    expect(tooltip.style.right).toBe('');
+    expect(tooltip.style.maxWidth).toBe('320px');
+    expect(tooltip.style.maxHeight).toBe('200px');
   });
 });

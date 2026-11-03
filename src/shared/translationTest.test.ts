@@ -38,9 +38,43 @@ describe('describeTranslationTest', () => {
     expect(describeTranslationTest(sample, ok(`  ${sample.text}  `), 180).ok).toBe(false);
   });
 
-  it("passes the provider's own error through rather than a generic one", () => {
-    const result = describeTranslationTest(sample, err({ kind: 'http', message: 'API key not valid' }), 90);
+  it('explains a failure in plain words, not the raw diagnostic text', () => {
+    const result = describeTranslationTest(
+      sample,
+      err({ kind: 'timeout', message: '[google] timed out after 5000ms' }),
+      5000,
+    );
+    expect(result.ok).toBe(false);
+    expect(result.message).not.toContain('[google]');
+    expect(result.message).not.toContain('5000ms');
+    expect(result.message).toMatch(/taking too long/i);
+  });
+
+  it('does not promise an automatic retry, since the test runs once', () => {
+    const timeout = describeTranslationTest(sample, err({ kind: 'timeout', message: 'x' }), 5000);
+    const limited = describeTranslationTest(sample, err({ kind: 'rateLimited', message: 'x', status: 429 }), 5000);
+    expect(timeout.message).not.toMatch(/retry/i);
+    expect(limited.message).not.toMatch(/retry/i);
+  });
+
+  it("keeps the service's own reason for a rejection", () => {
+    const result = describeTranslationTest(
+      sample,
+      err({ kind: 'http', status: 400, reason: 'API key not valid', message: '[googleCloudTranslate] HTTP 400' }),
+      90,
+    );
     expect(result.ok).toBe(false);
     expect(result.message).toContain('API key not valid');
+    expect(result.message).not.toContain('[googleCloudTranslate]');
+  });
+
+  it('tells you what to do when the provider is not set up', () => {
+    const result = describeTranslationTest(
+      sample,
+      err({ kind: 'notConfigured', message: '[googleCloudTranslate] not configured or unavailable' }),
+      5,
+    );
+    expect(result.message).not.toContain('[googleCloudTranslate]');
+    expect(result.message).toMatch(/API key/);
   });
 });

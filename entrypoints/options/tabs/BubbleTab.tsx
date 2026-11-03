@@ -1,4 +1,4 @@
-import { For, Show } from 'solid-js';
+import { createSignal, For, onCleanup, Show } from 'solid-js';
 import { clearBubbleOverrideForHost } from '../../../src/shared/config/siteOverrides';
 import type { SettingsTabProps } from './types';
 
@@ -6,6 +6,19 @@ import type { SettingsTabProps } from './types';
 export function BubbleTab(props: SettingsTabProps) {
   function bubbleHostEntries(): Array<[string, boolean]> {
     return Object.entries(props.settings.bubbleByHost ?? {});
+  }
+
+  const [positionReset, setPositionReset] = createSignal(false);
+  let positionResetTimer: ReturnType<typeof setTimeout> | undefined;
+  onCleanup(() => clearTimeout(positionResetTimer));
+
+  async function resetPosition(): Promise<void> {
+    await props.setField('bubblePosition', null);
+    // setField rolls back and reports a failed save itself; confirm only a saved reset.
+    if (props.settings.bubblePosition !== null) return;
+    setPositionReset(true);
+    clearTimeout(positionResetTimer);
+    positionResetTimer = setTimeout(() => setPositionReset(false), 2500);
   }
 
   async function removeBubbleOverride(host: string): Promise<void> {
@@ -24,9 +37,12 @@ export function BubbleTab(props: SettingsTabProps) {
         <span>Show the floating translate bubble by default</span>
       </label>
       <div class="bubbleActions">
-        <button type="button" class="secondary" onClick={() => void props.setField('bubblePosition', null)}>
+        <button type="button" class="secondary" onClick={() => void resetPosition()}>
           Reset remembered position
         </button>
+        <span class="saved inline" role="status">
+          {positionReset() ? 'Bubble position reset' : ''}
+        </span>
       </div>
 
       <p class="hint">Per-site overrides (set from the popup or the bubble's Hide chip):</p>
@@ -42,6 +58,7 @@ export function BubbleTab(props: SettingsTabProps) {
                   type="button"
                   class="removeBtn"
                   aria-label={`Remove override for ${host}`}
+                  title={`Remove override for ${host}`}
                   onClick={() => void removeBubbleOverride(host)}
                 >
                   ×

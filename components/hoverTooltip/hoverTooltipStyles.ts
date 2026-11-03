@@ -1,3 +1,8 @@
+/*
+ * `.tooltip` gets its edges and max-width/max-height inline from
+ * hoverTooltipPlacement.ts, sized to the room on screen; `overflow: hidden`
+ * keeps a very long original inside that box.
+ */
 export const HOVER_TOOLTIP_STYLES = `
   :host {
     all: initial !important;
@@ -5,7 +10,9 @@ export const HOVER_TOOLTIP_STYLES = `
   .tooltip {
     position: fixed;
     z-index: 2147483647;
-    max-width: 320px;
+    box-sizing: border-box;
+    overflow: hidden;
+    overflow-wrap: anywhere;
     padding: 6px 10px;
     border-radius: 6px;
     background: #1e1b4b;

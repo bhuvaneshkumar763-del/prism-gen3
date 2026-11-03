@@ -15,6 +15,7 @@ import {
   translatePiecesWithCache,
   translateTextWithProvider,
 } from '../src/platform/pieceTranslation';
+import { type OpenExtensionTab, planOpenSettings } from '../src/shared/settingsTab';
 import { TOGGLE_TRANSLATE_COMMAND } from '../src/shared/shortcut';
 
 /**
@@ -200,14 +201,7 @@ export default defineBackground(() => {
   });
 
   onTrustedMessage('openOptionsPage', (message) => {
-    const section = message.data?.section;
-    // openOptionsPage() can't carry a URL fragment, so a specific section
-    // opens as a tab. Restricted to a plain word: it only ever names a tab.
-    if (section && /^[a-z]+$/.test(section)) {
-      void browser.tabs.create({ url: `${browser.runtime.getURL('/options.html')}#${section}` });
-    } else {
-      void browser.runtime.openOptionsPage();
-    }
+    void openSettings(message.data?.section);
   });
 
   browser.tabs.onRemoved.addListener((tabId) => {
@@ -244,3 +238,48 @@ export default defineBackground(() => {
     }
   });
 });
+
+/**
+ * The extension's own pages open in tabs, or null when this browser can't
+ * list them. Without the `tabs` permission a URL query sees nothing in Chrome,
+ * but `runtime.getContexts` (Chrome 116+) lists them; the query is the
+ * fallback where that's missing, and counts only if it finds something.
+ */
+async function openExtensionTabs(optionsUrl: string): Promise<OpenExtensionTab[] | null> {
+  try {
+    if (typeof browser.runtime.getContexts === 'function') {
+      const contexts = await browser.runtime.getContexts({ contextTypes: ['TAB' as Browser.runtime.ContextType] });
+      return contexts
+        .filter((c) => c.tabId >= 0)
+        .map((c) => ({ tabId: c.tabId, windowId: c.windowId, url: c.documentUrl }));
+    }
+    const tabs = await browser.tabs.query({ url: `${optionsUrl}*` });
+    const found = tabs.flatMap((t) => (t.id === undefined ? [] : [{ tabId: t.id, windowId: t.windowId, url: t.url }]));
+    return found.length > 0 ? found : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Shows Settings (at `section`, if given), reusing an open Settings tab instead of adding another. */
+async function openSettings(section: string | undefined): Promise<void> {
+  const optionsUrl = browser.runtime.getURL('/options.html');
+  const openTabs = await openExtensionTabs(optionsUrl);
+  const plan = planOpenSettings(openTabs ?? [], optionsUrl, section, { canSeeOpenTabs: openTabs !== null });
+  try {
+    if (plan.kind === 'focus') {
+      await browser.tabs.update(plan.tabId, plan.url ? { active: true, url: plan.url } : { active: true });
+      // Phones have no windows API to focus with; the tab switch is enough there.
+      if (plan.windowId !== undefined) await browser.windows?.update(plan.windowId, { focused: true }).catch(() => {});
+      return;
+    }
+    if (plan.kind === 'create') {
+      await browser.tabs.create({ url: plan.url });
+      return;
+    }
+    await browser.runtime.openOptionsPage();
+  } catch {
+    // The Settings tab closed in between: open a fresh one.
+    if (plan.kind === 'focus') await browser.tabs.create({ url: plan.url ?? optionsUrl }).catch(() => {});
+  }
+}

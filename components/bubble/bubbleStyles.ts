@@ -17,6 +17,14 @@
  * - `.chip.on`: tint follows `--accent`; the rgba line is the fallback for
  *   engines without color-mix().
  * - `.sellbl`: 10.5px at 70% opacity keeps contrast above WCAG AA's 4.5:1.
+ * - `.wrap.translated`: #15803d → #166534 keeps white text at 5:1 or more
+ *   (the brighter #16a34a was 3.3:1).
+ * - `.wrap` size: 44px is the minimum touch target; FloatingBubble sets the
+ *   inline size (smaller under pinch-zoom, so it stays 44px on screen), and
+ *   the ball and its icons follow it in percent.
+ * - `.wrap.dim`: set while the page scrolls, so the ball stops hiding the text
+ *   being read; hover and focus still raise it to full opacity.
+ * - `.ball.nudge`: the pulse for a tap while busy.
  */
 export const BUBBLE_STYLES = `
   * { box-sizing: border-box; margin: 0; padding: 0;
@@ -24,39 +32,45 @@ export const BUBBLE_STYLES = `
 
   :host { all: initial !important; }
 
-  .wrap { position: fixed; width: 40px; height: 40px;
-          --accent: #6366f1; --accent2: #4f46e5; z-index: 2147483647; }
-  .wrap.translated { --accent: #16a34a; --accent2: #15803d; }
+  .wrap { position: fixed; width: 44px; height: 44px;
+          --accent: #4f46e5; --accent2: #4338ca; z-index: 2147483647; }
+  .wrap.translated { --accent: #15803d; --accent2: #166534; }
   .wrap.error { --accent: #dc2626; --accent2: #b91c1c; }
 
   .ball {
     position: absolute; inset: 0;
-    width: 40px; height: 40px; border-radius: 50%;
+    width: 100%; height: 100%; border-radius: 50%;
     display: flex; align-items: center; justify-content: center;
-    cursor: grab; user-select: none;
+    cursor: grab; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
     color: #fff; font-weight: 700; font-size: 14px; letter-spacing: -.5px;
     background: linear-gradient(140deg, var(--accent), var(--accent2));
     box-shadow: 0 4px 14px -3px rgba(0,0,0,.5), 0 0 0 1px rgba(255,255,255,.08) inset;
     opacity: .55; transition: opacity .2s ease, transform .15s ease, box-shadow .2s ease;
     touch-action: none;
   }
+  .wrap.dim .ball { opacity: .2; }
   .wrap:focus-within .ball { opacity: 1; }
   @media (hover: hover) {
     .wrap:hover .ball { opacity: 1; }
   }
   .ball:active { cursor: grabbing; transform: scale(.94); }
-  .ball .ic { width: 21px; height: 21px; pointer-events: none; }
+  .ball .ic { width: 48%; height: 48%; pointer-events: none; }
   .ball .ic-or { display: none; }
   .wrap.translated .ball .ic-tr, .wrap.error .ball .ic-tr { display: none; }
   .wrap.translated .ball .ic-or, .wrap.error .ball .ic-or { display: block; }
   .ball .spinner {
-    display: none; width: 18px; height: 18px; border-radius: 50%;
+    display: none; width: 41%; height: 41%; border-radius: 50%;
     border: 2px solid rgba(255,255,255,.35); border-top-color: #fff;
     animation: prismspin .7s linear infinite;
   }
   .ball.busy .ic { display: none !important; }
   .ball.busy .spinner { display: block; }
   @keyframes prismspin { to { transform: rotate(360deg); } }
+  .ball.nudge { opacity: 1; animation: prismnudge .35s ease; }
+  @keyframes prismnudge {
+    0%, 100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255,255,255,.7); }
+    40% { transform: scale(1.14); box-shadow: 0 0 0 6px rgba(255,255,255,0); }
+  }
 
   .panel {
     position: fixed; left: 0; top: 0;
@@ -164,6 +178,7 @@ export const BUBBLE_STYLES = `
   @media (prefers-reduced-motion: reduce) {
     .ball, .panel { transition: opacity .12s linear !important; }
     .ball .spinner { animation-duration: 1.2s; }
+    .ball.nudge { animation: none; }
     .progressFill { transition: none !important; }
   }
 

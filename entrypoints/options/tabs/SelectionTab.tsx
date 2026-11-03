@@ -1,5 +1,6 @@
 import { For, Show } from 'solid-js';
 import { clearSourceLanguageOverrideForHost } from '../../../src/shared/config/siteOverrides';
+import { languageLabel } from '../../../src/shared/languageLabel';
 import type { SettingsTabProps } from './types';
 
 /** Selection & hover tab: hover tooltip, the selection button, and per-site source-language overrides. */
@@ -62,12 +63,13 @@ export function SelectionTab(props: SettingsTabProps) {
             {([host, lang]) => (
               <li>
                 <span>
-                  {host}: <span class="siteValue">{lang}</span>
+                  {host}: <span class="siteValue">{languageLabel(lang)}</span>
                 </span>
                 <button
                   type="button"
                   class="removeBtn"
                   aria-label={`Remove override for ${host}`}
+                  title={`Remove override for ${host}`}
                   onClick={() => void removeSourceLanguageOverride(host)}
                 >
                   ×

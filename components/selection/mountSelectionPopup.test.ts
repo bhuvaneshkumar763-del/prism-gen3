@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { PieceOutcome, Translator } from '../../src/engine/translator';
 import { ok } from '../../src/shared/result';
+import { TimeoutError } from '../../src/shared/withTimeout';
 import { trusted } from '../../tests/trustedEvent';
 import { mountSelectionPopup } from './mountSelectionPopup';
 import { SelectionPopup } from './SelectionPopup';
@@ -17,6 +18,50 @@ vi.mock('./SelectionPopup', async (importOriginal) => {
 
 /** Comfortably past mountSelectionPopup's keyup debounce. */
 const KEYUP_SETTLE_MS = 250;
+/** Comfortably past mountSelectionPopup's selectionchange settle delay. */
+const SELECTIONCHANGE_SETTLE_MS = 500;
+
+function pointerDown(pointerType: 'mouse' | 'touch' | 'pen'): void {
+  const event = new MouseEvent('pointerdown', { bubbles: true, composed: true });
+  Object.defineProperty(event, 'pointerType', { value: pointerType });
+  document.body.dispatchEvent(trusted(event));
+}
+
+function pointerUp(pointerType: 'mouse' | 'touch' | 'pen'): void {
+  const event = new MouseEvent('pointerup', { bubbles: true, composed: true });
+  Object.defineProperty(event, 'pointerType', { value: pointerType });
+  document.body.dispatchEvent(trusted(event));
+}
+
+function selectionChange(): void {
+  document.dispatchEvent(trusted(new Event('selectionchange')));
+}
+
+/** A popup element that must be present; throws (failing the test) when it isn't. */
+function shown(selector: string): HTMLElement {
+  const el = shadowRoot()?.querySelector(selector);
+  if (!(el instanceof HTMLElement)) throw new Error(`${selector} is not shown`);
+  return el;
+}
+
+const nextFrame = () => new Promise((resolve) => setTimeout(resolve, 50));
+
+function rejectingTranslator(cause: unknown): Translator {
+  return {
+    translateBatch: () => Promise.reject(cause),
+  };
+}
+
+async function openPanelFor(text: string, translator: Translator) {
+  vi.spyOn(window, 'getSelection').mockReturnValue(fakeSelection(text));
+  const controller = mountSelectionPopup({ translator, getSourceLanguage: () => 'zh', getTargetLanguage: () => 'en' });
+  document.dispatchEvent(trusted(new MouseEvent('mouseup', { bubbles: true })));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const trigger = shadowRoot()?.querySelector('.trigger') as HTMLButtonElement;
+  trigger.dispatchEvent(trusted(new MouseEvent('click', { bubbles: true, composed: true })));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  return controller;
+}
 
 function shadowRoot(): ShadowRoot | null {
   return document.getElementById('prism-selection-popup-host')?.shadowRoot ?? null;
@@ -252,7 +297,7 @@ describe('mountSelectionPopup', () => {
     trigger?.dispatchEvent(trusted(new MouseEvent('click', { bubbles: true, composed: true })));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(shadowRoot()?.querySelector('.errorText')?.textContent).toBe('boom');
+    expect(shadowRoot()?.querySelector('.errorText')?.textContent).toBe("Couldn't reach the translation service.");
     controller.destroy();
   });
 
@@ -747,6 +792,318 @@ describe('mountSelectionPopup', () => {
     await new Promise((resolve) => setTimeout(resolve, KEYUP_SETTLE_MS));
 
     expect(shadowRoot()?.querySelector('.result')?.textContent).toBe('HELLO');
+    controller.destroy();
+  });
+
+  describe('touch selection (iPhone): no mouseup or keyup ever fires', () => {
+    it('shows the trigger once a touch selection settles', async () => {
+      vi.spyOn(window, 'getSelection').mockReturnValue(fakeSelection('修士'));
+      const controller = mountSelectionPopup({
+        translator: uppercaseTranslator(),
+        getSourceLanguage: () => 'zh',
+        getTargetLanguage: () => 'en',
+      });
+
+      pointerDown('touch');
+      selectionChange();
+      selectionChange();
+      expect(shadowRoot()?.querySelector('.trigger')).toBeNull(); // still settling
+      await new Promise((resolve) => setTimeout(resolve, SELECTIONCHANGE_SETTLE_MS));
+
+      expect(shadowRoot()?.querySelector('.trigger')).not.toBeNull();
+      controller.destroy();
+    });
+
+    it('also works for a pen', async () => {
+      vi.spyOn(window, 'getSelection').mockReturnValue(fakeSelection('修士'));
+      const controller = mountSelectionPopup({
+        translator: uppercaseTranslator(),
+        getSourceLanguage: () => 'zh',
+        getTargetLanguage: () => 'en',
+      });
+
+      pointerDown('pen');
+      pointerUp('pen');
+      selectionChange();
+      await new Promise((resolve) => setTimeout(resolve, SELECTIONCHANGE_SETTLE_MS));
+
+      expect(shadowRoot()?.querySelector('.trigger')).not.toBeNull();
+      controller.destroy();
+    });
+
+    it('ignores a selectionchange the page dispatched itself', async () => {
+      vi.spyOn(window, 'getSelection').mockReturnValue(fakeSelection('修士'));
+      const controller = mountSelectionPopup({
+        translator: uppercaseTranslator(),
+        getSourceLanguage: () => 'zh',
+        getTargetLanguage: () => 'en',
+      });
+
+      pointerDown('touch');
+      document.dispatchEvent(new Event('selectionchange'));
+      await new Promise((resolve) => setTimeout(resolve, SELECTIONCHANGE_SETTLE_MS));
+
+      expect(shadowRoot()?.querySelector('.trigger')).toBeNull();
+      controller.destroy();
+    });
+
+    it('keeps an open translation open when tapping it clears the page selection', async () => {
+      const selection = vi.spyOn(window, 'getSelection').mockReturnValue(fakeSelection('修士'));
+      const controller = mountSelectionPopup({
+        translator: uppercaseTranslator(),
+        getSourceLanguage: () => 'zh',
+        getTargetLanguage: () => 'en',
+      });
+      pointerDown('touch');
+      selectionChange();
+      await new Promise((resolve) => setTimeout(resolve, SELECTIONCHANGE_SETTLE_MS));
+      const trigger = shadowRoot()?.querySelector('.trigger') as HTMLButtonElement;
+      trigger.dispatchEvent(trusted(new MouseEvent('click', { bubbles: true, composed: true })));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(shadowRoot()?.querySelector('.result')?.textContent).toBe('修士');
+
+      selection.mockReturnValue(null);
+      selectionChange();
+      await new Promise((resolve) => setTimeout(resolve, SELECTIONCHANGE_SETTLE_MS));
+
+      expect(shadowRoot()?.querySelector('.panel')).not.toBeNull();
+      controller.destroy();
+    });
+
+    it('hides the trigger when a touch clears the selection', async () => {
+      const selection = vi.spyOn(window, 'getSelection').mockReturnValue(fakeSelection('修士'));
+      const controller = mountSelectionPopup({
+        translator: uppercaseTranslator(),
+        getSourceLanguage: () => 'zh',
+        getTargetLanguage: () => 'en',
+      });
+      pointerDown('touch');
+      selectionChange();
+      await new Promise((resolve) => setTimeout(resolve, SELECTIONCHANGE_SETTLE_MS));
+      expect(shadowRoot()?.querySelector('.trigger')).not.toBeNull();
+
+      selection.mockReturnValue(null);
+      selectionChange();
+      await new Promise((resolve) => setTimeout(resolve, SELECTIONCHANGE_SETTLE_MS));
+
+      expect(shadowRoot()?.querySelector('.trigger')).toBeNull();
+      controller.destroy();
+    });
+
+    it('does not run a second time for a desktop mouse selection, which mouseup already handles', async () => {
+      const detect = spyOnDetectLanguage().mockResolvedValue({
+        isReliable: true,
+        languages: [{ language: 'en', percentage: 100 }],
+      });
+      vi.spyOn(window, 'getSelection').mockReturnValue(fakeSelection('hello'));
+      const controller = mountSelectionPopup({
+        translator: uppercaseTranslator(),
+        getSourceLanguage: () => 'en',
+        getTargetLanguage: () => 'es',
+      });
+
+      pointerDown('mouse');
+      selectionChange(); // a drag fires selectionchange while the button is held
+      expect(shadowRoot()?.querySelector('.trigger')).toBeNull();
+      pointerUp('mouse');
+      document.dispatchEvent(trusted(new MouseEvent('mouseup', { bubbles: true })));
+      selectionChange();
+      await new Promise((resolve) => setTimeout(resolve, SELECTIONCHANGE_SETTLE_MS));
+
+      expect(shadowRoot()?.querySelectorAll('.trigger').length).toBe(1);
+      expect(detect).toHaveBeenCalledTimes(1);
+      controller.destroy();
+    });
+  });
+
+  describe('scrolling', () => {
+    function movableSelection(text: string, rect: { top: number; bottom: number; left: number; right: number }) {
+      return {
+        isCollapsed: false,
+        rangeCount: 1,
+        toString: () => text,
+        getRangeAt: () =>
+          ({
+            getBoundingClientRect: () => ({ ...rect, width: rect.right - rect.left, height: rect.bottom - rect.top }),
+          }) as unknown as Range,
+      } as unknown as Selection;
+    }
+
+    it('moves the trigger with the selection when the page scrolls', async () => {
+      const rect = { top: 300, bottom: 320, left: 50, right: 90 };
+      vi.spyOn(window, 'getSelection').mockReturnValue(movableSelection('hello', rect));
+      const controller = mountSelectionPopup({
+        translator: uppercaseTranslator(),
+        getSourceLanguage: () => 'en',
+        getTargetLanguage: () => 'es',
+      });
+      document.dispatchEvent(trusted(new MouseEvent('mouseup', { bubbles: true })));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const before = Number.parseFloat(shown('.trigger').style.top);
+
+      rect.top -= 150;
+      rect.bottom -= 150;
+      document.dispatchEvent(new Event('scroll'));
+      await nextFrame();
+
+      const after = Number.parseFloat(shown('.trigger').style.top);
+      expect(after).toBe(before - 150);
+      controller.destroy();
+    });
+
+    it('moves an open result panel with the selection too, including for scrolling inside a scrollable box', async () => {
+      const rect = { top: 300, bottom: 320, left: 50, right: 90 };
+      vi.spyOn(window, 'getSelection').mockReturnValue(movableSelection('hello', rect));
+      const controller = mountSelectionPopup({
+        translator: uppercaseTranslator(),
+        getSourceLanguage: () => 'en',
+        getTargetLanguage: () => 'es',
+      });
+      document.dispatchEvent(trusted(new MouseEvent('mouseup', { bubbles: true })));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      shown('.trigger').dispatchEvent(trusted(new MouseEvent('click', { bubbles: true, composed: true })));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const before = Number.parseFloat(shown('.panel').style.top);
+
+      rect.top -= 100;
+      rect.bottom -= 100;
+      const box = document.createElement('div');
+      document.body.append(box);
+      box.dispatchEvent(new Event('scroll')); // element scroll events don't bubble
+      await nextFrame();
+
+      const after = Number.parseFloat(shown('.panel').style.top);
+      expect(after).toBe(before - 100);
+      box.remove();
+      controller.destroy();
+    });
+
+    it('hides the trigger while its selection is scrolled off screen, and brings it back when it returns', async () => {
+      const rect = { top: 300, bottom: 320, left: 50, right: 90 };
+      vi.spyOn(window, 'getSelection').mockReturnValue(movableSelection('hello', rect));
+      const controller = mountSelectionPopup({
+        translator: uppercaseTranslator(),
+        getSourceLanguage: () => 'en',
+        getTargetLanguage: () => 'es',
+      });
+      document.dispatchEvent(trusted(new MouseEvent('mouseup', { bubbles: true })));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      rect.top = -200;
+      rect.bottom = -180;
+      document.dispatchEvent(new Event('scroll'));
+      await nextFrame();
+      expect(shadowRoot()?.querySelector('.trigger')).toBeNull();
+
+      rect.top = 300;
+      rect.bottom = 320;
+      document.dispatchEvent(new Event('scroll'));
+      await nextFrame();
+      expect(shadowRoot()?.querySelector('.trigger')).not.toBeNull();
+      controller.destroy();
+    });
+  });
+
+  describe('keys pressed inside the popup', () => {
+    it("don't reach the page's own shortcuts", async () => {
+      const controller = await openPanelFor('hello', uppercaseTranslator());
+      const pageKeys = vi.fn();
+      document.addEventListener('keydown', pageKeys);
+      document.addEventListener('keyup', pageKeys);
+
+      const close = shadowRoot()?.querySelector('.close') as HTMLButtonElement;
+      close.dispatchEvent(trusted(new KeyboardEvent('keydown', { key: 'j', bubbles: true, composed: true })));
+      close.dispatchEvent(trusted(new KeyboardEvent('keyup', { key: 'j', bubbles: true, composed: true })));
+
+      expect(pageKeys).not.toHaveBeenCalled();
+      document.removeEventListener('keydown', pageKeys);
+      document.removeEventListener('keyup', pageKeys);
+      controller.destroy();
+    });
+
+    it('Escape inside the popup still closes it, without reaching the page', async () => {
+      const controller = await openPanelFor('hello', uppercaseTranslator());
+      const pageKeys = vi.fn();
+      document.addEventListener('keydown', pageKeys);
+
+      const close = shadowRoot()?.querySelector('.close') as HTMLButtonElement;
+      close.dispatchEvent(trusted(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true })));
+
+      expect(shadowRoot()?.querySelector('.panel')).toBeNull();
+      expect(pageKeys).not.toHaveBeenCalled();
+      document.removeEventListener('keydown', pageKeys);
+      controller.destroy();
+    });
+  });
+
+  describe('failed translations', () => {
+    it('stops the spinner and explains when the request itself fails (Prism was updated while the tab was open)', async () => {
+      const controller = await openPanelFor('修士', rejectingTranslator(new Error('Extension context invalidated.')));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(shadowRoot()?.querySelector('.spinner')).toBeNull();
+      const message = shadowRoot()?.querySelector('.errorText')?.textContent ?? '';
+      expect(message).toMatch(/reload the page/i);
+      expect(message).not.toMatch(/context invalidated/i);
+      controller.destroy();
+    });
+
+    it('stops the spinner and says the service is slow when the request times out', async () => {
+      const controller = await openPanelFor('修士', rejectingTranslator(new TimeoutError('timed out after 90000ms')));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(shadowRoot()?.querySelector('.spinner')).toBeNull();
+      expect(shadowRoot()?.querySelector('.errorText')?.textContent).toBe(
+        'The translation service is taking too long to answer.',
+      );
+      controller.destroy();
+    });
+
+    it("shows a provider error in plain words, not the provider's raw diagnostic", async () => {
+      const translator: Translator = {
+        async translateBatch(request) {
+          return request.pieces.map(() => ({ ok: false, error: { kind: 'timeout', message: '[google] timed out' } }));
+        },
+      };
+      const controller = await openPanelFor('修士', translator);
+
+      const message = shadowRoot()?.querySelector('.errorText')?.textContent ?? '';
+      expect(message).toBe('The translation service is taking too long to answer.');
+      controller.destroy();
+    });
+
+    it("doesn't promise an automatic retry it won't make", async () => {
+      const translator: Translator = {
+        async translateBatch(request) {
+          return request.pieces.map(() => ({
+            ok: false,
+            error: { kind: 'http', status: 503, message: '[google] 503' },
+          }));
+        },
+      };
+      const controller = await openPanelFor('修士', translator);
+
+      const message = shadowRoot()?.querySelector('.errorText')?.textContent ?? '';
+      expect(message).toContain('HTTP 503');
+      expect(message).not.toMatch(/retry/i);
+      controller.destroy();
+    });
+  });
+
+  it('places the trigger above the selected line, not over the next one', async () => {
+    vi.spyOn(window, 'getSelection').mockReturnValue(
+      fakeSelectionAt('hello', { top: 300, bottom: 320, left: 50, right: 90 }),
+    );
+    const controller = mountSelectionPopup({
+      translator: uppercaseTranslator(),
+      getSourceLanguage: () => 'en',
+      getTargetLanguage: () => 'es',
+    });
+    document.dispatchEvent(trusted(new MouseEvent('mouseup', { bubbles: true })));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const trigger = shadowRoot()?.querySelector('.trigger') as HTMLElement;
+    expect(Number.parseFloat(trigger.style.top) + 30).toBeLessThanOrEqual(300);
     controller.destroy();
   });
 

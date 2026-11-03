@@ -1,6 +1,6 @@
-import { createSignal, Show } from 'solid-js';
+import { createSignal, For, Show } from 'solid-js';
 import { translationCache } from '../../../src/platform/cache/translationCache';
-import { type DiagnosticsReport, runDiagnostics } from '../../../src/platform/diagnostics';
+import { type DiagnosticsReport, describeDiagnostics, runDiagnostics } from '../../../src/platform/diagnostics';
 import { describeError, type SettingsTabProps } from './types';
 
 /** Advanced tab: the translation cache and diagnostics. */
@@ -55,8 +55,7 @@ export function AdvancedTab(props: SettingsTabProps) {
       <section class="section">
         <h2>Diagnostics</h2>
         <p class="hint">
-          Checks what actually works in this browser — a storage round trip, capability detection, and the translation
-          cache — rather than assuming.
+          Checks what works in this browser right now: saving settings, language detection, and the translation cache.
         </p>
         <div class="diagnosticsActions">
           <button type="button" disabled={diagnosticsRunning()} onClick={() => void handleRunDiagnostics()}>
@@ -67,24 +66,20 @@ export function AdvancedTab(props: SettingsTabProps) {
         <Show when={diagnostics()}>
           {(report) => (
             <dl class="diagnosticsList">
-              <dt>Storage round trip</dt>
-              <dd class={report().storageRoundTripOk ? 'ok' : 'fail'}>
-                {report().storageRoundTripOk ? 'OK' : 'FAILED'}
-              </dd>
-              <dt>Translation cache size</dt>
-              <dd>{report().cacheSizeBytes === null ? 'unavailable' : `${report().cacheSizeBytes} bytes`}</dd>
-              <dt>i18n.detectLanguage available</dt>
-              <dd class={report().hasI18nDetectLanguage ? 'ok' : 'fail'}>
-                {report().hasI18nDetectLanguage ? 'yes' : 'no'}
-              </dd>
-              <dt>scripting API available</dt>
-              <dd class={report().hasScriptingApi ? 'ok' : 'fail'}>{report().hasScriptingApi ? 'yes' : 'no'}</dd>
-              <dt>IndexedDB available</dt>
-              <dd class={report().hasIndexedDb ? 'ok' : 'fail'}>{report().hasIndexedDb ? 'yes' : 'no'}</dd>
-              <dt>Effective config (API keys redacted)</dt>
-              <dd>
-                <pre class="configDump">{JSON.stringify(report().effectiveConfig, null, 2)}</pre>
-              </dd>
+              <For each={describeDiagnostics(report())}>
+                {(row) => (
+                  <div class="diagnosticsRow">
+                    <dt>{row.label}</dt>
+                    <dd classList={{ ok: row.status === 'ok', fail: row.status === 'fail' }}>{row.value}</dd>
+                  </div>
+                )}
+              </For>
+              <div class="diagnosticsRow">
+                <dt>Your settings, for a support request (API keys hidden)</dt>
+                <dd>
+                  <pre class="configDump">{JSON.stringify(report().effectiveConfig, null, 2)}</pre>
+                </dd>
+              </div>
             </dl>
           )}
         </Show>

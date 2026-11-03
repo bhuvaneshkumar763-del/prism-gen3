@@ -1,5 +1,20 @@
+/* Sized for a finger on an iPhone: every control is at least 44px tall, text
+   at least 14px, and text colours keep a 4.5:1 contrast on their background. */
 :root {
   color-scheme: light dark;
+  --bg: #f8fafc;
+  --text: #0f172a;
+  --muted: #475569;
+  --surface: #ffffff;
+  --surface-soft: #f1f5f9;
+  --border: #7c8799;
+  --divider: #e2e8f0;
+  --accent: #4f46e5;
+  --accent-text: #4338ca;
+  --accent-soft: rgba(79, 70, 229, 0.08);
+  --error: #b91c1c;
+  --ok-bg: #dcfce7;
+  --ok-text: #166534;
 }
 
 :root[data-theme="light"] {
@@ -8,23 +23,39 @@
 
 :root[data-theme="dark"] {
   color-scheme: dark;
+  --bg: #0f172a;
+  --text: #e2e8f0;
+  --muted: #cbd5e1;
+  --surface: #1e293b;
+  --surface-soft: #1e293b;
+  --border: #7c8aa0;
+  --divider: #334155;
+  --accent: #4f46e5;
+  --accent-text: #a5b4fc;
+  --accent-soft: rgba(129, 140, 248, 0.15);
+  --error: #fca5a5;
+  --ok-bg: #14532d;
+  --ok-text: #bbf7d0;
 }
 
 body {
   margin: 0;
-  background: #f8fafc;
-  color: #0f172a;
-}
-
-:root[data-theme="dark"] body {
-  background: #0f172a;
-  color: #e2e8f0;
+  background: var(--bg);
+  color: var(--text);
 }
 
 .app {
   min-width: 320px;
   padding: 1rem;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+  font-size: 15px;
+  box-sizing: border-box;
+}
+
+.app *,
+.app *::before,
+.app *::after {
+  box-sizing: border-box;
 }
 
 .header {
@@ -33,26 +64,29 @@ body {
   justify-content: space-between;
   gap: 0.5rem;
   margin-bottom: 0.75rem;
+  min-height: 28px;
 }
 
 .app h1 {
-  font-size: 16px;
+  font-size: 18px;
   margin: 0;
 }
 
 .statusPill {
-  font-size: 11px;
+  font-size: 14px;
   font-weight: 600;
-  padding: 3px 8px;
+  padding: 3px 10px;
   border-radius: 999px;
-  background: #e2e8f0;
+  background: var(--divider);
   color: #334155;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .statusPill.on {
-  background: #dcfce7;
-  color: #15803d;
+  background: var(--ok-bg);
+  color: var(--ok-text);
 }
 
 :root[data-theme="dark"] .statusPill {
@@ -61,22 +95,23 @@ body {
 }
 
 :root[data-theme="dark"] .statusPill.on {
-  background: #14532d;
-  color: #86efac;
+  background: var(--ok-bg);
+  color: var(--ok-text);
 }
 
 .primaryBtn {
   width: 100%;
+  min-height: 48px;
   cursor: pointer;
   padding: 0.6rem 1rem;
-  border-radius: 8px;
+  border-radius: 10px;
   border: none;
-  background: #4f46e5;
+  background: var(--accent);
   color: #fff;
   font-weight: 700;
   font-family: inherit;
-  font-size: 14px;
-  margin-bottom: 0.6rem;
+  font-size: 16px;
+  margin-bottom: 0.75rem;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -91,8 +126,8 @@ body {
 /* Same busy spinner as the bubble's .spinner (components/bubble/bubbleStyles.ts). */
 .primaryBtn .spinner {
   display: none;
-  width: 13px;
-  height: 13px;
+  width: 14px;
+  height: 14px;
   border-radius: 50%;
   border: 2px solid rgba(255, 255, 255, 0.35);
   border-top-color: #fff;
@@ -112,186 +147,257 @@ body {
   }
 }
 
-.pillRow {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.4rem;
-  margin-bottom: 0.6rem;
-}
-
-.pill {
-  cursor: pointer;
-  padding: 0.3rem 0.6rem;
-  border-radius: 999px;
-  border: 1px solid #cbd5e1;
-  background: #fff;
-  color: inherit;
-  font-family: inherit;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.pill.on {
-  border-color: #4f46e5;
-  color: #4f46e5;
-  background: rgba(79, 70, 229, 0.08);
-}
-
-:root[data-theme="dark"] .pill {
-  background: #1e293b;
-  border-color: #475569;
-}
-
-:root[data-theme="dark"] .pill.on {
-  border-color: #818cf8;
-  color: #a5b4fc;
-  background: rgba(129, 140, 248, 0.15);
-}
-
 .quickField {
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
-  font-size: 12px;
+  gap: 0.3rem;
+  font-size: 14px;
   font-weight: 600;
-  color: #334155;
-  margin-bottom: 0.6rem;
+  color: var(--muted);
+  margin-bottom: 0.75rem;
 }
 
-:root[data-theme="dark"] .quickField {
-  color: #cbd5e1;
-}
-
+/* 16px stops iOS zooming the page when a picker is focused. */
 .quickField select {
-  font-size: 13px;
-  padding: 0.4rem 0.5rem;
-  border-radius: 6px;
-  border: 1px solid #cbd5e1;
-  background: #fff;
-  color: inherit;
+  min-height: 44px;
+  font-size: 16px;
+  padding: 0.4rem 0.6rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
   font-family: inherit;
-}
-
-:root[data-theme="dark"] .quickField select {
-  background: #1e293b;
-  border-color: #475569;
 }
 
 .toggleList {
   display: flex;
   flex-direction: column;
-  gap: 0.4rem;
-  margin-bottom: 0.5rem;
+  gap: 0.25rem;
+  margin-bottom: 0.75rem;
 }
 
 .toggleRow {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  font-size: 12.5px;
-  padding: 0.3rem 0.4rem;
-  border-radius: 6px;
+  gap: 0.65rem;
+  min-height: 44px;
+  font-size: 15px;
+  padding: 0.35rem 0.6rem;
+  border-radius: 8px;
+  cursor: pointer;
 }
 
 .toggleRow.accent {
-  background: rgba(79, 70, 229, 0.08);
-}
-
-:root[data-theme="dark"] .toggleRow.accent {
-  background: rgba(129, 140, 248, 0.15);
+  background: var(--accent-soft);
+  margin-bottom: 0.5rem;
 }
 
 .toggleRow input {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  margin: 0;
   cursor: pointer;
+  accent-color: var(--accent);
+}
+
+.footerRow {
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: 0.5rem;
+  border-top: 1px solid var(--divider);
+  padding-top: 0.25rem;
+}
+
+.moreToggle,
+.settingsBtn {
+  min-height: 44px;
+  min-width: 44px;
+  cursor: pointer;
+  background: none;
+  border: none;
+  border-radius: 8px;
+  color: var(--accent-text);
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  padding: 0 0.6rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
 }
 
 .moreToggle {
-  display: block;
-  width: 100%;
-  cursor: pointer;
-  background: none;
+  margin-left: -0.6rem;
+}
+
+.settingsBtn {
+  margin-right: -0.6rem;
+}
+
+.moreToggle:hover,
+.settingsBtn:hover {
+  background: var(--surface-soft);
+}
+
+.chevron {
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(45deg) translate(-2px, -2px);
+  transition: transform 0.15s;
+}
+
+.moreToggle[aria-expanded="true"] .chevron {
+  transform: rotate(225deg) translate(-2px, -2px);
+}
+
+.moreSection {
+  padding-top: 0.5rem;
+}
+
+.section {
+  margin: 0 0 0.9rem;
+  padding: 0;
   border: none;
-  color: #4f46e5;
-  font-family: inherit;
-  font-size: 12px;
+  min-width: 0;
+}
+
+.sectionLabel {
+  display: block;
+  font-size: 14px;
   font-weight: 600;
-  padding: 0.4rem 0;
-  text-align: left;
+  color: var(--muted);
+  margin-bottom: 0.35rem;
+  padding: 0;
 }
 
-:root[data-theme="dark"] .moreToggle {
-  color: #a5b4fc;
-}
-
-.menuList {
+.pillRow {
   display: flex;
-  flex-direction: column;
-  border-top: 1px solid #e2e8f0;
-  margin-top: 0.5rem;
-  padding-top: 0.4rem;
+  flex-wrap: wrap;
+  gap: 0.4rem;
 }
 
-:root[data-theme="dark"] .menuList {
-  border-color: #334155;
+.pill {
+  min-height: 44px;
+  min-width: 44px;
+  cursor: pointer;
+  padding: 0 0.9rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.pill.on {
+  border-color: var(--accent);
+  color: var(--accent-text);
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+/* Always / Default / Never as one segmented choice: native radios, so
+   keyboard and screen readers treat it as a single choice. */
+.segments {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.segment {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.segment + .segment {
+  border-left: 1px solid var(--border);
+}
+
+.segment input {
+  position: absolute;
+  opacity: 0;
+  inset: 0;
+  margin: 0;
+  cursor: pointer;
+}
+
+.segment:has(input:checked) {
+  background: var(--accent);
+  color: #fff;
+}
+
+.segment:has(input:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: -4px;
+}
+
+.segment:has(input:checked:focus-visible) {
+  outline-color: #fff;
+}
+
+.siteRule:disabled .segments {
+  opacity: 0.45;
+}
+
+.siteRule:disabled .segment {
+  cursor: default;
 }
 
 .menuItem {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 44px;
   cursor: pointer;
   background: none;
   border: none;
-  color: inherit;
+  color: var(--text);
   font-family: inherit;
-  font-size: 12.5px;
+  font-size: 15px;
   text-align: left;
-  padding: 0.4rem 0.2rem;
-  border-radius: 6px;
+  padding: 0 0.6rem;
+  border-radius: 8px;
 }
 
 .menuItem:hover {
-  background: #f1f5f9;
-}
-
-.menuItem.on {
-  color: #4f46e5;
-  font-weight: 600;
-}
-
-:root[data-theme="dark"] .menuItem:hover {
-  background: #1e293b;
-}
-
-:root[data-theme="dark"] .menuItem.on {
-  color: #a5b4fc;
+  background: var(--surface-soft);
 }
 
 .app p {
-  font-size: 13px;
+  font-size: 15px;
   text-align: left;
   word-break: break-word;
 }
 
 .app .error {
-  color: #dc2626;
-}
-
-:root[data-theme="dark"] .app .error {
-  color: #f87171;
+  margin: -0.25rem 0 0.75rem;
+  color: var(--error);
+  font-weight: 600;
 }
 
 /* Shown instead of the browser's raw "Receiving end does not exist" when
    there's no Prism running in this tab — see describeUnsupportedPage. */
 .app .notice {
-  margin: 0 0 0.6rem;
-  padding: 0.5rem 0.6rem;
+  margin: 0 0 0.75rem;
+  padding: 0.6rem 0.75rem;
   border-radius: 8px;
-  font-size: 12.5px;
-  color: #334155;
-  background: #f1f5f9;
-}
-
-:root[data-theme="dark"] .app .notice {
-  color: #cbd5e1;
-  background: #1e293b;
+  color: var(--text);
+  background: var(--surface-soft);
 }
 
 /* Per-site controls are disabled on pages with no hostname; make that
@@ -308,26 +414,22 @@ body {
 
 /* The live translate/restore key binding — see translateShortcut. */
 .app .shortcutHint {
-  margin: -0.3rem 0 0.6rem;
-  font-size: 11.5px;
-  color: #64748b;
+  margin: -0.35rem 0 0.75rem;
+  font-size: 14px;
+  color: var(--muted);
   text-align: center;
 }
 
 .shortcutHint kbd {
   font-family: inherit;
-  font-size: 11px;
+  font-size: 14px;
   padding: 0.05rem 0.35rem;
-  border: 1px solid #cbd5e1;
+  border: 1px solid var(--border);
   border-radius: 4px;
-  background: #f8fafc;
+  background: var(--surface);
 }
 
-:root[data-theme="dark"] .app .shortcutHint {
-  color: #94a3b8;
-}
-
-:root[data-theme="dark"] .shortcutHint kbd {
-  border-color: #475569;
-  background: #1e293b;
+:root[data-theme="dark"] .pill.on {
+  border-color: #818cf8;
+  box-shadow: inset 0 0 0 1px #818cf8;
 }

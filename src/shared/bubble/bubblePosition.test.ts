@@ -142,13 +142,23 @@ describe('isRightEdge', () => {
   });
 });
 
+describe('BALL_SIZE', () => {
+  it('is at least a 44px touch target', () => {
+    expect(BALL_SIZE).toBeGreaterThanOrEqual(44);
+  });
+});
+
 describe('exceededDragThreshold', () => {
   it('is false for tiny movement', () => {
     expect(exceededDragThreshold(1, 1)).toBe(false);
   });
   it('is true once either axis exceeds the threshold', () => {
-    expect(exceededDragThreshold(5, 0)).toBe(true);
-    expect(exceededDragThreshold(0, 5)).toBe(true);
+    expect(exceededDragThreshold(11, 0)).toBe(true);
+    expect(exceededDragThreshold(0, 11)).toBe(true);
+  });
+  it('reads a finger wobble of up to 10px as a tap, not a drag', () => {
+    expect(DRAG_THRESHOLD_PX).toBe(10);
+    expect(exceededDragThreshold(8, -9)).toBe(false);
   });
   it('is false exactly at the threshold (strictly greater-than)', () => {
     expect(exceededDragThreshold(DRAG_THRESHOLD_PX, 0)).toBe(false);

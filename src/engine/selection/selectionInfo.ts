@@ -15,40 +15,45 @@ export function getSelectionInfo(selection: Selection | null): SelectionInfo | n
   const text = selection.toString().trim();
   if (!text) return null;
 
-  // toString() concatenates EVERY range (e.g. Firefox Ctrl+click
-  // multi-select), so union every range's rect to anchor the whole selection.
+  const ranges: Range[] = [];
+  for (let i = 0; i < selection.rangeCount; i++) ranges.push(selection.getRangeAt(i));
+  const rect = rangesRect(ranges);
+  if (!rect) return null;
+  return { text, rect };
+}
+
+/**
+ * The union of the ranges' rects, or null when every one is zero-size (e.g.
+ * whitespace-only, or content since removed). `toString()` concatenates every
+ * range (Firefox Ctrl+click multi-select), so the anchor covers all of them.
+ */
+export function rangesRect(ranges: readonly Range[]): DOMRect | null {
   let left = Number.POSITIVE_INFINITY;
   let top = Number.POSITIVE_INFINITY;
   let right = Number.NEGATIVE_INFINITY;
   let bottom = Number.NEGATIVE_INFINITY;
-  for (let i = 0; i < selection.rangeCount; i++) {
-    const r = selection.getRangeAt(i).getBoundingClientRect();
-    if (r.width === 0 && r.height === 0) continue; // e.g. a range collapsed by whitespace-only content
+  for (const range of ranges) {
+    const r = range.getBoundingClientRect();
+    if (r.width === 0 && r.height === 0) continue;
     left = Math.min(left, r.left);
     top = Math.min(top, r.top);
     right = Math.max(right, r.right);
     bottom = Math.max(bottom, r.bottom);
   }
-  if (!Number.isFinite(left)) return null; // every range was zero-size
-
-  const rect = {
-    left,
-    top,
-    right,
-    bottom,
-    width: right - left,
-    height: bottom - top,
-    x: left,
-    y: top,
-  } as DOMRect;
-  return { text, rect };
+  if (!Number.isFinite(left)) return null;
+  return { left, top, right, bottom, width: right - left, height: bottom - top, x: left, y: top } as DOMRect;
 }
 
+/** One letter is a whole word in Chinese and Japanese; one Latin letter is noise. */
+const SINGLE_NON_LATIN_LETTER = /^(?!\p{Script=Latin})\p{L}$/u;
+
 /**
- * True for selections worth offering a translate trigger for: at least two
- * characters and at least one Unicode letter, so a stray character or a
- * punctuation/digit-only selection (a double-clicked bullet) is ignored.
+ * True for selections worth offering a translate trigger for: a single
+ * non-Latin letter (a hanzi), or two or more characters with at least one
+ * letter, so a stray Latin character or a punctuation/digit-only selection
+ * (a double-clicked bullet) is ignored.
  */
 export function isValidSelectionText(text: string): boolean {
+  if (SINGLE_NON_LATIN_LETTER.test(text)) return true;
   return text.length >= 2 && HAS_LETTER.test(text);
 }

@@ -1,9 +1,10 @@
 import { createStore } from 'solid-js/store';
 import { render } from 'solid-js/web';
-import { getSelectionInfo, isValidSelectionText } from '../../src/engine/selection/selectionInfo';
+import { getSelectionInfo, isValidSelectionText, rangesRect } from '../../src/engine/selection/selectionInfo';
 import type { Translator } from '../../src/engine/translator';
 import { translateOne } from '../../src/engine/translator';
 import { baseLanguageTag } from '../../src/shared/languages';
+import { canHover } from '../../src/shared/ui/pointer';
 import {
   placeSelectionPanel,
   placeSelectionTrigger,
@@ -14,6 +15,7 @@ import { viewportSize } from '../../src/shared/ui/viewport';
 import { withTimeout } from '../../src/shared/withTimeout';
 import { copyText } from './copyText';
 import { SelectionPopup } from './SelectionPopup';
+import { describeSelectionError, describeSelectionRejection } from './selectionErrorMessage';
 import { SELECTION_POPUP_STYLES } from './selectionPopupStyles';
 
 const HOST_ID = 'prism-selection-popup-host';
@@ -23,6 +25,13 @@ const HOST_ID = 'prism-selection-popup-host';
  * language detection, not N. Mouse needs none: mouseup ends the gesture.
  */
 const KEYUP_DEBOUNCE_MS = 150;
+
+/**
+ * A touch selection fires no mouseup or keyup, only a stream of
+ * selectionchange while the handles move; this long without one means the
+ * user has let go.
+ */
+const SELECTIONCHANGE_SETTLE_MS = 400;
 
 // Same bound as every other `i18n.detectLanguage` call: Firefox's can never
 // settle (Mozilla bug 1712214).
@@ -58,8 +67,9 @@ export interface MountSelectionPopupOptions {
 }
 
 /**
- * Wires up "translate selected text": on a mouse or keyboard selection, shows
- * a trigger near it that translates just that text via the shared `Translator`.
+ * Wires up "translate selected text": on a mouse, keyboard or touch selection,
+ * shows a trigger near it that translates just that text via the shared
+ * `Translator`. Trigger and panel follow the selection as the page scrolls.
  */
 export function mountSelectionPopup(options: MountSelectionPopupOptions): SelectionPopupController {
   const { host, mountPoint } = createShadowHost(HOST_ID, SELECTION_POPUP_STYLES);
@@ -83,10 +93,18 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
    * whose whitespace differs from `Selection.toString()`.
    */
   let shownForSelection: string | null = null;
+  /**
+   * Copies of the ranges the view is anchored to, read again on scroll. Copies
+   * because a range from `getRangeAt` moves with the selection, and a tap on
+   * the trigger can clear the selection while the panel should stay put.
+   */
+  let anchorRanges: Range[] | null = null;
   // Rendered once from a store: setting a field to its current value notifies
   // nothing, so document-wide keyups cost nothing while the popup is hidden.
   const [state, setState] = createStore({
     buttonVisible: false,
+    /** False while the selection is scrolled off screen: the trigger hides until it returns. */
+    buttonInView: true,
     buttonTop: 0,
     buttonLeft: 0,
     panelOpen: false,
@@ -101,7 +119,7 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
     () =>
       SelectionPopup({
         get buttonVisible() {
-          return state.buttonVisible;
+          return state.buttonVisible && state.buttonInView;
         },
         get buttonTop() {
           return state.buttonTop;
@@ -158,8 +176,10 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
   async function translateText(text: string): Promise<void> {
     // Anchored to the page's own selection when this frame can see it;
     // otherwise (a selection inside an iframe) to the top-left, on screen.
-    const info = getSelectionInfo(window.getSelection());
+    const selection = window.getSelection();
+    const info = getSelectionInfo(selection);
     const anchor = info?.rect ?? { top: 16, bottom: 16, left: 16 };
+    anchorRanges = info && selection ? copyRanges(selection) : null;
     const thisRequestId = ++requestId;
     dismissedText = null;
     selectedText = text;
@@ -184,18 +204,25 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
   async function handleTranslateClick(): Promise<void> {
     const thisRequestId = ++requestId;
     setState({ panelOpen: true, busy: true, translatedText: '', errorMessage: null, copyStatus: 'idle' });
-    const result = await translateOne(
-      options.translator,
-      selectedText,
-      selectedTextLanguage !== 'und' ? selectedTextLanguage : options.getSourceLanguage(),
-      options.getTargetLanguage(),
-    );
+    let result: Awaited<ReturnType<typeof translateOne>>;
+    try {
+      result = await translateOne(
+        options.translator,
+        selectedText,
+        selectedTextLanguage !== 'und' ? selectedTextLanguage : options.getSourceLanguage(),
+        options.getTargetLanguage(),
+      );
+    } catch (cause) {
+      // The round trip itself failed: a timeout, or no extension to answer.
+      if (thisRequestId === requestId) setState({ busy: false, errorMessage: describeSelectionRejection(cause) });
+      return;
+    }
     if (thisRequestId !== requestId) return; // superseded by a newer selection/click — discard
 
     if (result.ok) {
       setState({ busy: false, translatedText: result.value });
     } else {
-      setState({ busy: false, errorMessage: result.error.message });
+      setState({ busy: false, errorMessage: describeSelectionError(result.error) });
     }
   }
 
@@ -218,9 +245,19 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
     return window.getSelection();
   }
 
+  function copyRanges(selection: Selection): Range[] {
+    const ranges: Range[] = [];
+    for (let i = 0; i < selection.rangeCount; i++) {
+      const range = selection.getRangeAt(i);
+      ranges.push(typeof range.cloneRange === 'function' ? range.cloneRange() : range);
+    }
+    return ranges;
+  }
+
   function hideTrigger(): void {
     // Free when already hidden: the store only notifies on an actual change.
     setState({ buttonVisible: false, panelOpen: false });
+    anchorRanges = null;
   }
 
   /**
@@ -237,9 +274,14 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
     }
   }
 
-  /** Shared by the mouse and keyboard paths below. */
-  async function updateFromCurrentSelection(path: readonly EventTarget[]): Promise<void> {
-    const info = getSelectionInfo(resolveActiveSelection(path));
+  /**
+   * Shared by the mouse, keyboard and touch paths below. `keepOpenPanel`: a
+   * touch on the panel can clear the page selection, which must not close it.
+   */
+  async function updateFromCurrentSelection(path: readonly EventTarget[], keepOpenPanel = false): Promise<void> {
+    const selection = resolveActiveSelection(path);
+    const info = getSelectionInfo(selection);
+    if (keepOpenPanel && state.panelOpen && !info) return;
     // This text is already offered or shown: an incidental key must not reset
     // the view. Checked before the requestId bump, which would abandon an
     // in-flight right-click translation.
@@ -260,6 +302,8 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
       }
       dismissedText = null; // the selection changed — that dismissal was for the old one
     }
+    // Copied before the await, while the selection still matches `info`.
+    const ranges = selection ? copyRanges(selection) : null;
     // Always detected: it is also the translate request's source language
     // (see `selectedTextLanguage`).
     const detected = await detectSelectionLanguage(info.text);
@@ -275,10 +319,12 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
     selectedText = info.text;
     shownForSelection = info.text;
     selectedTextLanguage = detected;
+    anchorRanges = ranges;
     const viewport = viewportSize();
-    const trigger = placeSelectionTrigger(info.rect, viewport);
+    const trigger = placeSelectionTrigger(info.rect, viewport, { preferBelow: lastPointerType !== 'mouse' });
     setState({
       buttonVisible: true,
+      buttonInView: true,
       buttonTop: trigger.top,
       buttonLeft: trigger.left,
       panel: placeSelectionPanel(info.rect, viewport),
@@ -321,20 +367,89 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
     }, KEYUP_DEBOUNCE_MS);
   }
 
-  /** Escape dismisses the trigger or the result panel. */
-  function onKeyDown(e: KeyboardEvent): void {
-    if (!e.isTrusted || e.key !== 'Escape') return;
+  /**
+   * Which kind of pointer last touched the page. Mouse selections end in
+   * mouseup, so selectionchange is only acted on after a touch or pen; that
+   * also keeps a desktop page's own scripted selections from popping it up.
+   */
+  let lastPointerType = canHover() ? 'mouse' : 'touch';
+  /** Where the last touch landed, so a selection inside a shadow root is found (see `resolveActiveSelection`). */
+  let lastTouchPath: readonly EventTarget[] = [];
+  function onPointerDown(e: PointerEvent): void {
+    if (!e.isTrusted) return;
+    lastPointerType = e.pointerType || 'mouse';
+    if (lastPointerType !== 'mouse') lastTouchPath = e.composedPath();
+  }
+
+  let selectionChangeTimer: ReturnType<typeof setTimeout> | null = null;
+  function onSelectionChange(e: Event): void {
+    if (!e.isTrusted || lastPointerType === 'mouse') return;
+    if (selectionChangeTimer) clearTimeout(selectionChangeTimer);
+    selectionChangeTimer = setTimeout(() => {
+      selectionChangeTimer = null;
+      void updateFromCurrentSelection(lastTouchPath, true);
+    }, SELECTIONCHANGE_SETTLE_MS);
+  }
+
+  /**
+   * Re-anchors trigger and panel to the selection after any scroll (the page,
+   * a scrolling box, or the visual viewport), at most once a frame. Following
+   * rather than hiding: pages that scroll themselves would otherwise make the
+   * trigger vanish, and an open panel shouldn't drift away from its text.
+   */
+  let repositionFrame = 0;
+  function onViewportMoved(): void {
+    if (repositionFrame || !anchorRanges || (!state.buttonVisible && !state.panelOpen)) return;
+    repositionFrame = requestAnimationFrame(() => {
+      repositionFrame = 0;
+      const rect = anchorRanges && rangesRect(anchorRanges);
+      if (!rect) return; // its text was removed or replaced; stay where it was
+      const viewport = viewportSize();
+      const trigger = placeSelectionTrigger(rect, viewport, { preferBelow: lastPointerType !== 'mouse' });
+      setState({
+        buttonInView: rect.bottom > 0 && rect.top < viewport.height,
+        buttonTop: trigger.top,
+        buttonLeft: trigger.left,
+        panel: placeSelectionPanel(rect, viewport),
+      });
+    });
+  }
+
+  function dismiss(): void {
     if (!state.buttonVisible && !state.panelOpen) return;
     dismissedText = selectedText;
     hideTrigger();
+  }
+
+  /** Escape dismisses the trigger or the result panel. */
+  function onKeyDown(e: KeyboardEvent): void {
+    if (!e.isTrusted || e.key !== 'Escape') return;
+    dismiss();
+  }
+
+  /**
+   * Keys pressed inside the popup stay inside it, so they can't fire the
+   * site's own shortcuts. Escape is handled here, as it no longer reaches
+   * the document listener.
+   */
+  function onHostKey(e: KeyboardEvent): void {
+    e.stopPropagation();
+    if (e.type === 'keydown' && e.isTrusted && e.key === 'Escape') dismiss();
   }
 
   const autoTrigger = options.autoTrigger ?? true;
   if (autoTrigger) {
     document.addEventListener('mouseup', onMouseUp);
     document.addEventListener('keyup', onKeyUp);
+    document.addEventListener('pointerdown', onPointerDown, { capture: true, passive: true });
+    document.addEventListener('selectionchange', onSelectionChange);
   }
   document.addEventListener('keydown', onKeyDown);
+  for (const type of ['keydown', 'keyup', 'keypress'] as const) host.addEventListener(type, onHostKey);
+  document.addEventListener('scroll', onViewportMoved, { capture: true, passive: true });
+  window.addEventListener('resize', onViewportMoved, { passive: true });
+  window.visualViewport?.addEventListener('scroll', onViewportMoved, { passive: true });
+  window.visualViewport?.addEventListener('resize', onViewportMoved, { passive: true });
 
   return {
     translateText(text) {
@@ -343,8 +458,16 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
     destroy() {
       document.removeEventListener('mouseup', onMouseUp);
       document.removeEventListener('keyup', onKeyUp);
+      document.removeEventListener('pointerdown', onPointerDown, { capture: true });
+      document.removeEventListener('selectionchange', onSelectionChange);
       document.removeEventListener('keydown', onKeyDown);
+      document.removeEventListener('scroll', onViewportMoved, { capture: true });
+      window.removeEventListener('resize', onViewportMoved);
+      window.visualViewport?.removeEventListener('scroll', onViewportMoved);
+      window.visualViewport?.removeEventListener('resize', onViewportMoved);
       if (keyupTimer) clearTimeout(keyupTimer);
+      if (selectionChangeTimer) clearTimeout(selectionChangeTimer);
+      if (repositionFrame) cancelAnimationFrame(repositionFrame);
       if (copyResetTimer) clearTimeout(copyResetTimer);
       dispose();
       host.remove();
