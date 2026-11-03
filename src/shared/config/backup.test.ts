@@ -1,6 +1,26 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { BACKUP_FORMAT_VERSION, parseBackup, serializeBackup } from './backup';
+import type * as Migrations from './migrations';
 import { defaultConfig } from './schema';
+import { validatePartialConfig } from './validate';
+
+// Adds one inert migration on top of the real list, to show a migration added
+// to migrations.ts reaches backups without a second copy here.
+vi.mock('./migrations', async (importOriginal) => {
+  const actual = await importOriginal<typeof Migrations>();
+  const retiredLanguageMigration: Migrations.ConfigMigration = {
+    toVersion: actual.CONFIG_SCHEMA_VERSION + 1,
+    migrate: (entries) =>
+      entries.targetLanguage === 'retired-test-code' ? { ...entries, targetLanguage: 'fr' } : entries,
+  };
+  return {
+    ...actual,
+    applyConfigMigrations: (rawEntries: Record<string, unknown>, storedVersion: number) =>
+      actual.applyConfigMigrations(rawEntries, storedVersion, [...actual.configMigrations, retiredLanguageMigration]),
+  };
+});
+
+const { applyConfigMigrations: realApplyConfigMigrations } = await vi.importActual<typeof Migrations>('./migrations');
 
 describe('serializeBackup', () => {
   it('wraps the config with version and timestamp metadata', () => {
@@ -85,6 +105,32 @@ describe('parseBackup', () => {
     if (result.ok) {
       expect(result.value.pageTranslatorProvider).toBe('google');
       expect(result.value).not.toHaveProperty('llmApiKey');
+    }
+  });
+
+  it('runs a backup through the same migrations as stored config, so a new migration needs no copy here', () => {
+    const result = parseBackup(JSON.stringify({ targetLanguage: 'retired-test-code' }));
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.targetLanguage).toBe('fr');
+  });
+
+  it('imports an old-version backup to the same settings that stored config of that version migrates to', () => {
+    const oldConfigs: Array<{ storedVersion: number; raw: Record<string, unknown> }> = [
+      { storedVersion: 0, raw: { libreTranslateBaseUrl: 'https://lt.example', targetLanguage: 'de' } },
+      { storedVersion: 1, raw: { providerBaseUrl: 'https://lt.example', providerApiKey: 'k', targetLanguage: 'de' } },
+      { storedVersion: 2, raw: { ...defaultConfig, pageTranslatorProvider: 'builtin' } },
+      { storedVersion: 3, raw: { ...defaultConfig, pageTranslatorProvider: 'libretranslate', targetLanguage: 'ja' } },
+      {
+        storedVersion: 4,
+        raw: { ...defaultConfig, pageTranslatorProvider: 'llm', llmBaseUrl: 'http://x', llmApiKey: 'k', llmModel: 'm' },
+      },
+    ];
+    for (const { storedVersion, raw } of oldConfigs) {
+      const stored = validatePartialConfig(realApplyConfigMigrations({ ...raw }, storedVersion));
+      const imported = parseBackup(JSON.stringify({ version: BACKUP_FORMAT_VERSION, timestamp: 1, config: raw }));
+      expect(stored.ok).toBe(true);
+      expect(imported.ok).toBe(true);
+      if (stored.ok && imported.ok) expect(imported.value).toEqual(stored.value);
     }
   });
 });

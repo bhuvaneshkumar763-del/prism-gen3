@@ -10,7 +10,7 @@ import { translateOne } from '../src/engine/translator';
 import { cacheKeyFor, translationCache } from '../src/platform/cache/translationCache';
 import { configStore } from '../src/platform/configStore';
 import type { FrameLanguageDecision } from '../src/platform/messaging/protocol';
-import { isTrustedSender, onMessage, sendMessage } from '../src/platform/messaging/protocol';
+import { onTrustedMessage, sendMessage } from '../src/platform/messaging/protocol';
 import { getActiveTabId } from '../src/platform/messaging/tabTarget';
 import { missingProviderSetup } from '../src/shared/config/providerSetup';
 import { TOGGLE_TRANSLATE_COMMAND } from '../src/shared/shortcut';
@@ -178,8 +178,7 @@ export default defineBackground(() => {
   registerKeepaliveListener();
   void prefetchGoogleAuthKey();
 
-  onMessage('translateText', async (message) => {
-    if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');
+  onTrustedMessage('translateText', async (message) => {
     beginTranslateActivity();
     try {
       const { providerId, provider } = await resolveActiveProvider();
@@ -192,8 +191,7 @@ export default defineBackground(() => {
     }
   });
 
-  onMessage('translatePieces', async (message) => {
-    if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');
+  onTrustedMessage('translatePieces', async (message) => {
     beginTranslateActivity();
     try {
       return await translatePiecesWithCache(message.data, message.sender);
@@ -341,8 +339,7 @@ export default defineBackground(() => {
     if (command === TOGGLE_TRANSLATE_COMMAND) toggleActiveTab().catch(showFailureBadge);
   });
 
-  onMessage('openOptionsPage', (message) => {
-    if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');
+  onTrustedMessage('openOptionsPage', (message) => {
     const section = message.data?.section;
     // openOptionsPage() can't carry a URL fragment, so a specific section
     // opens as a tab. Restricted to a plain word: it only ever names a tab.
@@ -364,22 +361,19 @@ export default defineBackground(() => {
     if (changeInfo.status === 'loading') frameLanguageDecisions.delete(tabId);
   });
 
-  onMessage('reportFrameLanguageDecision', (message) => {
-    if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');
+  onTrustedMessage('reportFrameLanguageDecision', (message) => {
     const tabId = message.sender.tab?.id;
     if (tabId === undefined) return;
     frameLanguageDecisions.set(tabId, message.data);
   });
 
-  onMessage('getFrameLanguageDecision', (message) => {
-    if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');
+  onTrustedMessage('getFrameLanguageDecision', (message) => {
     const tabId = message.sender.tab?.id;
     if (tabId === undefined) return null;
     return frameLanguageDecisions.get(tabId) ?? null;
   });
 
-  onMessage('detectTabLanguage', async (message) => {
-    if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');
+  onTrustedMessage('detectTabLanguage', async (message) => {
     const tabId = message.sender.tab?.id;
     if (tabId === undefined) return 'und';
     try {

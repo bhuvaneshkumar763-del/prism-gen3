@@ -83,10 +83,32 @@ export interface FrameLanguageDecision {
 export const { sendMessage, onMessage } = defineExtensionMessaging<ProtocolMap>();
 
 /**
- * Defence in depth: accepts only messages whose `sender.id` is this
- * extension's own id, which every legitimate caller has. `@webext-core/messaging`
- * does no sender validation itself. Used by every `onMessage` handler.
+ * Defence in depth, not a block on a known attack path: other extensions'
+ * messages arrive on `runtime.onMessageExternal`, which nothing here listens
+ * to, and `tabs.sendMessage` reaches only this extension's own content
+ * scripts. Accepts only this extension's own `sender.id`.
  */
 export function isTrustedSender(sender: Browser.runtime.MessageSender): boolean {
   return sender.id === browser.runtime.id;
+}
+
+const UNTRUSTED_SENDER_ERROR = '[prism] rejected a message from an untrusted sender';
+
+/**
+ * `onMessage`, but the handler runs only for an `isTrustedSender` sender, so
+ * no handler can forget the check. An untrusted sender gets an error, or with
+ * `onUntrusted: 'ignore'` an empty answer (for fire-and-forget notifications).
+ */
+export function onTrustedMessage<TType extends keyof ProtocolMap>(
+  type: TType,
+  handler: Parameters<typeof onMessage<TType>>[1],
+  options: { onUntrusted?: 'throw' | 'ignore' } = {},
+): () => void {
+  return onMessage(type, (message) => {
+    if (!isTrustedSender(message.sender)) {
+      if (options.onUntrusted === 'ignore') return;
+      throw new Error(UNTRUSTED_SENDER_ERROR);
+    }
+    return handler(message);
+  });
 }

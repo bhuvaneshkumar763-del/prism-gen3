@@ -424,7 +424,7 @@ describe('translationCache', () => {
       expect(failedOnce).toBe(true);
     });
 
-    it('propagates a real error if the connection is unusable even after the retry (does not loop forever or hang)', async () => {
+    it('gives up after one retry when the reopen fails too, and reads as a miss (does not loop forever or hang)', async () => {
       const capture = captureNextOpenedDb();
       const cache = createTranslationCache();
       await cache.set('warm', '1');
@@ -444,7 +444,50 @@ describe('translationCache', () => {
         throw new Error('simulated: storage unavailable');
       });
 
-      await expect(cache.get('warm')).rejects.toThrow();
+      await expect(cache.get('warm')).resolves.toBeNull();
+    });
+  });
+
+  describe('failed open (e.g. WebKit "Connection to Indexed Database server lost")', () => {
+    function failNextOpen(): void {
+      const originalOpen = globalThis.indexedDB.open.bind(globalThis.indexedDB);
+      vi.spyOn(globalThis.indexedDB, 'open')
+        .mockImplementationOnce(() => {
+          throw new Error('simulated: Connection to Indexed Database server lost');
+        })
+        .mockImplementation(originalOpen);
+    }
+
+    function failEveryOpen(): void {
+      vi.spyOn(globalThis.indexedDB, 'open').mockImplementation(() => {
+        throw new Error('simulated: storage unavailable');
+      });
+    }
+
+    it('retries the open on the next call instead of keeping the cache off for good', async () => {
+      failNextOpen();
+      const cache = createTranslationCache();
+      await cache.get('a').catch(() => null);
+
+      await cache.set('a', 'hola');
+      expect(await cache.get('a')).toBe('hola');
+    });
+
+    it('reads as a cache miss and writes as a no-op, so translation never sees the error', async () => {
+      failEveryOpen();
+      const cache = createTranslationCache();
+      await expect(cache.get('a')).resolves.toBeNull();
+      await expect(cache.getMany(['a', 'b'])).resolves.toEqual([null, null]);
+      await expect(cache.set('a', 'hola')).resolves.toBeUndefined();
+      await expect(cache.setMany([{ key: 'b', value: 'adios' }])).resolves.toBeUndefined();
+      await expect(cache.evictUntilUnderBudget(0)).resolves.toBeUndefined();
+    });
+
+    it('still rejects clear() and getSizeBytes(), whose callers report the failure to the user', async () => {
+      failEveryOpen();
+      const cache = createTranslationCache();
+      await expect(cache.clear()).rejects.toThrow();
+      await expect(cache.getSizeBytes()).rejects.toThrow();
     });
   });
 });

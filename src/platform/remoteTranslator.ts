@@ -1,6 +1,6 @@
 import type { PieceOutcome, TranslateBatchRequest, Translator } from '../engine/translator';
 import { withTimeout } from '../shared/withTimeout';
-import { isTrustedSender, onMessage, sendMessage } from './messaging/protocol';
+import { onTrustedMessage, sendMessage } from './messaging/protocol';
 
 /**
  * Implements the engine's `Translator` port by messaging the background,
@@ -28,13 +28,16 @@ const TRANSLATE_PIECES_TIMEOUT_MS = 90000;
 function ensureProgressListener(): void {
   if (progressListenerRegistered) return;
   progressListenerRegistered = true;
-  onMessage('translatePiecesProgress', (message) => {
-    // Defence in depth, as in every other handler: a matched requestId writes
-    // text onto the page via onPieceComplete.
-    if (!isTrustedSender(message.sender)) return;
-    const { requestId, index, outcome } = message.data;
-    progressCallbacks.get(requestId)?.(index, outcome);
-  });
+  // Ignored rather than rejected: a fire-and-forget notification has no caller
+  // waiting on an error, and a matched requestId writes text onto the page.
+  onTrustedMessage(
+    'translatePiecesProgress',
+    (message) => {
+      const { requestId, index, outcome } = message.data;
+      progressCallbacks.get(requestId)?.(index, outcome);
+    },
+    { onUntrusted: 'ignore' },
+  );
 }
 
 export function createRemoteTranslator(): Translator {

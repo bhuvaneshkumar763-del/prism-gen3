@@ -1,4 +1,5 @@
 import { err, ok, type Result } from '../result';
+import { applyConfigMigrations } from './migrations';
 import type { Config } from './schema';
 import { validatePartialConfig } from './validate';
 
@@ -36,24 +37,14 @@ export function parseBackup(json: string): Result<Partial<Config>, string> {
   const isWrapped = parsed !== null && typeof parsed === 'object' && 'config' in (parsed as Record<string, unknown>);
   const configCandidate = isWrapped ? (parsed as { config: unknown }).config : parsed;
 
-  // Same fallback as migrations.ts v3-v5: an old backup naming a removed
-  // provider would otherwise fail the enum check and reject the whole import.
-  if (
-    configCandidate !== null &&
-    typeof configCandidate === 'object' &&
-    'pageTranslatorProvider' in configCandidate &&
-    ['builtin', 'libretranslate', 'llm'].includes(
-      String((configCandidate as Record<string, unknown>).pageTranslatorProvider),
-    )
-  ) {
-    (configCandidate as Record<string, unknown>).pageTranslatorProvider = 'google';
-  }
-  // The removed `llm` provider's fields (one is an API key) aren't settings any more.
-  if (configCandidate !== null && typeof configCandidate === 'object') {
-    for (const key of ['llmBaseUrl', 'llmApiKey', 'llmModel']) delete (configCandidate as Record<string, unknown>)[key];
-  }
+  // Backups carry no schema version, so every migration runs; each one
+  // leaves already-current settings unchanged.
+  const migratedCandidate =
+    configCandidate !== null && typeof configCandidate === 'object' && !Array.isArray(configCandidate)
+      ? applyConfigMigrations({ ...(configCandidate as Record<string, unknown>) }, 0)
+      : configCandidate;
 
-  const result = validatePartialConfig(configCandidate);
+  const result = validatePartialConfig(migratedCandidate);
   if (!result.ok) {
     return err(
       `That doesn't look like a Prism settings file${result.path ? ` (${result.path}: ${result.message})` : ''}.`,

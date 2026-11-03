@@ -83,7 +83,7 @@ export function createTranslationCache(defaultMaxBytes: number = DEFAULT_MAX_BYT
 
   function getDb(): Promise<IDBDatabase> {
     if (!dbPromise) {
-      dbPromise = openDb().then((db) => {
+      const opening = openDb().then((db) => {
         // The browser can close this connection at any time. Reset so the
         // next call reopens, and drop the total: other contexts may have
         // written while this one was closed.
@@ -97,6 +97,12 @@ export function createTranslationCache(defaultMaxBytes: number = DEFAULT_MAX_BYT
         });
         return db;
       });
+      // Forget a failed open so one transient failure doesn't turn the
+      // cache off until the background restarts; the next call retries.
+      opening.catch(() => {
+        if (dbPromise === opening) dbPromise = null;
+      });
+      dbPromise = opening;
     }
     return dbPromise;
   }
@@ -104,18 +110,45 @@ export function createTranslationCache(defaultMaxBytes: number = DEFAULT_MAX_BYT
   /**
    * Runs `operation`, retrying once on a fresh connection. Covers a connection
    * that closes between `getDb()` resolving and the transaction starting,
-   * which the `close` listener alone can't catch.
+   * which the `close` listener alone can't catch. A failed open, first or on
+   * the retry, goes to `onOpenFailure`.
    */
-  async function withDb<T>(operation: (db: IDBDatabase) => Promise<T>): Promise<T> {
-    const db = await getDb();
+  async function withDb<T>(
+    operation: (db: IDBDatabase) => Promise<T>,
+    onOpenFailure: (error: unknown) => T,
+  ): Promise<T> {
+    let db: IDBDatabase;
+    try {
+      db = await getDb();
+    } catch (e) {
+      return onOpenFailure(e);
+    }
     try {
       return await operation(db);
     } catch (e) {
       console.warn('[prism] translation cache operation failed, retrying with a fresh connection', e);
       dbPromise = null;
-      const freshDb = await getDb();
+      let freshDb: IDBDatabase;
+      try {
+        freshDb = await getDb();
+      } catch (openError) {
+        return onOpenFailure(openError);
+      }
       return operation(freshDb);
     }
+  }
+
+  /** The cache is best-effort: on the translation path a failed open is a miss or a no-op, never an error. */
+  function treatAsMiss<T>(fallback: T): (error: unknown) => T {
+    return (error) => {
+      console.warn('[prism] translation cache unavailable, continuing without it', error);
+      return fallback;
+    };
+  }
+
+  /** For `clear` and `getSizeBytes`, whose callers show the failure to the user. */
+  function rethrow(error: unknown): never {
+    throw error;
   }
 
   async function ensureRunningTotal(db: IDBDatabase): Promise<number> {
@@ -137,28 +170,31 @@ export function createTranslationCache(defaultMaxBytes: number = DEFAULT_MAX_BYT
    */
   async function getMany(keys: string[]): Promise<Array<string | null>> {
     if (keys.length === 0) return [];
-    return withDb((db) => {
-      const hits: CacheRecord[] = [];
-      return new Promise<Array<string | null>>((resolve, reject) => {
-        const tx = db.transaction(STORE_NAME, 'readonly');
-        const store = tx.objectStore(STORE_NAME);
-        const results: Array<string | null> = new Array(keys.length).fill(null);
-        keys.forEach((key, i) => {
-          const request = store.get(key);
-          request.onsuccess = () => {
-            const record = request.result as CacheRecord | undefined;
-            if (!record) return; // stays null — a real cache miss
-            results[i] = record.value;
-            hits.push(record);
-          };
+    return withDb(
+      (db) => {
+        const hits: CacheRecord[] = [];
+        return new Promise<Array<string | null>>((resolve, reject) => {
+          const tx = db.transaction(STORE_NAME, 'readonly');
+          const store = tx.objectStore(STORE_NAME);
+          const results: Array<string | null> = new Array(keys.length).fill(null);
+          keys.forEach((key, i) => {
+            const request = store.get(key);
+            request.onsuccess = () => {
+              const record = request.result as CacheRecord | undefined;
+              if (!record) return; // stays null — a real cache miss
+              results[i] = record.value;
+              hits.push(record);
+            };
+          });
+          tx.oncomplete = () => resolve(results);
+          tx.onerror = () => reject(tx.error);
+        }).then((results) => {
+          if (hits.length > 0) touchLastUsed(db, hits);
+          return results;
         });
-        tx.oncomplete = () => resolve(results);
-        tx.onerror = () => reject(tx.error);
-      }).then((results) => {
-        if (hits.length > 0) touchLastUsed(db, hits);
-        return results;
-      });
-    });
+      },
+      treatAsMiss(new Array<string | null>(keys.length).fill(null)),
+    );
   }
 
   /**
@@ -203,7 +239,7 @@ export function createTranslationCache(defaultMaxBytes: number = DEFAULT_MAX_BYT
    */
   async function setMany(entries: Array<{ key: string; value: string }>): Promise<void> {
     if (entries.length === 0) return;
-    await withDb(async (db) => {
+    const written = await withDb(async (db) => {
       await ensureRunningTotal(db);
       const sizes = entries.map(({ key, value }) => estimateSize(key, value));
 
@@ -226,8 +262,9 @@ export function createTranslationCache(defaultMaxBytes: number = DEFAULT_MAX_BYT
 
       const delta = sizes.reduce((sum, size, i) => sum + size - (previousSizes[i] ?? 0), 0);
       runningTotalBytes = (runningTotalBytes ?? 0) + delta;
-    });
-    await evictUntilUnderBudget(defaultMaxBytes);
+      return true;
+    }, treatAsMiss(false));
+    if (written) await evictUntilUnderBudget(defaultMaxBytes);
   }
 
   async function set(key: string, value: string): Promise<void> {
@@ -235,7 +272,7 @@ export function createTranslationCache(defaultMaxBytes: number = DEFAULT_MAX_BYT
   }
 
   async function getSizeBytes(): Promise<number> {
-    return withDb((db) => ensureRunningTotal(db));
+    return withDb((db) => ensureRunningTotal(db), rethrow);
   }
 
   async function evictUntilUnderBudget(maxBytes: number = defaultMaxBytes): Promise<void> {
@@ -264,7 +301,7 @@ export function createTranslationCache(defaultMaxBytes: number = DEFAULT_MAX_BYT
         tx.onerror = () => reject(tx.error);
       });
       runningTotalBytes = remaining;
-    });
+    }, treatAsMiss(undefined));
   }
 
   async function clear(): Promise<void> {
@@ -276,6 +313,7 @@ export function createTranslationCache(defaultMaxBytes: number = DEFAULT_MAX_BYT
           tx.oncomplete = () => resolve();
           tx.onerror = () => reject(tx.error);
         }),
+      rethrow,
     );
     runningTotalBytes = 0;
   }

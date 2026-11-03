@@ -5,7 +5,7 @@ import { shouldAutoTranslateOnLoad } from '../src/engine/pageTranslator/autoTran
 import { createPageTranslator } from '../src/engine/pageTranslator/translateLoop';
 import { getBatchingHint } from '../src/engine/providers/descriptors';
 import { configStore } from '../src/platform/configStore';
-import { isTrustedSender, onMessage, sendMessage } from '../src/platform/messaging/protocol';
+import { onTrustedMessage, sendMessage } from '../src/platform/messaging/protocol';
 import {
   createOriginalLanguageTracker,
   MAIN_FRAME_DECISION_WORST_CASE_MS,
@@ -188,8 +188,7 @@ export default defineContentScript({
       // button turned off: that's an explicit request, so an explicit-only
       // popup (no selection listeners, zero cost until now) is mounted on
       // demand rather than quietly turning the button back on.
-      onMessage('translateSelection', (message) => {
-        if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');
+      onTrustedMessage('translateSelection', (message) => {
         if (!selectionPopup) {
           selectionPopup = createSelectionPopup(false);
           selectionPopupAuto = false;
@@ -268,34 +267,28 @@ export default defineContentScript({
     // Registered in every frame: same-origin sub-frames auto-translate
     // themselves, and "Show original" (sent with no frameId, so to every
     // frame) must restore them too.
-    onMessage('pageRestore', (message) => {
-      if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');
+    onTrustedMessage('pageRestore', () => {
       pageTranslator.restorePage();
       return pageTranslator.getState();
     });
 
     if (window.self === window.top) {
-      onMessage('pageTranslate', async (message) => {
-        if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');
+      onTrustedMessage('pageTranslate', async (message) => {
         await configStore.onReady();
         await pageTranslator.translatePage(message.data.targetLanguage);
         return pageTranslator.getState();
       });
-      onMessage('getPageState', (message) => {
-        if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');
+      onTrustedMessage('getPageState', () => {
         return pageTranslator.getState();
       });
-      onMessage('getOriginalLanguage', (message) => {
-        if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');
+      onTrustedMessage('getOriginalLanguage', () => {
         return originalLanguageTracker.get();
       });
-      onMessage('getPageError', (message) => {
-        if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');
+      onTrustedMessage('getPageError', () => {
         const lastError = pageTranslator.getLastError();
         return lastError ? { message: lastError, kind: pageTranslator.getLastErrorKind() } : null;
       });
-      onMessage('getPageWorking', (message) => {
-        if (!isTrustedSender(message.sender)) throw new Error('[prism] rejected a message from an untrusted sender');
+      onTrustedMessage('getPageWorking', () => {
         return pageTranslator.isWorking();
       });
     }
