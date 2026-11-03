@@ -127,8 +127,8 @@ export function PageTranslationTab(props: SettingsTabProps) {
       <section class="section">
         <h2>Automatic translation</h2>
         <p class="hint">
-          One hostname or language code per line (or comma-separated). Never-translate takes priority over
-          always-translate for the same site or language.
+          Type a site (like example.com) and tap Add, or pick a language from its menu. If a site or language is on both
+          an "always" and a "never" list, "never" wins.
         </p>
         <StringListEditor
           label="Always translate these sites"

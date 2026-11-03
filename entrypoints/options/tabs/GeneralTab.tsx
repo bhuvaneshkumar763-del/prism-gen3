@@ -145,9 +145,8 @@ export function GeneralTab(props: SettingsTabProps) {
       <section class="section">
         <h2>Backup</h2>
         <p class="hint">
-          Settings are stored on this device only (see the Advanced tab's diagnostics for why — `chrome.storage.sync`
-          caused real, hard-to-diagnose bugs on some browsers). Export/import is the supported way to move them between
-          devices.
+          Settings are saved on this device only. To move them to another device, export them here and import the file
+          there.
         </p>
         {/*
           Unlike the diagnostics export, this one keeps API keys (stripping

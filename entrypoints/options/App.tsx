@@ -1,4 +1,4 @@
-import { createSignal, Show } from 'solid-js';
+import { createSignal, onCleanup, Show } from 'solid-js';
 import { TabPanel } from '../../components/options/TabPanel';
 import { TabSwitcher } from '../../components/options/TabSwitcher';
 import { createConfigMirror } from '../../components/shared/configMirror';
@@ -32,8 +32,22 @@ function App() {
 
   // Deep-linkable (options.html#page): the popup and bubble open Settings
   // straight at the provider fields when you pick a provider that needs setup.
-  const initialTab = TABS.find((t) => `#${t.id}` === location.hash)?.id ?? 'general';
-  const [activeTab, setActiveTab] = createSignal(initialTab);
+  // An open Settings tab is reused by changing its #section, so follow it live.
+  const tabFromHash = () => TABS.find((t) => `#${t.id}` === location.hash)?.id;
+  const [activeTab, setActiveTab] = createSignal(tabFromHash() ?? 'general');
+  const onHashChange = () => {
+    const tab = tabFromHash();
+    if (tab) setActiveTab(tab);
+  };
+  window.addEventListener('hashchange', onHashChange);
+  onCleanup(() => window.removeEventListener('hashchange', onHashChange));
+
+  // The address follows the chosen tab, so a later link to the section the
+  // address still named (but the user had left) is a real change and switches.
+  function selectTab(id: string): void {
+    setActiveTab(id);
+    history.replaceState(null, '', `#${id}`);
+  }
   const [savedField, setSavedField] = createSignal<ConfigKey | null>(null);
   /**
    * Shown when a storage write (setField, import, restore defaults, clear
@@ -79,7 +93,7 @@ function App() {
       </Show>
 
       <Show when={ready()} fallback={<p class="loading">Loading…</p>}>
-        <TabSwitcher tabs={TABS} activeId={activeTab()} onSelect={setActiveTab} />
+        <TabSwitcher tabs={TABS} activeId={activeTab()} onSelect={selectTab} />
 
         <TabPanel id="general" active={activeTab() === 'general'}>
           <GeneralTab {...tabProps} />

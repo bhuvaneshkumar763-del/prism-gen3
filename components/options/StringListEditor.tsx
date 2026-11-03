@@ -1,4 +1,5 @@
 import { createSignal, For, Show } from 'solid-js';
+import { languageLabel } from '../../src/shared/languageLabel';
 import { COMMON_LANGUAGES } from '../../src/shared/languages';
 
 export interface StringListEditorProps {
@@ -6,23 +7,18 @@ export interface StringListEditorProps {
   values: string[];
   onAdd(value: string): void;
   onRemove(value: string): void;
-  /** Swaps the free-text add row for a `<select>` of common language codes. */
+  /** Swaps the free-text add row for a `<select>` of common languages, and shows values as language names. */
   languageOptions?: boolean;
   placeholder?: string;
 }
 
-/**
- * A labeled add/remove list editor for the always/never-translate lists, also
- * used for the per-site override tables, whose values are `"host: state"`
- * display strings (see `entrypoints/options/App.tsx`).
- */
+/** A labeled add/remove list editor for the always/never-translate lists and the preferred languages. */
 export function StringListEditor(props: StringListEditorProps) {
   const [text, setText] = createSignal('');
+  const display = (value: string) => (props.languageOptions ? languageLabel(value) : value);
 
   function commit(value: string): void {
-    // The page's hint promises "one per line (or comma-separated)". A
-    // single-line <input> never yields a newline; splitting on it too keeps
-    // this correct if the control changes.
+    // A pasted "a.com, b.com" is several sites, not one that never matches.
     const parts = value
       .split(/[,\n]/)
       .map((part) => part.trim())
@@ -41,6 +37,7 @@ export function StringListEditor(props: StringListEditorProps) {
           <div class="listEditorAddRow">
             <input
               type="text"
+              aria-label={props.label}
               value={text()}
               placeholder={props.placeholder}
               onInput={(e) => setText(e.currentTarget.value)}
@@ -59,13 +56,14 @@ export function StringListEditor(props: StringListEditorProps) {
       >
         <select
           class="listEditorSelect"
-          value=""
+          aria-label={props.label}
           onChange={(e) => {
             commit(e.currentTarget.value);
             e.currentTarget.value = '';
           }}
         >
-          <option value="" disabled>
+          {/* `selected` here, not `value` on the select: that is set before the options exist. */}
+          <option value="" disabled selected>
             Add a language…
           </option>
           <For each={COMMON_LANGUAGES}>{(l) => <option value={l.code}>{l.name}</option>}</For>
@@ -76,11 +74,12 @@ export function StringListEditor(props: StringListEditorProps) {
           <For each={props.values}>
             {(value) => (
               <li>
-                <span>{value}</span>
+                <span>{display(value)}</span>
                 <button
                   type="button"
                   class="removeBtn"
-                  aria-label={`Remove ${value}`}
+                  aria-label={`Remove ${display(value)}`}
+                  title={`Remove ${display(value)}`}
                   onClick={() => props.onRemove(value)}
                 >
                   ×

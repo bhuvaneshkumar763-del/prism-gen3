@@ -17,7 +17,6 @@ export interface DiagnosticsReport {
   storageRoundTripOk: boolean;
   cacheSizeBytes: number | null;
   hasI18nDetectLanguage: boolean;
-  hasScriptingApi: boolean;
   hasIndexedDb: boolean;
   effectiveConfig: Record<string, unknown>;
 }
@@ -55,8 +54,42 @@ export async function runDiagnostics(): Promise<DiagnosticsReport> {
     storageRoundTripOk,
     cacheSizeBytes,
     hasI18nDetectLanguage: typeof browser.i18n?.detectLanguage === 'function',
-    hasScriptingApi: typeof browser.scripting !== 'undefined',
     hasIndexedDb: typeof indexedDB !== 'undefined',
     effectiveConfig: buildEffectiveConfigSnapshot(),
   };
+}
+
+const KB = 1024;
+const MB = 1024 * 1024;
+
+/** The cache size as a person reads it: "Empty", "0.3 KB", "200 KB", "12.3 MB". */
+export function formatCacheSize(bytes: number | null): string {
+  if (bytes === null) return 'Unavailable';
+  if (bytes <= 0) return 'Empty';
+  if (bytes < MB) {
+    const kb = bytes / KB;
+    return `${kb < 10 ? kb.toFixed(1) : Math.round(kb)} KB`;
+  }
+  return `${(bytes / MB).toFixed(1)} MB`;
+}
+
+export interface DiagnosticsRow {
+  label: string;
+  value: string;
+  /** `info` is a plain figure, neither good nor bad. */
+  status: 'ok' | 'fail' | 'info';
+}
+
+function check(label: string, ok: boolean, yes: string, no: string): DiagnosticsRow {
+  return { label, value: ok ? yes : no, status: ok ? 'ok' : 'fail' };
+}
+
+/** The report in plain words, for Settings → Advanced. */
+export function describeDiagnostics(report: DiagnosticsReport): DiagnosticsRow[] {
+  return [
+    check('Saving settings', report.storageRoundTripOk, 'Working', 'Not working'),
+    check('Language detection', report.hasI18nDetectLanguage, 'Available', 'Not available'),
+    check('Translation cache storage', report.hasIndexedDb, 'Available', 'Not available'),
+    { label: 'Translation cache size', value: formatCacheSize(report.cacheSizeBytes), status: 'info' },
+  ];
 }

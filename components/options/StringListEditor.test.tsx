@@ -59,6 +59,34 @@ describe('StringListEditor', () => {
     expect(onAdd).not.toHaveBeenCalled();
   });
 
+  it('shows language names instead of codes in a language list, falling back to the code when unknown', () => {
+    const onRemove = vi.fn();
+    const el = mount({ values: ['zh-CN', 'ja', 'qq-zz'], languageOptions: true, onRemove });
+    const labels = [...el.querySelectorAll('li > span')].map((s) => s.textContent);
+    expect(labels).toEqual(['Chinese (Simplified)', 'Japanese', 'qq-zz']);
+    const remove = el.querySelector('button.removeBtn') as HTMLButtonElement;
+    expect(remove.getAttribute('aria-label')).toBe('Remove Chinese (Simplified)');
+    remove.click();
+    // The stored value stays the code; only the display changes.
+    expect(onRemove).toHaveBeenCalledWith('zh-CN');
+  });
+
+  it('starts the language menu on its "Add a language…" prompt, so the first language can be picked too', () => {
+    const onAdd = vi.fn();
+    const el = mount({ languageOptions: true, onAdd });
+    const select = el.querySelector('select') as HTMLSelectElement;
+    expect(select.selectedOptions[0]?.textContent).toBe('Add a language…');
+    select.value = 'ar';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(onAdd).toHaveBeenCalledWith('ar');
+    expect(select.selectedOptions[0]?.textContent).toBe('Add a language…');
+  });
+
+  it('shows site values as typed', () => {
+    const el = mount({ values: ['example.com'] });
+    expect(el.querySelector('li > span')?.textContent).toBe('example.com');
+  });
+
   it('renders each value with a remove button that calls onRemove', () => {
     const onRemove = vi.fn();
     const el = mount({ values: ['a.com', 'b.com'], onRemove });
