@@ -46,10 +46,12 @@ const candidateEntrypoints = [
       if (!hasQuickField) return "expected popup's .quickField language pickers to be present";
       const hasPrimaryBtn = (await page.locator('.primaryBtn').count()) > 0;
       if (!hasPrimaryBtn) return "expected the popup's primary translate/restore button to be present";
-      const hasAlwaysToggle = (await page.locator('.toggleRow', { hasText: 'Always translate this site' }).count()) > 0;
-      if (!hasAlwaysToggle) return 'expected the "Always translate this site" toggle row to be present';
       const hasMoreToggle = (await page.locator('.moreToggle').count()) > 0;
-      if (!hasMoreToggle) return 'expected the "More settings" expander to be present';
+      if (!hasMoreToggle) return 'expected the "More" expander to be present';
+      await page.locator('.moreToggle').click();
+      const siteRule = page.locator('fieldset.siteRule', { hasText: 'Translate this site' });
+      const hasSiteRule = (await siteRule.locator('input[type="radio"]').count()) === 3 && (await siteRule.isVisible());
+      if (!hasSiteRule) return 'expected the "Translate this site" Always/Default/Never choice under "More"';
     },
   },
   {
