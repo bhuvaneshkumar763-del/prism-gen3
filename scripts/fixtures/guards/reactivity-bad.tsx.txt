@@ -1,0 +1,18 @@
+import { createMemo } from 'solid-js';
+import { configStore } from '../../../src/platform/configStore';
+
+export function Bad() {
+  const label = () => configStore.get('theme');
+  function language() {
+    return configStore.get('targetLanguage');
+  }
+  const memo = createMemo(() => configStore.get('theme'));
+  return (
+    <div title={configStore.get('theme')}>
+      {configStore.get('targetLanguage')}
+      {label()}
+      <span>{language()}</span>
+      {memo()}
+    </div>
+  );
+}

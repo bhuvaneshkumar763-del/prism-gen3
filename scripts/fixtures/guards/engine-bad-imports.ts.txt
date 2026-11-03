@@ -1,0 +1,6 @@
+import { storage } from '#imports';
+import { defineExtensionMessaging } from '@webext-core/messaging';
+import { browser } from 'wxt/browser';
+import { configStore } from '../../../src/platform/configStore';
+export { thing } from '../../../entrypoints/content';
+export const load = () => import('../../../components/bubble/mountBubble');

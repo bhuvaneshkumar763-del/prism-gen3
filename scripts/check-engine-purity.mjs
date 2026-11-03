@@ -1,204 +1,178 @@
 #!/usr/bin/env node
-// Engine-purity guard (Gen 3 plan, design principle #3): fails the build if
-// src/engine/** or src/shared/** import chrome/browser extension APIs or
-// any WXT/framework-specific module. This is the mechanical enforcement
-// that makes "the engine can be extracted into its own package later"
-// actually true, rather than a convention that quietly drifts — see
-// src/engine/README.md and src/shared/README.md.
+// Engine-purity guard: src/engine/ and src/shared/ must not depend on the
+// browser extension, so the engine can run anywhere (tests, other surfaces).
+// Parses each file with the TypeScript compiler and fails on:
+//   1. an import (static, dynamic, `export … from`, `import x = require`) of a
+//      browser-extension or WXT module, or of src/platform/, entrypoints/ or
+//      components/;
+//   2. a use of an ambient extension global (`chrome`, `browser`) or of a WXT
+//      auto-import (`storage`, `defineBackground`, …) that the file doesn't
+//      declare or import itself.
 //
-// Checks two things per file:
-//   1. Static imports from a disallowed module (wxt, @wxt-dev/*,
-//      webextension-polyfill, or any other browser-extension-API package).
-//   2. Bare `chrome.`/`browser.` identifier usage — these are ambient
-//      globals in a WXT extension context (no import needed), so an
-//      import-only check would miss real violations.
+// Usage: node scripts/check-engine-purity.mjs [dir ...]   (default: src/engine src/shared)
 
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import ts from 'typescript';
 
-const GUARDED_DIRS = ['src/engine', 'src/shared'];
-const DISALLOWED_IMPORT_PATTERN = /from\s+['"](wxt|@wxt-dev\/|webextension-polyfill)/;
-// A FIXED namespace list (storage/tabs/runtime/...) used to be the match
-// here — Chrome's extension API surface keeps growing, and nothing
-// documented why that particular subset was chosen, so a genuinely
-// foreseeable new engine-file dependency (chrome.windows, .notifications,
-// .downloads, ...) would silently pass this guard. `chrome`/`browser`
-// should never be referenced under src/engine/ or src/shared/ at all per
-// the purity boundary, so match ANY property access on either identifier
-// rather than trying to keep an allowlist in sync with Chrome's own API
-// surface.
-//
-// Known, accepted gap (not attempted here — needs real static analysis,
-// not a regex guard): aliasing (`const c = chrome; c.storage...`), bracket
-// access (`chrome['storage']`), and dynamic `import('webextension-polyfill')`
-// all evade this. This guard catches the common, accidental case, not
-// every deliberate way around it.
-const BARE_GLOBAL_PATTERN = /\b(chrome|browser)\.\w+/;
-
-/**
- * Strips `//` and `/* *\/` comments from one line, string-aware — unlike a
- * plain `line.indexOf('/*')`, which treats ANY literal `/*`-looking
- * substring as a comment opener, including one that appears inside a
- * string or regex literal (e.g. a URL, or a regex pattern that happens to
- * contain those two characters in sequence). That desyncs `inBlockComment`
- * for the rest of the file, silently disabling the check entirely from
- * that point on — a real violation later in the same file would never be
- * reported.
- *
- * Known, accepted simplification: `quote` state resets at the start of
- * every line, so a genuine multi-line template literal isn't tracked
- * across lines. Rare in this codebase's style for anything that would
- * contain a chrome/browser reference; full multi-line string tracking
- * would need a real tokenizer, which is disproportionate for this guard.
- */
-function stripCommentsFromLine(line, inBlockComment) {
-  let result = '';
-  let quote = null;
-  let i = 0;
-  while (i < line.length) {
-    if (inBlockComment) {
-      const end = line.indexOf('*/', i);
-      if (end === -1) return { result, inBlockComment: true };
-      i = end + 2;
-      inBlockComment = false;
-      continue;
-    }
-    const ch = line[i];
-    if (quote) {
-      result += ch;
-      if (ch === '\\' && i + 1 < line.length) {
-        result += line[i + 1];
-        i += 2;
-        continue;
-      }
-      if (ch === quote) quote = null;
-      i++;
-      continue;
-    }
-    if (ch === "'" || ch === '"' || ch === '`') {
-      quote = ch;
-      result += ch;
-      i++;
-      continue;
-    }
-    if (ch === '/' && line[i + 1] === '/') break; // line comment — rest of the line is gone
-    if (ch === '/' && line[i + 1] === '*') {
-      const end = line.indexOf('*/', i + 2);
-      if (end === -1) return { result, inBlockComment: true };
-      i = end + 2;
-      continue;
-    }
-    result += ch;
-    i++;
-  }
-  return { result, inBlockComment };
-}
-
-/**
- * Blanks the contents of '...' and "..." string literals, for the bare-global
- * check ONLY.
- *
- * Real false positive this closed: a hostname like 'chrome.google.com' in a
- * string (a list of extension-store URLs) matched BARE_GLOBAL_PATTERN, even
- * though text inside a quoted string can never be an API access.
- *
- * Deliberately NOT applied to the import check: DISALLOWED_IMPORT_PATTERN
- * matches the quoted module name itself (`from 'wxt/browser'`), so blanking
- * strings there would silently disable it.
- *
- * Template literals are copied through untouched, and their own quote
- * characters don't open a string here: `${chrome.runtime.id}` inside one is
- * a genuine access, and an apostrophe in `it's ${browser.x}` must not start a
- * fake string that swallows it. Erring toward keeping text keeps this from
- * ever hiding a real violation.
- */
-function blankQuotedStrings(line) {
-  let out = '';
-  let quote = null;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (quote === '`') {
-      out += ch;
-      if (ch === '\\' && i + 1 < line.length) {
-        out += line[++i];
-      } else if (ch === '`') {
-        quote = null;
-      }
-      continue;
-    }
-    if (quote) {
-      if (ch === '\\' && i + 1 < line.length) {
-        out += '  ';
-        i++;
-        continue;
-      }
-      if (ch === quote) {
-        quote = null;
-        out += ch;
-      } else {
-        out += ' ';
-      }
-      continue;
-    }
-    if (ch === "'" || ch === '"' || ch === '`') quote = ch;
-    out += ch;
-  }
-  return out;
-}
+const REPO_ROOT = resolve(dirname(new URL(import.meta.url).pathname), '..');
+const DEFAULT_DIRS = ['src/engine', 'src/shared'];
+const DISALLOWED_MODULES = [/^wxt($|\/)/, /^@wxt-dev\//, /^webextension-polyfill$/, /^#imports$/, /^@webext-core\//];
+const DISALLOWED_LAYERS = ['src/platform', 'entrypoints', 'components'].map((p) => join(REPO_ROOT, p));
+const AMBIENT_GLOBALS = new Set([
+  'chrome',
+  'browser',
+  'storage',
+  'defineBackground',
+  'defineContentScript',
+  'defineUnlistedScript',
+  'createShadowRootUi',
+  'createIntegratedUi',
+  'createIframeUi',
+  'injectScript',
+  'useAppConfig',
+]);
 
 function walk(dir, files = []) {
   for (const entry of readdirSync(dir)) {
     const full = join(dir, entry);
-    const stat = statSync(full);
-    if (stat.isDirectory()) walk(full, files);
-    else if (/\.(ts|tsx)$/.test(entry) && !entry.endsWith('.test.ts') && !entry.endsWith('.test.tsx')) {
-      files.push(full);
-    }
+    if (statSync(full).isDirectory()) walk(full, files);
+    else if (/\.tsx?$/.test(entry) && !/\.test\.tsx?$/.test(entry)) files.push(full);
   }
   return files;
 }
 
-const violations = [];
+/** Every module specifier the file imports or re-exports, with its position. */
+function moduleSpecifiers(sourceFile) {
+  const found = [];
+  const visit = (node) => {
+    if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier) {
+      if (ts.isStringLiteral(node.moduleSpecifier)) found.push(node.moduleSpecifier);
+    } else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference)) {
+      const expr = node.moduleReference.expression;
+      if (ts.isStringLiteral(expr)) found.push(expr);
+    } else if (ts.isCallExpression(node) && node.arguments.length > 0 && ts.isStringLiteral(node.arguments[0])) {
+      const isDynamicImport = node.expression.kind === ts.SyntaxKind.ImportKeyword;
+      const isRequire = ts.isIdentifier(node.expression) && node.expression.text === 'require';
+      if (isDynamicImport || isRequire) found.push(node.arguments[0]);
+    } else if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument)) {
+      if (ts.isStringLiteral(node.argument.literal)) found.push(node.argument.literal);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return found;
+}
 
-for (const dir of GUARDED_DIRS) {
-  let files;
-  try {
-    files = walk(dir);
-  } catch {
-    continue; // directory doesn't exist yet — fine, nothing to check
-  }
+/** Names the file declares or imports anywhere (an approximation of scope that is enough for this guard). */
+function declaredNames(sourceFile) {
+  const names = new Set();
+  const addBinding = (name) => {
+    if (!name) return;
+    if (ts.isIdentifier(name)) names.add(name.text);
+    else if (ts.isObjectBindingPattern(name) || ts.isArrayBindingPattern(name)) {
+      for (const el of name.elements) if (!ts.isOmittedExpression(el)) addBinding(el.name);
+    }
+  };
+  const visit = (node) => {
+    if (
+      ts.isVariableDeclaration(node) ||
+      ts.isParameter(node) ||
+      ts.isFunctionDeclaration(node) ||
+      ts.isClassDeclaration(node) ||
+      ts.isImportSpecifier(node) ||
+      ts.isNamespaceImport(node) ||
+      ts.isImportClause(node) ||
+      ts.isImportEqualsDeclaration(node) ||
+      ts.isEnumDeclaration(node) ||
+      ts.isInterfaceDeclaration(node) ||
+      ts.isTypeAliasDeclaration(node)
+    ) {
+      addBinding(node.name);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return names;
+}
+
+/** True when `node` is an identifier used as a value or type reference (not a property name or a declaration's own name). */
+function isReference(node) {
+  const parent = node.parent;
+  if (!parent) return false;
+  if (ts.isPropertyAccessExpression(parent) && parent.name === node) return false;
+  if (ts.isQualifiedName(parent) && parent.right === node) return false;
+  if (
+    (ts.isPropertyAssignment(parent) || ts.isPropertySignature(parent) || ts.isPropertyDeclaration(parent)) &&
+    parent.name === node
+  )
+    return false;
+  if (
+    (ts.isMethodDeclaration(parent) ||
+      ts.isMethodSignature(parent) ||
+      ts.isGetAccessor(parent) ||
+      ts.isSetAccessor(parent)) &&
+    parent.name === node
+  )
+    return false;
+  if (ts.isBindingElement(parent) && parent.propertyName === node) return false;
+  if (ts.isImportSpecifier(parent) || ts.isExportSpecifier(parent)) return false;
+  if (ts.isLabeledStatement(parent) || ts.isBreakOrContinueStatement(parent)) return false;
+  if ('name' in parent && parent.name === node) return false;
+  return true;
+}
+
+export function checkFiles(files) {
+  const violations = [];
   for (const file of files) {
-    const content = readFileSync(file, 'utf8');
-    const lines = content.split('\n');
-    let inBlockComment = false;
-    lines.forEach((rawLine, i) => {
-      // Strip comments before matching — a doc comment mentioning
-      // "browser.storage" as prose (e.g. explaining why a module DOESN'T
-      // use it) must not trip this check. String-aware (see
-      // stripCommentsFromLine's own doc comment for why that matters).
-      const stripped = stripCommentsFromLine(rawLine, inBlockComment);
-      const line = stripped.result; // empty when the whole line was inside a block comment — matches nothing below
-      inBlockComment = stripped.inBlockComment;
-      // Also skip lines that are purely a jsdoc-style " * ..." continuation.
-      if (/^\s*\*/.test(rawLine) && !/^\s*\*\//.test(rawLine)) return;
+    const text = readFileSync(file, 'utf8');
+    const sourceFile = ts.createSourceFile(
+      file,
+      text,
+      ts.ScriptTarget.Latest,
+      true,
+      /\.tsx(\.txt)?$/.test(file) ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+    );
+    const at = (node) =>
+      `${relative(REPO_ROOT, file)}:${sourceFile.getLineAndCharacterOfPosition(node.getStart()).line + 1}`;
 
-      if (DISALLOWED_IMPORT_PATTERN.test(line)) {
-        violations.push(`${file}:${i + 1}: imports a browser-extension/framework module — ${rawLine.trim()}`);
+    for (const spec of moduleSpecifiers(sourceFile)) {
+      const name = spec.text;
+      if (DISALLOWED_MODULES.some((re) => re.test(name))) {
+        violations.push(`${at(spec)}: imports the extension/framework module '${name}'`);
+      } else if (name.startsWith('.')) {
+        const target = resolve(dirname(file), name);
+        const layer = DISALLOWED_LAYERS.find((dir) => target === dir || target.startsWith(dir + sep));
+        if (layer) violations.push(`${at(spec)}: imports '${name}' from ${relative(REPO_ROOT, layer)}/`);
       }
-      if (BARE_GLOBAL_PATTERN.test(blankQuotedStrings(line))) {
-        violations.push(`${file}:${i + 1}: uses the ambient chrome/browser extension API global — ${rawLine.trim()}`);
+    }
+
+    const declared = declaredNames(sourceFile);
+    const visit = (node) => {
+      if (ts.isIdentifier(node) && AMBIENT_GLOBALS.has(node.text) && !declared.has(node.text) && isReference(node)) {
+        violations.push(`${at(node)}: uses the ambient extension/WXT global '${node.text}'`);
       }
-    });
+      ts.forEachChild(node, visit);
+    };
+    visit(sourceFile);
   }
+  return violations;
 }
 
-if (violations.length > 0) {
-  console.error('Engine-purity check FAILED:\n');
-  for (const v of violations) console.error(`  ${v}`);
-  console.error(
-    '\nsrc/engine/ and src/shared/ must have zero browser-extension-API dependencies — inject them via a port implemented in src/platform/ instead. See src/engine/README.md.',
-  );
-  process.exit(1);
+function main(args) {
+  const dirs = args.length > 0 ? args : DEFAULT_DIRS;
+  const files = dirs.flatMap((dir) => walk(resolve(REPO_ROOT, dir)));
+  const violations = checkFiles(files);
+  if (violations.length > 0) {
+    console.error('Engine-purity check FAILED:\n');
+    for (const v of violations) console.error(`  ${v}`);
+    console.error(
+      '\nsrc/engine/ and src/shared/ must not depend on the browser extension — inject it through a port implemented in src/platform/ instead. See src/engine/README.md.',
+    );
+    process.exit(1);
+  }
+  console.log(`Engine-purity check passed — ${files.length} files in ${dirs.join(', ')}.`);
 }
 
-console.log('Engine-purity check passed — no chrome/browser/WXT imports found under src/engine/ or src/shared/.');
+if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) main(process.argv.slice(2));

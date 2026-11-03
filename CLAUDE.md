@@ -26,6 +26,8 @@ finished; its history is in the `/current-status` skill.
 4. **Through a pull request, never straight to `main`.** One release per
    batch, checked on a real page first; the changelog entry's
    `Checked on: <page>, <browser>, <date>` line records where.
+   After any code or version change, run `npm run safari:sync` and commit
+   `safari/` (CI fails when the Safari copy is out of date).
 5. **The owner can't read code.** Say in plain words what changed and how to
    check it on the iPhone.
 
