@@ -13,12 +13,9 @@ export interface TabSwitcherProps {
 }
 
 /**
- * ARIA APG "automatic activation" tablist — ported from the pre-rewrite
- * fork's options page. Arrow/Home/End move focus AND activate the tab in
- * one step (roving `tabindex`, only the active tab is in the tab order).
- * Keyboard math lives in `src/shared/ui/tabNavigation.ts` so the
- * wrap-around logic is unit-tested rather than only exercised by clicking
- * through a real tablist.
+ * ARIA APG "automatic activation" tablist: Arrow/Home/End move focus and
+ * activate in one step, with a roving `tabindex`. The key math lives in
+ * `src/shared/ui/tabNavigation.ts` so it can be unit-tested.
  */
 export function TabSwitcher(props: TabSwitcherProps) {
   function activeIndex(): number {

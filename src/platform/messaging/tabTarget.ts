@@ -1,11 +1,6 @@
 /**
- * The one place that knows how to find "the tab a page-scoped message
- * should go to." The old repo had this exact logic hand-duplicated between
- * its messaging layer and `background.ts` — this file exists specifically
- * so that never happens here: `popup/App.tsx`'s translate/restore buttons
- * and `background.ts`'s context-menu/keyboard-command handlers both call
- * this same function (see `getActiveTabId.test.ts` for a test exercising
- * it from more than one conceptual call site).
+ * The one place that resolves "the tab a page-scoped message should go to",
+ * shared by the popup and background so the logic isn't duplicated.
  */
 export async function getActiveTab() {
   const [tab] = await browser.tabs.query({ active: true, currentWindow: true });

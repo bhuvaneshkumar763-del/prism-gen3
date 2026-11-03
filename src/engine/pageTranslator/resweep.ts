@@ -1,20 +1,11 @@
 /**
- * Adaptive safety re-sweep. A MutationObserver on document.body cannot see
- * mutations made *inside* shadow roots after load, subtrees built detached
- * and re-attached, or very slow client-side renders. To guarantee nothing
- * stays untranslated, this periodically re-walks the page through the same
- * identity-deduped pipeline as the mutation watcher, so already-translated
- * nodes are never re-sent.
+ * Adaptive safety re-sweep: re-walks the page through the same deduped
+ * pipeline as the mutation watcher, catching what a body MutationObserver
+ * can't see (changes inside shadow roots, detached-then-attached subtrees).
  *
- * Runs often right after load/becoming visible, then backs off on a static
- * page; a scroll, SPA navigation (detected via a cheap `location.href`
- * poll — a content script can't intercept the page's own
- * `history.pushState` directly), or returning to the tab resets the
- * cadence so freshly revealed content (lazy-load, infinite scroll, a new
- * chapter) is picked up promptly.
- *
- * Only standard Web APIs (`setTimeout`, `window`, `location`) — no
- * `chrome`/`browser` imports, so this lives in `src/engine/`.
+ * Fast after load, backs off on a static page; scroll, SPA navigation (a
+ * `location.href` poll, since a content script can't hook the page's
+ * `history.pushState`) or returning to the tab resets the cadence.
  */
 
 const RESWEEP_MIN_MS = 1500;
@@ -28,12 +19,7 @@ export interface ResweepOptions {
   onResweep(): boolean;
   /** Called once per tick when location.href changed since the last tick (SPA navigation). */
   onHrefChange?(): void;
-  /**
-   * Debounced scroll notification (same 400ms debounce that already drives
-   * `bump()`) — lets a caller invalidate anything that depends on "what's
-   * currently in the viewport" (translateLoop.ts's viewport-priority reorder)
-   * without registering its own second scroll listener.
-   */
+  /** Debounced scroll notification (same debounce as `bump()`), so callers needn't add their own scroll listener. */
   onViewportChanged?(): void;
 }
 
@@ -88,16 +74,8 @@ export function createResweepScheduler(options: ResweepOptions) {
     }
     started = true;
 
-    // Reliability fix, found via audit: a plain (bubbling-phase) 'scroll'
-    // listener on `window` only ever sees the window's own scroll — a
-    // 'scroll' event fired on an ELEMENT (an app-shell's inner scrollable
-    // pane, a modal's scrollable body) never bubbles per the DOM spec, so
-    // scrolling an inner scroller never bumped the cadence and freshly
-    // revealed content there waited on resweep's own backed-off interval
-    // (up to 10s) instead of picking up promptly like a window-level
-    // scroll does. `capture: true` catches it: every 'scroll' event, no
-    // matter its target, passes through `window` during the CAPTURE phase
-    // on its way down — the one phase a non-bubbling event still traverses.
+    // Capture phase: 'scroll' on an element (an inner scroll pane) doesn't
+    // bubble, but every scroll event still passes `window` while capturing.
     window.addEventListener('scroll', onScroll, { passive: true, capture: true });
     window.addEventListener('popstate', onPopstate);
 

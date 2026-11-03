@@ -25,13 +25,9 @@ export function pickTranslationTestSample(targetLanguage: string): TranslationTe
 }
 
 /**
- * Turns a test translation's outcome into what Settings shows.
- *
- * An answer identical to the input is reported as a FAILURE, not success:
- * that is this project's documented silent-failure mode — the service
- * responds normally but translates nothing (see the post-launch incident
- * "translation didn't work out of the box, and failure was silent"). A test
- * that called that "working" would reproduce exactly the problem it's for.
+ * Turns a test translation's outcome into what Settings shows. Text that
+ * comes back identical counts as a FAILURE: the service answering normally
+ * but translating nothing is the silent-failure mode this test exists to catch.
  */
 export function describeTranslationTest(
   sample: TranslationTestSample,

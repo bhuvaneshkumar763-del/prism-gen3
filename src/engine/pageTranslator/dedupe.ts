@@ -1,11 +1,6 @@
 /**
- * O(1) identity-dedupe tracking for the translation queue. A naive "is this
- * node already queued?" check (linear scan of every tracked node for every
- * candidate) becomes the hottest loop on a long page once a periodic
- * re-sweep (see resweep.ts) runs every couple of seconds — a WeakSet makes
- * membership checks O(1), and WeakSet specifically (not Set) so a node's
- * tracking entry disappears with it once it leaves the DOM and is
- * garbage-collected, instead of leaking memory forever.
+ * O(1) identity-dedupe for the translation queue; the periodic re-sweep makes
+ * this a hot path on long pages. A WeakSet so entries vanish with GC'd nodes.
  */
 export function createDedupeTracker() {
   let trackedNodes = new WeakSet<Node>();

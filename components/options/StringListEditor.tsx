@@ -12,24 +12,17 @@ export interface StringListEditorProps {
 }
 
 /**
- * A labeled add/remove list editor — ported from the pre-rewrite fork's
- * options page (`StringListEditor`), used for the four always/never-
- * translate site/language lists here and reused as-is for the per-site
- * bubble/source-language override tables (values there are `"host: state"`
- * display strings, not raw hostnames, since those two need a different
- * remove semantics — see `entrypoints/options/App.tsx`).
+ * A labeled add/remove list editor for the always/never-translate lists, also
+ * used for the per-site override tables, whose values are `"host: state"`
+ * display strings (see `entrypoints/options/App.tsx`).
  */
 export function StringListEditor(props: StringListEditorProps) {
   const [text, setText] = createSignal('');
 
   function commit(value: string): void {
-    // The options page's own hint text promises "one per line (or
-    // comma-separated)" for the free-text site lists this feeds — commit()
-    // used to add the whole raw string as ONE entry regardless, so a pasted
-    // "a.com, b.com" became a single dead list item that never matches
-    // anything. Splits on comma (the reachable case: a single-line
-    // `<input>` never delivers a literal newline in its own `.value`) and
-    // on newline too, so this stays correct if the control ever changes.
+    // The page's hint promises "one per line (or comma-separated)". A
+    // single-line <input> never yields a newline; splitting on it too keeps
+    // this correct if the control changes.
     const parts = value
       .split(/[,\n]/)
       .map((part) => part.trim())

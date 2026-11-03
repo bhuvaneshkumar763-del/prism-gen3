@@ -18,75 +18,30 @@ import { createTitleTranslator } from './titleTranslator';
 import { prioritizeByViewport } from './viewportPriority';
 
 /**
- * The page-translation engine: collect text nodes, batch-translate them via
- * an injected `Translator` port, splice results back in, and keep watching
- * for new/changed content. Ties together dedupe.ts (O(1) identity
- * tracking), mutationWatcher.ts (childList + characterData observation),
- * resweep.ts (the adaptive backstop), grouping.ts (the chunking logic —
- * see its header comment for why this matters for translation quality),
- * and titleTranslator.ts (the tab-bar title, which lives in `<head>` and
- * is otherwise never reached by this module's body-only text-node walk).
- *
- * 100% engine-pure: `translator` is injected as the same `Translator`
- * interface every provider implements (see `src/engine/translator.ts`) —
- * this module never touches `browser.runtime.sendMessage` or any other
- * extension API directly. In this extension, `src/platform/remoteTranslator.ts`
- * supplies a `Translator` that messages the background script; a future
- * non-extension surface could supply one that calls a translation API
- * directly, and this entire engine would work unmodified — the
- * cross-surface-reuse goal from the Gen 3 plan, made concrete.
- *
- * Scope note: element attributes (`placeholder`, `alt`, a button `value`,
- * `title`, `aria-label`) ARE translated — by `attributeTranslator.ts`, its
- * own subsystem, started and restored from this file below. They are not
- * handled HERE because they aren't `Text` nodes, so none of this file's
- * collect/queue/write-back/restore machinery (built entirely around `Text`
- * node identity) applies to them. Still genuinely unbuilt: applying a
- * custom dictionary — a quality/coverage gap, not a correctness one.
- *
- * (This note previously claimed attributes were not translated at all,
- * which had been false since the attribute subsystem landed. Corrected by a
- * round-7 audit; the same audit found two skill docs stale the same way.)
+ * The page-translation engine: collect text nodes, batch-translate them via an
+ * injected `Translator`, splice results back, and keep watching for new or
+ * changed content. Engine-pure (no extension APIs). Attributes and the tab
+ * title aren't `Text` nodes, so attributeTranslator.ts and titleTranslator.ts
+ * handle them.
  */
 
-// Post-launch speed pass: raised from 100 — real bug, found via a live user
-// report: this cap forced a large page into many sequential ticks even
-// though provider-side concurrency is capped independently and separately
-// (batchedHttpProvider.ts's DEFAULT_MAX_CONCURRENT), so the real limiting
-// factor was this number, not actual network/provider capacity. Left well
-// under DEFAULT_MAX_CONCURRENT × a request's typical piece count so one
-// tick still fits comfortably inside a handful of concurrent HTTP batches
-// rather than queueing hundreds of them at once.
+// Provider concurrency is capped separately (DEFAULT_MAX_CONCURRENT); this keeps
+// a tick to a handful of concurrent HTTP batches without many sequential ticks.
 const MAX_PIECES_PER_TICK = 300;
 /** Upper bound when one oversized block is taken whole into a tick. */
 const MAX_NODES_PER_BLOCK_TICK = 5000;
-// Speed fix, found via a live-page audit (a text-dense, continuously-
-// churning page — a chapter reader whose own translate widget periodically
-// replaces its whole content subtree): once `queue.length` exceeds
-// `MAX_PIECES_PER_TICK`, `prioritizeByViewport`'s reorder (see the tick's
-// own comment on `viewportDirty` below) is throttled to at most once per
-// this many ms instead of running every single tick. Below that size
-// (the common case beta.55's "always reorder" fix targeted) it still
-// always reorders, unthrottled — this only bounds the uncommon
-// large/churning case that fix didn't anticipate: if new/changed nodes
-// keep arriving faster than the tick drains, `viewportDirty` stays true
-// on essentially every tick, and without this throttle each tick would
-// re-measure (forced `getBoundingClientRect()` layout reads for) the
-// ENTIRE, still-growing queue — real, compounding main-thread cost,
-// worse on constrained mobile hardware.
+// Past MAX_PIECES_PER_TICK queued nodes, reorder by viewport at most this often:
+// on a churning page `viewportDirty` stays set every tick, and each reorder
+// forces layout reads across the whole queue.
 const LARGE_QUEUE_REORDER_THROTTLE_MS = 500;
 const HAS_LETTER = /\p{L}/u;
-/** See `originalWhitespace`'s declaration comment (inside `runTranslationTick`) for why this is punctuation-aware, not whitespace-only. */
+/** See `originalWhitespace` in `runTranslationTick` for why this is punctuation-aware. */
 const LEADING_NON_LETTER_OR_DIGIT = /^[^\p{L}\p{N}]+/u;
 
 /**
- * Drops a `nodesToRestore` entry once its node has been disconnected for
- * two CONSECUTIVE resweep ticks, not one — see the call site (onResweep,
- * below) for the real bug this closed. Exported as a standalone, timing-free
- * function so this two-tick debounce is unit-testable directly (map/set
- * manipulation) instead of only through the full resweep-scheduler/
- * MutationObserver timing stack, which is real-clock/interval-driven and
- * not something a test can pin to an exact tick count deterministically.
+ * Drops a `nodesToRestore` entry once its node has been disconnected for two
+ * CONSECUTIVE resweep ticks: recycled list widgets detach and reattach the
+ * same node within one tick, and pruning it then would make it unrestorable.
  */
 export function pruneDisconnectedRestoreEntries(
   nodesToRestore: Map<Text, string>,
@@ -116,7 +71,7 @@ export interface PageTranslatorOptions {
   /** Looked up per translate cycle to decide chunking — see descriptors.ts's `batchingHint`. */
   getBatchingHint(): BatchingHint | undefined;
   getDontSortResults?(): boolean;
-  /** See `collectTextNodes.ts`'s `translatePreTags` doc comment. Omit to keep the default (skip `<pre>`, matching every prior release's behavior). */
+  /** See `NoTranslateOptions.translatePreTags`. Omitted means `<pre>` is skipped. */
   getTranslatePreTags?(): boolean;
 }
 
@@ -126,91 +81,43 @@ export function createPageTranslator(options: PageTranslatorOptions) {
   let pageLanguageState: PageLanguageState = 'original';
   let queue: Text[] = [];
   /**
-   * O(1) membership check mirroring `queue`'s own contents — kept in exact
-   * sync with every push/splice/unshift on `queue` below (added when a
-   * node enters `queue`, removed the instant it's spliced out into an
-   * in-flight `batch`, re-added if that batch gets unshifted back in after
-   * a failure). Speed fix, found via a live-page audit (a text-dense,
-   * continuously-churning page — a chapter reader with a third-party
-   * translate widget that periodically replaces its whole content
-   * subtree): `requeueChangedTextNode` used a plain `queue.includes(node)`
-   * scan, an `O(n)` cost paid on EVERY characterData mutation
-   * (unthrottled, straight from `mutationWatcher.onChangedTextNode`) — the
-   * exact anti-pattern `dedupe.ts`'s own header comment already warns
-   * against ("a naive... linear scan of every tracked node for every
-   * candidate becomes the hottest loop on a long page"), just not yet
-   * applied to this later-added duplicate-check. Reassigned to a fresh
-   * `WeakSet` everywhere `queue` itself gets reset to reflect a new
-   * cycle (mirroring `dedupe.reset()`, right next to it in both places)
-   * rather than mutated, since `WeakSet` has no `clear()`.
+   * O(1) mirror of `queue`'s membership, kept in sync with every push/splice/
+   * unshift (characterData mutations check it unthrottled). Reassigned wherever
+   * `queue` is reset, since WeakSet has no clear().
    */
   let queuedSet = new WeakSet<Text>();
   /**
-   * `null` = use `options.getSourceLanguage()` (always `'auto'` in this
-   * extension's real wiring, see `entrypoints/content.ts`) for every
-   * translate request. Set by `translatePage()`'s optional second
-   * argument, the bubble From picker's one-off forced retranslate — real
-   * bug this replaced: a manually-picked language used to persist into
-   * `sourceLanguageByHost` and get sent as the source language on *every*
-   * future request forever, fighting Google's own per-request auto-detect
-   * and mistranslating already-correct content (confirmed against the
-   * live endpoint: "History" sent with a forced source came back
-   * "Association"; the identical text sent as `auto` came back
-   * unchanged). Read once per tick in `translationRoutine`, not just once
-   * per `translatePage()` call, since a single page translation spans many
-   * ticks.
+   * The bubble From picker's one-off forced source, or `null` for
+   * `options.getSourceLanguage()`. Not persisted per host: forcing a source on
+   * every request fights Google's per-request auto-detect. Read per tick.
    */
   let sourceLanguageOverride: string | null = null;
-  // Keyed by node so a resweep tick can prune entries for nodes the page
-  // itself has since removed — without this, a node discovered while
-  // translated (queueNode, below) never leaves this map until
-  // restorePage(), so a long-lived SPA that keeps adding/removing content
-  // (infinite scroll, chat) leaks a strong reference to every detached Text
-  // node it ever translated for the life of the tab.
+  // Keyed by node so onResweep can prune nodes the page removed; otherwise a
+  // long-lived SPA would keep every detached Text node it translated.
   let nodesToRestore = new Map<Text, string>();
   let currentTargetLanguage = '';
   /**
-   * Set whenever the viewport-priority ordering could have gone stale — a
-   * scroll (via resweep.ts's `onViewportChanged`) or a newly-queued node —
-   * and cleared right after a reorder actually runs. Without this,
-   * `prioritizeByViewport` re-measured EVERY queued node's position on
-   * EVERY tick regardless of whether anything had actually changed since
-   * the last reorder — real cost on a long page (thousands of forced
-   * `getBoundingClientRect()` layout reads per tick, repeated every ~150ms).
+   * Set when viewport ordering may be stale (a scroll or a newly queued node) and
+   * cleared after a reorder, so the queue isn't re-measured every tick.
    */
   let viewportDirty = true;
-  /**
-   * Last time `prioritizeByViewport` actually ran, for the large-queue
-   * throttle below (`LARGE_QUEUE_REORDER_THROTTLE_MS`). `0` so the very
-   * first reorder of a translate cycle is never throttled.
-   */
+  /** For `LARGE_QUEUE_REORDER_THROTTLE_MS`; `0` so a cycle's first reorder is never throttled. */
   let lastReorderTime = 0;
   /**
-   * Bumped by every translatePage()/restorePage(). A `translateBatch()` call
-   * already awaiting when the cycle ends cannot be cancelled, so its results
-   * are checked against the generation they were requested under before
-   * being spliced in — otherwise a slow response from an abandoned cycle
-   * (e.g. French, then the user switches to German) overwrites the newer
-   * translation while state still reports the newer language.
+   * Bumped by every translatePage()/restorePage(). An in-flight `translateBatch()`
+   * can't be cancelled, so its results are dropped if the generation moved on;
+   * otherwise a slow reply for the old language overwrites the new one.
    */
   let cycleGeneration = 0;
   let translationRoutineHandle: ReturnType<typeof setTimeout> | null = null;
 
-  /** The last content this engine actually processed for a tracked node — see `queueOrRequeueIfChanged`'s doc comment for why this exists alongside `dedupe`. */
+  /** The last content this engine processed for a tracked node; see `queueOrRequeueIfChanged`. */
   const lastSeenText = new WeakMap<Text, string>();
-  /**
-   * Nodes onResweep saw disconnected on the PREVIOUS tick — see onResweep's
-   * comment for why a node needs two consecutive disconnected ticks before
-   * its `nodesToRestore` entry is pruned, not one.
-   */
+  /** Nodes onResweep saw disconnected on the previous tick; see `pruneDisconnectedRestoreEntries`. */
   const disconnectedLastTick = new WeakSet<Text>();
   const requeueAt = new WeakMap<Text, number>();
   const missingResultAttempts = new WeakMap<Text, number>();
-  /**
-   * Guards against piling up duplicate cooldown-retry timers for the same
-   * node in `noteMissingResult` — see its doc comment for the bug this
-   * closes.
-   */
+  /** One pending cooldown-retry timer per node in `noteMissingResult`. */
   const cooldownRetryScheduled = new WeakSet<Text>();
 
   const stateListeners = new Set<(state: PageLanguageState) => void>();
@@ -219,36 +126,14 @@ export function createPageTranslator(options: PageTranslatorOptions) {
   const progressListeners = new Set<(done: number, total: number) => void>();
 
   /**
-   * Real bug, found via a live user report: `setState('translated')` in
-   * `translatePage()` below fires synchronously before any translate
-   * request has even been sent — the UI's busy/spinner round trip
-   * (`entrypoints/content.ts`'s old `busy: true` → `await` → `busy: false`)
-   * completed in ~zero frames since `translatePage()` never actually awaits
-   * real work, just queues nodes and schedules the routine. The bubble
-   * turned green instantly with nothing translated yet, and no visible
-   * progress indicator during the (sometimes several-second) real work.
-   * `working` is a separate signal from `pageLanguageState` on purpose —
-   * that type crosses the messaging protocol and gates several other real
-   * behaviors (mutationWatcher, restorePage's guard); repurposing it as
-   * "done" would be a much bigger, regression-prone change for what's
-   * fundamentally a UI-feedback gap.
+   * Busy signal for the UI. `pageLanguageState` flips to 'translated' before any
+   * request is sent, and it crosses the messaging protocol and gates other
+   * behaviour, so it can't double as "done".
    */
   let working = false;
   /**
-   * The cycle generation whose batch is currently in flight, or `null`.
-   *
-   * Reliability fix, found via a live user report (rapidly skipping
-   * chapters: two or three worked, then one spun forever): this used to be
-   * a bare `batchInFlight` boolean. `batchInFlight = false` lives in the
-   * tick's `finally`, and a `return` inside `try` still runs `finally` — so
-   * when an OLD cycle's batch finally resolved and correctly bailed out on
-   * the `requestedUnderGeneration !== cycleGeneration` check, it still
-   * cleared the flag that a NEWER, still-running tick had just set. The
-   * result was `recomputeWorking()` reporting idle while a batch was
-   * genuinely outstanding. Keying on the generation — the same
-   * `if (x === mine)` discipline `translationRoutine`'s own `finally`
-   * already uses for `runningForGeneration` — means only the cycle that
-   * set it can clear it.
+   * The cycle generation whose batch is in flight, or `null`. A generation, not a
+   * boolean, so an abandoned cycle's `finally` can't clear a newer cycle's flag.
    */
   let inFlightGeneration: number | null = null;
 
@@ -261,29 +146,14 @@ export function createPageTranslator(options: PageTranslatorOptions) {
   }
 
   /**
-   * Perceived-speed fix: real progress instead of just a binary busy flag —
-   * "N of M pieces translated," updated as pieces actually complete, not a
-   * fake/estimated bar. `totalPieces` is set once per cycle (`translatePage()`,
-   * the full node count collected up front); `completedPieces` only ever
-   * counts UP within that cycle. `completedNodes` is what makes counting
-   * exactly-once-per-node safe despite `writeTranslatedNode` legitimately
-   * being called twice for the same node in the same tick (once by
-   * `onPieceComplete`'s early write, once more by the tick's own
-   * always-runs trailing loop — see that function's header comment for why
-   * the redundant DOM write itself is already safe) — without this guard,
-   * every node would be double-counted and `completedPieces` would
-   * overshoot `totalPieces`.
+   * Real "N of M" progress: `totalPieces` is set once per cycle and
+   * `completedPieces` only counts up. `completedNodes` keeps it once per node,
+   * since a node is written twice per tick (`onPieceComplete` and the final loop).
    */
   let totalPieces = 0;
   let completedPieces = 0;
   let completedNodes = new WeakSet<Text>();
-  /**
-   * Coalesces a burst of same-tick `onPieceComplete` calls (a whole
-   * resolved batch can complete many pieces within the same microtask
-   * window) into at most one listener notification per task-queue drain,
-   * so wiring this up to a Solid signal in the UI doesn't itself become a
-   * new source of jank in a pass whose whole point is removing jank.
-   */
+  /** Coalesces a resolved batch's burst of completions into one notification per microtask drain. */
   let progressNotifyScheduled = false;
 
   function notifyProgress(): void {
@@ -316,14 +186,9 @@ export function createPageTranslator(options: PageTranslatorOptions) {
   }
 
   /**
-   * There's real work outstanding (queued or a batch actively in flight)
-   * AND nothing has given up and surfaced an error yet — once an error
-   * surfaces, requeued nodes keep retrying in the background forever (see
-   * this file's error-surfacing comments), and without the `lastErrorMessage`
-   * check here a spinner would run forever alongside the red error panel
-   * instead of yielding to it (`FloatingBubble.tsx`'s `errored()` already
-   * outranks `translated()` — this just stops `busy` from also staying
-   * true once red has taken over).
+   * Working = work queued or in flight and no real error surfaced. After an error
+   * surfaces, nodes keep retrying in the background, so the spinner yields to the
+   * error panel; the untranslated-share warning doesn't count as an error here.
    */
   function recomputeWorking(): void {
     setWorking(
@@ -331,42 +196,22 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     );
   }
 
-  // Silent-failure guard: a translateBatch() call that throws (network
-  // error, or every retry inside batchedHttpProvider.ts exhausted — e.g. a
-  // provider that's misconfigured or rate-limited) used to be swallowed
-  // into console.error and an unconditional requeue-forever loop, with
-  // pageLanguageState staying 'translated' the whole time — the UI
-  // reported success while nothing on the page ever changed. Real bug,
-  // found via a user report: the shipped default provider
-  // (libretranslate.com, unauthenticated) returns HTTP 429 for every
-  // request. After a few consecutive full-batch failures, this now
-  // surfaces a real error instead of retrying forever in silence.
+  // A failing provider must surface an error, not retry forever in silence while
+  // the page reports 'translated'; a few consecutive failures are tolerated first.
   const CONSECUTIVE_FAILURES_BEFORE_SURFACING = 3;
   let consecutiveBatchFailures = 0;
   let lastErrorMessage: string | null = null;
   let lastErrorKind: ErrorKind = null;
-  // Grows the surfaced-error backoff the longer a real outage lasts (Phase
-  // 2 of the graceful-degradation pass) — counts consecutive ticks where an
-  // error stayed surfaced, reset the moment it clears. Kept separate from
-  // consecutiveBatchFailures, which counts failed *batches* (can advance
-  // faster than once per tick's worth of backoff) and is reset on offline
-  // ticks (see the offline branch in translationRoutine below) — this
-  // counter should keep growing through an offline stretch too, since the
-  // provider hasn't actually recovered just because connectivity dropped.
+  // Consecutive ticks with an error surfaced; drives the backoff at the tick's
+  // tail. Separate from consecutiveBatchFailures (failed batches), and keeps
+  // growing while offline, since the provider hasn't recovered just by that.
   let surfacedErrorStreak = 0;
 
   /**
-   * "Says translated but nothing changed" (fix plan follow-up): a piece the
-   * provider keeps echoing back unchanged (`kind: 'suspicious'`) or keeps
-   * leaving out is given up on after 3 tries by `noteMissingResult`, with no
-   * error, because a handful of those is normal (a language list's
-   * endonyms). But when Google's free endpoint degrades, it echoes most of a
-   * page, and the bubble used to show plain success over untranslated text.
-   * So once the text given up on is a large share of the page, by
-   * characters so a page's short leftovers don't weigh like its body text,
-   * it's surfaced through the normal error display. It's a report, not an
-   * outage: it doesn't stop `working` or trigger the error backoff, and any
-   * real error outranks it.
+   * Pieces given up on (echoed back or left out 3 times) are normally a few
+   * endonyms; when they are a large share of the page by characters (a degraded
+   * Google echoes most of it), warn. A report, not an outage: no backoff,
+   * `working` unaffected, and any real error outranks it.
    */
   const UNTRANSLATED_SHARE_TO_WARN = 0.25;
   const MIN_UNTRANSLATED_CHARS_TO_WARN = 200;
@@ -417,11 +262,8 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     lastSeenText.set(node, node.data);
     queue.push(node);
     queuedSet.add(node);
-    // Nodes discovered after the initial translatePage() sweep (new DOM from
-    // the mutation watcher/resweep) need their pre-translation text recorded
-    // too, or restorePage() silently leaves them translated forever — the
-    // initial batch records this in bulk in translatePage() itself, this
-    // covers everything found afterwards.
+    // Nodes found after the initial sweep need their original recorded too, or
+    // restorePage() leaves them translated.
     nodesToRestore.set(node, node.data);
     viewportDirty = true;
     recomputeWorking();
@@ -429,48 +271,18 @@ export function createPageTranslator(options: PageTranslatorOptions) {
   }
 
   function requeueChangedTextNode(node: Text): void {
-    // Reliability fix, found via audit: this had no state check of its own,
-    // which mattered once `noteMissingResult`'s cooldown-retry timer (an
-    // untracked, ungenerationed `setTimeout` — see its own doc comment)
-    // could fire AFTER a `restorePage()` that emptied `queue` and moved
-    // `pageLanguageState` back to 'original'. Without this guard, that
-    // stray timer pushes the node into the now-empty `queue` anyway and
-    // sets `working = true` — but `runTranslationTick`'s two real work
-    // branches are both gated on `pageLanguageState === 'translated'`, so
-    // nothing ever drains it, and the tail's `nextDelay` computation (see
-    // its own updated comment below) used to fall through to `0` purely
-    // because `queue.length > 0`, producing a PERMANENT 0ms
-    // self-rescheduling tick loop for the rest of the tab's life, with the
-    // bubble stuck showing "Translating…" and its primary button disabled.
-    // Every real caller of this function (the mutation watcher's
-    // characterData path, which itself already checks `isTranslated()`
-    // before calling in; the resweep/new-root path, which only runs while
-    // translated) is already only ever reachable while translated, so this
-    // guard costs those paths nothing and closes the stray-timer path for
-    // free.
+    // A stray cooldown-retry timer can land after restorePage(); queueing then
+    // leaves a queue nothing drains and the bubble stuck on "Translating…".
     if (pageLanguageState !== 'translated') return;
     requeueAt.set(node, Date.now());
     dedupe.track([node]);
     lastSeenText.set(node, node.data);
-    // The node's content genuinely changed since we last saw it, so THIS is
-    // now its pre-translation text. Without this, nodesToRestore kept the
-    // text captured the first time the node was ever queued, and
-    // restorePage() would roll a live-updating node (a score, an edited
-    // comment) back to stale content — silently discarding whatever the
-    // page had legitimately changed it to. Same stale value fed
-    // getTranslatedNodes(), so the hover-original tooltip lied too.
+    // The content changed, so this is now its pre-translation text (for restore
+    // and the hover-original tooltip).
     nodesToRestore.set(node, node.data);
     viewportDirty = true;
-    // Speed/correctness fix, found via audit: this used to push
-    // unconditionally, with no check for whether `node` was already
-    // sitting in `queue` — a node that changes more than once (a live
-    // score, a streaming chat message, a counter) before the previous
-    // change's entry was ever spliced out by `runTranslationTick`
-    // (`mutationWatcher.onChangedTextNode` calls this directly, once per
-    // characterData mutation, unthrottled) accumulated a duplicate entry
-    // per change. A duplicate entry means the same node can land in the
-    // SAME batch/group twice, wasting a translate request and racing two
-    // outcomes' write-backs against each other for one node.
+    // A node changing repeatedly before it's spliced out must not be queued twice
+    // (a wasted request and two racing write-backs).
     if (!queuedSet.has(node)) {
       queue.push(node);
       queuedSet.add(node);
@@ -480,19 +292,9 @@ export function createPageTranslator(options: PageTranslatorOptions) {
   }
 
   /**
-   * Used by onNewRoot/onResweep's node collection instead of `queueNode`
-   * directly. A node can already be `dedupe.isTracked()` not because it's
-   * still live in the queue, but because it was detached, had its `.data`
-   * changed WHILE DETACHED (a disconnected node generates no mutation
-   * record at all — see mutationWatcher.ts), and has since reappeared via
-   * a childList mutation — common in virtualized/recycled list widgets
-   * that pool and reuse DOM nodes. `queueNode()` alone would silently skip
-   * it forever, since `WeakSet`-based identity tracking survives as long
-   * as anything (e.g. the widget's own node pool) holds a live reference.
-   * Comparing against `lastSeenText` catches this: if a tracked node's
-   * current content no longer matches what this engine last saw for it,
-   * treat the reappearance as a real content change, same as an in-place
-   * characterData mutation would be.
+   * Like `queueNode`, but also requeues a tracked node whose `.data` no longer
+   * matches `lastSeenText`: recycled list nodes can change while detached (no
+   * mutation record) and reappear, and dedupe alone would skip them forever.
    */
   function queueOrRequeueIfChanged(node: Text): boolean {
     if (!dedupe.isTracked(node)) return queueNode(node);
@@ -504,38 +306,13 @@ export function createPageTranslator(options: PageTranslatorOptions) {
   }
 
   /**
-   * Real bug this closed, found via audit and reproduced directly: a node
-   * whose piece keeps coming back missing/suspicious while OTHER pieces in
-   * the same batch keep succeeding (so `allFailed` below never fires, no
-   * error ever surfaces) used to get silently abandoned after only 1-2
-   * tries, permanently stuck in its original language with no error and no
-   * way back into the queue. The cause: the cooldown check below used to
-   * just `return` when a node's last requeue was under 1500ms ago — not
-   * only skipping THIS attempt (reasonable, avoids a tight retry loop) but
-   * dropping the node out of `queue` and every future consideration too,
-   * since it neither re-pushed the node nor incremented its attempt count.
-   * Worse, resweep's own backstop can't rescue it either:
-   * `queueOrRequeueIfChanged` only re-adds a node when `lastSeenText`
-   * doesn't match its current `.data`, but `requeueChangedTextNode` (called
-   * on the PRIOR attempt) already set `lastSeenText` to this exact
-   * (still-untranslated) text, so a later resweep sees no change and skips
-   * it too. Now schedules a real retry once the cooldown window actually
-   * elapses instead of dropping it — `cooldownRetryScheduled` prevents
-   * piling up duplicate timers if this is called again for the same node
-   * before that fires.
+   * Retries a node whose piece came back missing or suspicious, up to 3 attempts.
+   * Inside the 1500ms cooldown it schedules a later retry instead of dropping the
+   * node, which resweep couldn't rescue (`lastSeenText` already matches).
    */
   function noteMissingResult(node: Text): void {
     if (!node.isConnected) {
-      // Reliability fix, found via audit: this used to return here without
-      // clearing `lastSeenText` — unlike the two sibling give-up paths
-      // (the `allFailed` batch handler and the disconnected-node cleanup
-      // in the success path), which both delete it for exactly this
-      // reason. A node whose cooldown retry lands while a virtualized/
-      // recycled list has it off-DOM lost its only remaining lifeline:
-      // when it reappears with the SAME still-untranslated text,
-      // `queueOrRequeueIfChanged` sees `lastSeenText.get(node) ===
-      // node.data` and never requeues it — permanently stuck untranslated
-      // on a page the UI reports as fully translated, no error surfaced.
+      // Forget lastSeenText so the node is requeued if it reappears unchanged.
       lastSeenText.delete(node);
       return;
     }
@@ -545,16 +322,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     if (last !== undefined && Date.now() - last < 1500) {
       if (!cooldownRetryScheduled.has(node)) {
         cooldownRetryScheduled.add(node);
-        // Reliability fix, found via audit: this timer used to carry no
-        // generation check at all, so it could fire after a
-        // `restorePage()` that already emptied `queue` and moved
-        // `pageLanguageState` back to 'original' — see
-        // `requeueChangedTextNode`'s own updated doc comment for the
-        // permanent 0ms tick-spin this caused. `requeueChangedTextNode`'s
-        // own new state guard already closes that specific hole, but
-        // checking the generation here too avoids even calling back into
-        // `noteMissingResult` (and re-touching `missingResultAttempts`)
-        // for a cycle nothing cares about anymore.
+        // Generation-checked so the retry can't fire into a restored or newer cycle.
         const scheduledGeneration = cycleGeneration;
         setTimeout(
           () => {
@@ -579,39 +347,15 @@ export function createPageTranslator(options: PageTranslatorOptions) {
   }
 
   /**
-   * Reliability fix, found via audit: `wakeRoutine()` only cancels a
-   * PENDING (not-yet-fired) scheduled call via `clearTimeout` — it can't
-   * stop an ALREADY-RUNNING invocation that's mid-`await` (e.g. awaiting a
-   * `translateBatch()` HTTP round trip). Without this guard, a wake fired
-   * while a tick was still in flight for the SAME cycle (rapid
-   * characterData mutations each calling `requeueChangedTextNode`, which
-   * calls `wakeRoutine()` every time) scheduled a SECOND, concurrent
-   * invocation racing the first: both set `batchInFlight = true`, and
-   * whichever's `finally` ran first cleared it — so `isWorking()` could
-   * report "done" while a batch was still genuinely in flight — and both
-   * independently computed and scheduled their own next tick, doubling the
-   * effective polling rate and the resulting HTTP request volume.
-   *
-   * Deliberately keyed by `cycleGeneration`, not a plain boolean: a plain
-   * "only one tick running, ever" lock would have also blocked the
-   * INTENTIONAL case this engine already relies on and tests directly — a
-   * fresh `translatePage()` call bumps `cycleGeneration` and must be able
-   * to start draining its own new queue immediately, even while an old,
-   * now-abandoned cycle's batch is still resolving in the background (its
-   * response gets safely discarded on arrival via the
-   * `requestedUnderGeneration !== cycleGeneration` check inside
-   * `runTranslationTick`, not by never having started). Keying on
-   * generation blocks only a truly redundant re-entrant tick for the SAME
-   * cycle, while still letting a new cycle's tick run concurrently with an
-   * old cycle's still-draining one.
+   * Prevents re-entrant ticks: `wakeRoutine()` can't stop a tick that's mid-await,
+   * and two concurrent ticks double the request rate. Keyed by generation so a
+   * new cycle's tick may run while an abandoned cycle's batch still resolves.
    */
   let runningForGeneration: number | null = null;
 
   async function translationRoutine(): Promise<void> {
-    // Declining a redundant tick DROPS this wake — it schedules nothing.
-    // That is only safe because the `finally` below now guarantees that
-    // whichever tick is already running leaves a successor scheduled
-    // whenever real work remains; see that block's own comment.
+    // Declining drops this wake; safe only because the `finally` below always
+    // leaves a successor scheduled while work remains.
     if (runningForGeneration === cycleGeneration) return;
     const myGeneration = cycleGeneration;
     runningForGeneration = myGeneration;
@@ -620,18 +364,8 @@ export function createPageTranslator(options: PageTranslatorOptions) {
       scheduledSuccessor = await runTranslationTick();
     } finally {
       if (runningForGeneration === myGeneration) runningForGeneration = null;
-      // Reliability fix, found via a live user report (rapidly skipping
-      // chapters: two or three worked, then the next spun forever,
-      // recovering only on a reload or on skipping to the page after it).
-      // `runTranslationTick`'s tail scheduling is the ONLY thing keeping
-      // this loop alive, and its `requestedUnderGeneration !== cycleGeneration`
-      // bail-outs return before ever reaching it. Combined with the dropped
-      // wake above, that could strand a non-empty `queue` with no tick
-      // pending and nothing to restart it — `working` stuck true until some
-      // external event (a reload, or the NEXT page's own `translatePage()`)
-      // happened to kick it. Making "a tick always schedules its successor
-      // while work remains" structural here closes the whole class, instead
-      // of relying on every future early-return to remember to reschedule.
+      // runTranslationTick's stale-generation bail-outs return before its tail
+      // scheduling; rescheduling here keeps a non-empty queue from stranding.
       if (!scheduledSuccessor && pageLanguageState === 'translated' && queue.length > 0) {
         translationRoutineHandle = setTimeout(translationRoutine, 0);
       }
@@ -642,15 +376,8 @@ export function createPageTranslator(options: PageTranslatorOptions) {
   async function runTranslationTick(): Promise<boolean> {
     if (translationRoutineHandle) clearTimeout(translationRoutineHandle);
 
-    // Offline: don't even attempt a batch — every provider request is
-    // guaranteed to fail the same way, so there's nothing to gain by
-    // sending it (batchedHttpProvider.ts's own retry loop has the matching
-    // check for the same reason). Distinct from "provider broken" — this
-    // bypasses the CONSECUTIVE_FAILURES_BEFORE_SURFACING threshold and
-    // reports immediately, since offline is a directly-known cause, not a
-    // pattern that needs 3 failures to infer. Queued work is left exactly
-    // where it is; connectivity.onChange() below wakes this routine the
-    // instant the connection returns.
+    // Offline: every request would fail, so send nothing and report at once (no
+    // failure threshold). The queue stays put; connectivity.onChange() wakes us.
     if (pageLanguageState === 'translated' && queue.length > 0 && !connectivity.isOnline()) {
       setError('Offline — translation will resume automatically once your connection is back.', 'offline');
       surfacedErrorStreak++;
@@ -659,46 +386,9 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     }
 
     if (pageLanguageState === 'translated' && queue.length > 0) {
-      // Perceived-speed win, Phase 4a of the graceful-degradation pass:
-      // translate what the user is actually looking at first.
-      //
-      // Perceived-speed audit correction: this used to also require
-      // `queue.length > MAX_PIECES_PER_TICK` (300), reasoning "a page that
-      // fits in one batch already translates everything this tick
-      // regardless of order" — checked directly and that reasoning is
-      // wrong. `batchedHttpProvider.ts` dispatches groups through its
-      // shared concurrency gate IN ARRAY ORDER
-      // (`batches.map((batch) => concurrencyGate.run(...))`, a FIFO
-      // semaphore), so a piece queued first tends to RESOLVE first — and
-      // therefore gets written via `onPieceComplete` first — even when
-      // every piece lands in the same tick. Most real pages have well
-      // under 300 translatable pieces, so the old gate meant this
-      // reordering never ran on a typical page at all: the header,
-      // sidebar, and footer could resolve before the paragraph the user
-      // is actually reading, just because that's DOM order. Also checked
-      // the actual cost the gate was protecting against:
-      // `prioritizeByViewport` measures each unique BLOCK ancestor's
-      // `getBoundingClientRect()` once (memoized per block, not per text
-      // node — see its own header comment), which is cheap for a typical
-      // page's handful-to-low-hundreds of blocks. The `viewportDirty`
-      // check below is a real, worth-keeping cache guard (skip
-      // re-measuring when nothing has scrolled since the last reorder,
-      // and it's already `true` on the very first tick of every
-      // `translatePage()` call); `queue.length > 1` just avoids the
-      // pointless call when there's nothing to reorder. This only changes
-      // which nodes land in `batch` below; grouping still runs on
-      // whatever comes out, unmodified.
-      //
-      // Follow-up fix, found via a live-page audit (a text-dense,
-      // continuously-churning page): the reasoning above holds for a
-      // typical page, but a page where content keeps arriving faster than
-      // the tick can drain it (see `LARGE_QUEUE_REORDER_THROTTLE_MS`'s own
-      // comment) keeps `viewportDirty` true on essentially every tick,
-      // which without a bound would re-measure the entire, still-growing
-      // `queue` every single tick — real, compounding main-thread cost.
-      // Below `MAX_PIECES_PER_TICK` (the common case this section's fix
-      // above targeted) always reorders, unthrottled, same as before;
-      // past it, reorder at most once per `LARGE_QUEUE_REORDER_THROTTLE_MS`.
+      // Translate what the user is looking at first. Worth it even when the queue
+      // fits in one tick: the provider dispatches groups FIFO, so earlier pieces
+      // resolve first. Throttled only for large queues (LARGE_QUEUE_REORDER_THROTTLE_MS).
       const isLargeQueue = queue.length > MAX_PIECES_PER_TICK;
       const reorderThrottled = isLargeQueue && Date.now() - lastReorderTime < LARGE_QUEUE_REORDER_THROTTLE_MS;
       if (queue.length > 1 && viewportDirty && !reorderThrottled) {
@@ -708,14 +398,8 @@ export function createPageTranslator(options: PageTranslatorOptions) {
       }
       const batch = queue.splice(0, MAX_PIECES_PER_TICK);
       const batchingHint = options.getBatchingHint();
-      // Accuracy fix, found via a round-7 audit: the slice above happens
-      // BEFORE grouping, and `groupNodesForBatching` keeps no state across
-      // calls — so a block whose text nodes straddle the cut used to be
-      // translated as two context-free fragments (the exact loss grouping
-      // exists to prevent: "left" as the direction instead of the verb).
-      // Reaches the DEFAULT provider, not just LLM — `descriptors.ts` gives
-      // google `groupByBlock: true`. Push the straddling block's trailing
-      // nodes back so the whole block groups together next tick.
+      // The slice happens before grouping, so a block straddling the cut would go
+      // as two context-free fragments; push its trailing nodes back to group whole.
       if (batchingHint?.groupByBlock && queue.length > 0) {
         // biome-ignore lint/style/noNonNullAssertion: length just checked
         const straddledBlock = nearestBlockAncestor(queue[0]!);
@@ -723,10 +407,8 @@ export function createPageTranslator(options: PageTranslatorOptions) {
           let cut = batch.length;
           // biome-ignore lint/style/noNonNullAssertion: cut is always in bounds
           while (cut > 0 && nearestBlockAncestor(batch[cut - 1]!) === straddledBlock) cut--;
-          // `cut > 0` is a starvation guard, not an optimization: a single
-          // block holding more than MAX_PIECES_PER_TICK nodes would
-          // otherwise trim the batch to empty on every tick and translate
-          // nothing, forever. Such a block simply gets split, as before.
+          // `cut > 0` is a starvation guard: a block bigger than MAX_PIECES_PER_TICK
+          // would otherwise trim the batch to empty every tick. Such a block is split.
           if (cut > 0 && cut < batch.length) {
             queue.unshift(...batch.splice(cut));
           } else if (cut === 0 && batch[0] && isWordElementText(batch[0])) {
@@ -755,61 +437,14 @@ export function createPageTranslator(options: PageTranslatorOptions) {
       const requestedUnderGeneration = cycleGeneration;
       inFlightGeneration = requestedUnderGeneration;
       recomputeWorking();
-      // Real gap this closed, found via a real-page audit (Google strips
-      // TRAILING whitespace from a piece's own translated content but
-      // generally preserves LEADING whitespace — confirmed directly
-      // against the live endpoint: `" start with either "` came back
-      // `"comenzar con cualquiera"`, both ends gone; `" or "` came back
-      // `" o"`, only the trailing space gone). This is a SEPARATE issue
-      // from google.ts's padding-slot reflow fix (which only reconciles
-      // the throwaway `<a i=1>` slot) — nothing restored the ORIGINAL
-      // node's own whitespace, so adjacent sibling Text nodes (`"Read "`
-      // + `"more"`, `<p>Read <b>more</b></p>`) wrote back jammed together
-      // ("Leermás") on any real page with inline markup, at high
-      // frequency. Deterministic and provider-independent by construction
-      // — captured from the same `node.data` used to build `pieces` below,
-      // reapplied at write-back regardless of which provider translated it.
-      //
-      // Accuracy fix (round-3 audit follow-up), found via live-page
-      // investigation of the "words jam at block boundaries" open item:
-      // this map's "leading" side used to capture WHITESPACE only
-      // (`trimStart()`). A real repro on live Wikipedia — a link's closing
-      // tag immediately followed by a sibling Text node whose OWN content
-      // begins with a bare sentence-ending period (`". The program..."`,
-      // the period ending the PREVIOUS sentence, no space before it in the
-      // source) — showed Google can ALSO drop LEADING PUNCTUATION with no
-      // letter before it, not just whitespace: `". The program taught
-      // only the game's rules and developed a strategy by itself. "`
-      // translated to `"El programa solo enseñaba..."` with the leading
-      // period gone entirely, confirmed directly against the live
-      // endpoint and reproducible across languages — but NOT universal: a
-      // short artificial fragment (`". Hello world."`) round-tripped the
-      // period correctly in the same testing, so this can't be relied on
-      // to happen consistently and must be handled deterministically on
-      // this side instead, the same reasoning as the whitespace case
-      // above. Also confirmed live: the SYMMETRIC trailing case (a node
-      // ending in bare punctuation, no trailing whitespace) round-trips
-      // fine — every trailing-punctuation probe came back correct — so
-      // only the leading side needed generalizing. Widened from
-      // "leading whitespace" to "leading run of non-letter, non-digit
-      // characters" (still includes whitespace, since a leading run like
-      // `". "` is untouched by `\p{L}`/`\p{N}` either way) — deliberately
-      // excludes digits so a node like `"3D printing is..."` isn't
-      // affected (no confirmed bug there, and `"3"` alone isn't a safe
-      // context-free prefix to detach from what follows it).
+      // Google drops trailing whitespace and sometimes a leading run of punctuation
+      // (". The program…" loses its period), so each slot's boundary text is captured
+      // here and restored at write-back. Digits are excluded so "3D …" stays intact.
       const originalWhitespace = new Map<Text, { leading: string; trailing: string }>();
       /**
-       * Real bug this closed, found via audit: write-back only ever
-       * checked `node.isConnected`, never that `node.data` was still the
-       * text that was actually SENT for translation. A node the page
-       * updates in place while its translation is in flight (a live
-       * score, a streaming chat message, a countdown) — connected the
-       * whole time, so that check alone says nothing changed — used to
-       * get silently clobbered with the translation of the STALE text
-       * once the response came back, discarding whatever the page had
-       * legitimately written in the meantime. Captured here (alongside
-       * `originalWhitespace`, from the same `node.data` used to build
-       * `pieces` below) and checked in `writeTranslatedNode`.
+       * The exact text sent per node. Write-back requeues instead of writing when a
+       * node's `.data` changed in flight, so a live update isn't clobbered by a
+       * stale translation.
        */
       const sentText = new Map<Text, string>();
       slotGroups.forEach((slots) => {
@@ -826,35 +461,17 @@ export function createPageTranslator(options: PageTranslatorOptions) {
       });
 
       /**
-       * Re-wraps with the ORIGINAL node's own leading/trailing whitespace
-       * (see `originalWhitespace`'s declaration comment above) and writes
-       * it to the DOM — the exact same logic the final write-back loop
-       * below always ran, now factored out so `onPieceComplete` (below)
-       * can call it the instant a single piece is known, not just once
-       * the whole tick's `translateBatch()` promise resolves. Calling this
-       * twice for the same already-correct value (once here, once again
-       * from the unchanged loop below) is safe and deliberately left
-       * that way rather than threading a "don't redo this" flag through
-       * both paths: `node.data = translated` assigning an identical
-       * string is a no-op the page can't observe, and
-       * `mutationWatcher.noteOwnWrite` recording the same text twice
-       * doesn't change what its own-write loop guard does.
+       * Restores the node's boundary text and writes the translation. Called from
+       * `onPieceComplete` and again by the final loop; the repeat assigns an
+       * identical string, which is harmless.
        */
       function writeTranslatedNode(node: Text, rawTranslated: string): void {
-        // See `sentText`'s declaration comment above — a node whose live
-        // content no longer matches what was actually sent has been
-        // updated by the page while this translation was in flight.
-        // Writing the (now stale) translation over it would silently
-        // discard that legitimate update; requeue for a fresh translation
-        // of the CURRENT content instead, exactly as an in-place
-        // characterData mutation observed by mutationWatcher would.
+        // Changed by the page while in flight: translate the current content instead.
         if (sentText.get(node) !== node.data) {
           requeueChangedTextNode(node);
           return;
         }
-        // Perceived-speed fix: count exactly once per node here, not in
-        // the early-return branch above — a stale/externally-changed node
-        // gets requeued for a FRESH translation, not counted as done yet.
+        // Counted here, not for a requeued stale node.
         if (!completedNodes.has(node)) translatedChars += node.data.trim().length;
         recordPieceCompleted(node);
         givenUpNodes.delete(node);
@@ -865,27 +482,15 @@ export function createPageTranslator(options: PageTranslatorOptions) {
         mutationWatcher.noteOwnWrite(node, translated);
         node.data = translated;
         lastSeenText.set(node, translated);
-        // Keeps this in sync with the just-written value — without this,
-        // the SAME tick's redundant second write-back pass (see this
-        // function's own doc comment: onPieceComplete writes first, the
-        // final loop below always runs too) would see `node.data` (now
-        // the translated text) no longer match the ORIGINAL `sentText`
-        // entry, mistake its own already-applied write for an external
-        // page update, and wastefully requeue the node to re-translate
-        // its own output.
+        // So this tick's second write pass doesn't mistake our own write for a page change.
         sentText.set(node, translated);
         missingResultAttempts.delete(node);
       }
 
       /**
-       * Writes one slot's translation. A single-node slot is just
-       * `writeTranslatedNode`. A word run's translation goes into its first
-       * node and the rest of the run — words and the punctuation between
-       * them — is emptied; `nodesToRestore` gets the punctuation too, since
-       * it was never queued, so Show original puts every piece back. If
-       * the page changed any part of the run while it was in flight, the
-       * whole run is skipped and its changed nodes requeued rather than
-       * writing a translation of text that is no longer there.
+       * Writes one slot. A word run's translation goes into its first node and the
+       * rest of the run (words and punctuation) is emptied, recorded in
+       * `nodesToRestore`; if the page changed any of it in flight, it's requeued.
        */
       function writeSlot(slot: PieceSlot, rawTranslated: string): void {
         const [head, ...tail] = slot.nodes;
@@ -926,18 +531,9 @@ export function createPageTranslator(options: PageTranslatorOptions) {
           targetLanguage: currentTargetLanguage,
           pieces: slotGroups.map((slots) => slots.map((slot) => slot.text)),
           dontSortResults: options.getDontSortResults?.() ?? false,
-          // Speed fix, found via audit: without this, a whole tick's
-          // translated pieces were withheld from the DOM until the
-          // SLOWEST of its (up to MAX_PIECES_PER_TICK-worth of) underlying
-          // HTTP sub-requests finished — see translator.ts's
-          // `onPieceComplete` doc comment. This writes each piece the
-          // instant its OWN sub-request completes, well before this
-          // `await` below resolves. Only ever an early, opportunistic
-          // write of an already-successful, still-connected node — every
-          // other concern (missing pieces, disconnected nodes, retries,
-          // error surfacing) stays exclusively in the unchanged loop
-          // below, which still runs against the complete `outcomes` array
-          // once this await settles.
+          // Writes each piece as soon as its own sub-request completes instead of
+          // waiting for the slowest. Only early writes of successes; everything else is
+          // handled by the loop after this await.
           onPieceComplete: (groupIdx, outcome) => {
             if (requestedUnderGeneration !== cycleGeneration) return;
             const slots = slotGroups[groupIdx];
@@ -950,45 +546,18 @@ export function createPageTranslator(options: PageTranslatorOptions) {
           },
         });
 
-        // The page was restored or re-translated while this request was in
-        // flight — these results belong to an abandoned cycle. Dropping them
-        // is correct: whatever replaced this cycle has its own queue and
-        // will translate the current content itself.
+        // Restored or re-translated meanwhile: these results belong to an abandoned
+        // cycle, and the new cycle translates the current content itself.
         if (requestedUnderGeneration !== cycleGeneration) return false;
 
-        // The common real-world failure mode (a provider HTTP call that's
-        // rate-limited, unauthenticated, or otherwise fails outright) does
-        // NOT throw here — createBatchedHttpProvider's translateBatch()
-        // deliberately always resolves, converting a failed HTTP request
-        // into an `ok: false` outcome per piece (see its own handleBatch()
-        // catch block) so one bad request can't crash an entire batch. That
-        // means a totally-broken provider looks identical, at this level,
-        // to "every piece individually failed" — which used to fall
-        // through to noteMissingResult()'s silent per-node give-up with no
-        // batch-level signal at all. Detecting "every outcome in this batch
-        // failed" here is what actually catches that case — the earlier
-        // catch(e) block below only ever fires for a genuine thrown
-        // exception (e.g. the messaging round trip itself breaking), which
-        // is real but rarer.
+        // A broken provider usually doesn't throw: translateBatch resolves with an
+        // `ok: false` outcome per piece, so "every outcome failed" is the signal. The
+        // catch below covers only genuine exceptions (e.g. messaging breaking).
         const failedOutcomes = outcomes.filter((o) => !o?.ok);
         const allFailed = outcomes.length > 0 && failedOutcomes.length === outcomes.length;
-        // Reliability fix, found via audit and reproduced live (Wikipedia's
-        // language-switcher endonyms — a language's own name written in its
-        // own script, which Google correctly declines to translate): a
-        // batch whose failures are ALL `kind: 'suspicious'` is not evidence
-        // the provider is down — every request in it got a real 200 OK,
-        // the response just kept looking like a silent-echo failure (see
-        // translator.ts's `'suspicious'` kind doc comment). Retrying that
-        // forever via the branch below produced an unbounded request loop
-        // against a provider that was never actually broken and was never
-        // going to return anything different. A batch like this instead
-        // falls through to the per-node loop, which routes it through
-        // noteMissingResult()'s existing bounded (give-up-after-3) retry —
-        // exactly the mechanism already used for an isolated missing
-        // piece within an otherwise-successful batch. A batch with ANY
-        // genuine network/http/parse failure still takes the unconditional
-        // retry-forever branch below, since that failure kind IS real
-        // evidence of a broken provider.
+        // An all-'suspicious' batch got real 200s (e.g. endonyms Google won't
+        // translate), so it isn't an outage: it goes through noteMissingResult's
+        // bounded retry instead of the retry-forever branch.
         const allFailedAreSuspicious =
           allFailed && failedOutcomes.every((o) => o && !o.ok && o.error.kind === 'suspicious');
         if (allFailed && !allFailedAreSuspicious) {
@@ -999,34 +568,9 @@ export function createPageTranslator(options: PageTranslatorOptions) {
             setError(toUserFacingErrorMessage(message));
             surfacedErrorStreak++;
           }
-          // Requeue the whole batch directly, bypassing noteMissingResult()'s
-          // per-node cooldown/retry-cap below — that logic exists for an
-          // isolated single-node "missing result" (a batch that mostly
-          // succeeded but came back short one piece), not for "every request
-          // to this provider is failing." Without this, a node that hits the
-          // per-node cooldown drops out of `queue` entirely once nothing else
-          // is queued behind it, and — since dedupe.ts intentionally skips
-          // already-tracked nodes — nothing ever revisits it again: the
-          // consecutive-failure counter above would stall forever below the
-          // surfacing threshold, and the page would silently never retry at
-          // all. Keeping the whole batch in the queue is what lets
-          // translateBatch() keep being attempted every tick until this is
-          // either confirmed broken (error surfaces) or recovers.
-          //
-          // Real bug this closed, found via audit: a DISCONNECTED node in
-          // this batch was silently dropped here — filtered out of the
-          // requeue (correctly; it's not on the page right now) but,
-          // unlike the success path's per-node loop just below, never had
-          // its `lastSeenText` entry cleared either. A node the page
-          // detaches, re-mutates the content of WHILE OFF-DOM (no mutation
-          // record fires for a disconnected node), and reattaches with
-          // that SAME new content — routine in virtualized/recycled list
-          // widgets — would then reappear with `lastSeenText` still
-          // matching its ORIGINAL (translated-attempt-failed) text, so
-          // `queueOrRequeueIfChanged` sees no change and never requeues
-          // it: permanently stuck untranslated, same bug class the
-          // success path's own `lastSeenText.delete` below already
-          // guards against.
+          // Requeue the whole batch, bypassing noteMissingResult's per-node cooldown and
+          // cap (meant for one missing piece), so it's retried until the error surfaces
+          // or the provider recovers. Disconnected nodes forget lastSeenText (see below).
           batch.forEach((n) => {
             if (!n.isConnected) lastSeenText.delete(n);
           });
@@ -1036,28 +580,9 @@ export function createPageTranslator(options: PageTranslatorOptions) {
             queue.unshift(...requeued);
           }
         } else {
-          // Reliability fix, found via audit: this used to reset both
-          // failure counters and clear any surfaced error unconditionally
-          // the instant `allFailed` was false — but `allFailed` requires
-          // EVERY outcome in the tick to fail; a rate-limited/degraded
-          // provider's normal shape is a MIXED batch (batchedHttpProvider.ts
-          // splits a tick into many HTTP sub-requests, and each
-          // sub-request's failure is confined to its own pieces), so a
-          // genuine partial outage — most pieces failing, a few still
-          // landing — took this branch on every tick, permanently
-          // preventing `consecutiveBatchFailures` from ever accumulating
-          // toward `CONSECUTIVE_FAILURES_BEFORE_SURFACING` and wiping any
-          // already-surfaced error. The failing nodes still went through
-          // `noteMissingResult`'s bounded (give-up-after-3) retry below and
-          // were eventually abandoned — but with the error state reset
-          // every tick, that abandonment produced no visible signal at
-          // all: `working` goes false, the bubble shows the normal green
-          // "translated" state, and whole regions of the page silently
-          // stay in the original language. Now only resets the counters
-          // when this tick had NO genuine (non-`'suspicious'`) failures —
-          // a batch that's all-`'suspicious'` or fully successful still
-          // resets normally, matching the reasoning `allFailedAreSuspicious`
-          // above already applies to the fully-failed case.
+          // A degraded provider yields MIXED batches, so only a tick with no genuine
+          // (non-'suspicious') failure resets the counters and clears the error;
+          // otherwise a partial outage would never surface.
           const hasGenuineFailure = failedOutcomes.some((o) => o && !o.ok && o.error.kind !== 'suspicious');
           if (!hasGenuineFailure) {
             consecutiveBatchFailures = 0;
@@ -1081,13 +606,8 @@ export function createPageTranslator(options: PageTranslatorOptions) {
             slots.forEach((slot, slotIdx) => {
               for (const node of slot.nodes) {
                 if (node.isConnected) continue;
-                // The node left the DOM while its translation was in flight
-                // (routine in virtualized/recycled lists). Forget the text we
-                // last saw for it, so that if it reappears with that same
-                // still-untranslated content, queueOrRequeueIfChanged sees a
-                // mismatch and queues it again. Without this, dedupe still
-                // considers it tracked and lastSeenText still matches, so it
-                // would sit untranslated forever with no error.
+                // Left the DOM while in flight: forget lastSeenText so the node requeues
+                // if it reappears with the same untranslated text.
                 lastSeenText.delete(node);
               }
               if (!slot.nodes[0]?.isConnected) {
@@ -1097,12 +617,8 @@ export function createPageTranslator(options: PageTranslatorOptions) {
                 return;
               }
               const rawTranslated = outcome?.ok ? outcome.value[slotIdx] : undefined;
-              // Usually already written by `onPieceComplete` above, well
-              // before this loop runs — see `writeTranslatedNode`'s doc
-              // comment for why redoing it here is safe. Kept unconditional
-              // (not skipped for nodes onPieceComplete already handled) so
-              // this loop's behavior doesn't depend on the translator
-              // actually supporting incremental delivery.
+              // Usually already written by onPieceComplete; unconditional so this doesn't
+              // depend on the translator supporting incremental delivery.
               if (rawTranslated) {
                 writeSlot(slot, rawTranslated);
               } else {
@@ -1140,47 +656,17 @@ export function createPageTranslator(options: PageTranslatorOptions) {
       }
     }
 
-    // Once an error has been surfaced, back off instead of hammering a
-    // provider that's already confirmed broken (rate-limited/misconfigured)
-    // every 8s forever — still retries (a transient outage should recover
-    // on its own once fixed), just increasingly less aggressively the
-    // longer it stays broken: 8s, 12s, 18s, ... capped at 30s. A short
-    // outage still recovers within one 8s cycle; a long one stops
-    // hammering a confirmed-broken provider indefinitely at a fixed rate.
+    // With an error surfaced, back off: 8s, 12s, 18s, ... capped at 30s.
     let nextDelay: number;
     if (lastErrorMessage !== null && !errorIsUntranslatedWarning) {
       nextDelay = Math.min(30000, 8000 * 1.5 ** (surfacedErrorStreak - 1));
     } else if (consecutiveBatchFailures > 0) {
-      // Real bug, found via a live user report: pre-surfacing failures used
-      // to retry at the same fixed pace as ordinary successful draining
-      // (previously 150ms), so CONSECUTIVE_FAILURES_BEFORE_SURFACING could
-      // be reached in well under a second on a flaky connection — 3 rapid
-      // retries of the *same* stuck batch, not 3 independent signals — and
-      // surface "Translation failed" even though the rest of a long page
-      // had already translated successfully. Space these out so a short
-      // blip has a real chance to clear before it counts against the
-      // threshold; a genuinely broken provider still reaches it and
-      // surfaces, just a couple seconds later than before.
+      // Space out pre-surfacing retries so a short blip can clear: rapid retries of
+      // one stuck batch aren't independent signals of a broken provider.
       nextDelay = Math.min(4000, 1000 * 2 ** (consecutiveBatchFailures - 1));
     } else {
-      // Post-launch speed pass: removed the unconditional 150ms pause
-      // between batches while real work remains queued — real bug, found
-      // via a live user report: on a large page this added seconds of pure
-      // idle time for no benefit (provider-side concurrency is already
-      // capped independently — see batchedHttpProvider.ts's
-      // DEFAULT_MAX_CONCURRENT). setTimeout(..., 0) still yields to the
-      // event loop between batches rather than looping synchronously.
-      //
-      // Reliability fix, found via audit (belt-and-braces alongside
-      // `requeueChangedTextNode`'s own new state guard above): this used
-      // to key purely on `queue.length > 0`, so ANY stray requeue landing
-      // while `pageLanguageState !== 'translated'` — the two real work
-      // branches above are both gated on 'translated' and would never
-      // drain it — produced a PERMANENT 0ms self-rescheduling tick loop,
-      // since neither branch above ever runs to empty the queue. Requiring
-      // 'translated' here too means a queue entry that somehow survives
-      // every other guard still can't produce a busy-spin; it just sits
-      // there inert until a real translate/restore cycle clears it.
+      // 0ms (still yields) while work remains; provider concurrency is capped
+      // elsewhere. Requiring 'translated' stops a stray queue entry busy-spinning.
       nextDelay = pageLanguageState === 'translated' && queue.length > 0 ? 0 : 2000;
     }
     translationRoutineHandle = setTimeout(translationRoutine, nextDelay);
@@ -1188,14 +674,8 @@ export function createPageTranslator(options: PageTranslatorOptions) {
   }
 
   /**
-   * The raw per-piece error (`batchedHttpProvider.ts`'s own internal
-   * `[provider-name] no result for this piece`, or a bare exception
-   * message) is accurate but not something a user should have to parse —
-   * real bug, found via a live user report showing that exact string in
-   * the bubble's red panel. Recognized shapes get a plain-language
-   * message; anything unrecognized passes through unchanged rather than
-   * being silently hidden, since a novel message is still real diagnostic
-   * signal worth showing.
+   * Maps raw provider errors to plain language. Unrecognized messages pass
+   * through unchanged, since they're still useful diagnostics.
    */
   function toUserFacingErrorMessage(raw: string): string {
     if (/kept sending text back untranslated/i.test(raw)) {
@@ -1204,10 +684,8 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     if (/no result for this piece/i.test(raw)) {
       return "Couldn't reach the translation service — retrying automatically.";
     }
-    // A rejection (a bad API key, a refused request) is NOT "couldn't reach
-    // ... retrying": the service was reached and said no, and retrying won't
-    // change its answer. Found via a UI audit, once batchedHttpProvider began
-    // carrying the service's own reason instead of discarding it.
+    // A rejection (bad API key, refused request) won't change on retry, so
+    // don't say "retrying".
     const rejected = /rejected \(HTTP (\d+)\)(?::\s*(.+))?$/.exec(raw);
     if (rejected) {
       return rejected[2]
@@ -1236,26 +714,14 @@ export function createPageTranslator(options: PageTranslatorOptions) {
 
   const titleTranslator = createTitleTranslator({
     translator: options.translator,
-    // Accuracy fix, found via audit: this used to pass `options.getSourceLanguage`
-    // straight through, bypassing `sourceLanguageOverride` entirely — the
-    // bubble's manual "From" picker (a one-off forced source language, see
-    // that field's declaration comment) correctly applied to every body
-    // text node's translate request (line ~464 below), but the tab title
-    // kept using whatever `options.getSourceLanguage()` reports (always
-    // `'auto'` in this extension's real wiring) regardless. A page
-    // mis-detected as the wrong language, manually corrected via the
-    // picker, would translate correctly everywhere except the title.
+    // Honour the From picker's override for the title too, as for body text.
     getSourceLanguage: () => sourceLanguageOverride ?? options.getSourceLanguage(),
     isSourceLanguageExplicit: () => sourceLanguageOverride !== null,
     isPageVisible: () => document.visibilityState === 'visible',
   });
 
-  // Attribute translation (round-3 audit follow-up): `placeholder`/`alt`/
-  // `value`/`title` — search boxes, image alt text, button labels, and
-  // tooltips used to stay in the original language on an otherwise fully
-  // translated page, since none of them are `Text` nodes this module's own
-  // walk ever reaches. Same `sourceLanguageOverride` fix as titleTranslator
-  // just above, for the same reason.
+  // Attributes aren't Text nodes, so they have their own subsystem; same
+  // source-language override as the title.
   const attributeTranslator = createAttributeTranslator({
     translator: options.translator,
     getSourceLanguage: () => sourceLanguageOverride ?? options.getSourceLanguage(),
@@ -1266,27 +732,9 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     isTranslated: () => pageLanguageState === 'translated',
     isPageVisible: () => document.visibilityState === 'visible',
     onResweep() {
-      // Bound nodesToRestore's growth: drop entries for nodes the page has
-      // since removed from the DOM, so a long-lived SPA session doesn't
-      // hold onto every detached Text node it ever translated — see the
-      // field's declaration comment above.
-      //
-      // Real bug this closed: pruning on a SINGLE disconnected tick raced
-      // virtualized/recycled list widgets, which routinely detach a node
-      // and reattach the SAME node (same identity, same already-translated
-      // .data) within one resweep interval as the user scrolls. A node
-      // caught disconnected mid-tick lost its nodesToRestore entry right
-      // then — and never got it back, because queueOrRequeueIfChanged only
-      // re-adds a reappearing node when its content actually changed
-      // (lastSeenText still matches unchanged, already-translated text).
-      // That node was then permanently unrestorable: restorePage() had no
-      // original text to roll it back to. `pruneDisconnectedRestoreEntries`
-      // (above) requires two CONSECUTIVE disconnected ticks — a real
-      // removal, not a recycle-pool blip — before pruning, giving a full
-      // resweep interval for a transient detach/reattach to resolve first.
+      // Bound nodesToRestore's growth; see pruneDisconnectedRestoreEntries.
       pruneDisconnectedRestoreEntries(nodesToRestore, disconnectedLastTick);
-      // Same growth bound, applied to attributeTranslator's own `originals`
-      // map — see that module's `pruneDisconnected` doc comment.
+      // Same for attributeTranslator's `originals`.
       attributeTranslator.pruneDisconnected();
       const added = collectTextNodes(document.body, noTranslateOptions()).filter((n) =>
         queueOrRequeueIfChanged(n),
@@ -1295,16 +743,11 @@ export function createPageTranslator(options: PageTranslatorOptions) {
       return added > 0;
     },
     onViewportChanged() {
-      // The user scrolled — whatever prioritizeByViewport last computed no
-      // longer necessarily reflects what's on screen now. Reuses resweep's
-      // own already-debounced scroll listener rather than registering a
-      // second one.
+      // A scroll may have made the last viewport ordering stale.
       viewportDirty = true;
     },
     onHrefChange() {
-      // SPA navigation / chapter switch — re-check the title the same way a
-      // site directly rewriting document.title would trigger, reusing this
-      // scheduler's existing href-watching instead of building a second one.
+      // SPA navigation: re-check the title.
       if (pageLanguageState === 'translated') titleTranslator.catchUp();
     },
   });
@@ -1319,12 +762,8 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     }
   });
 
-  // Resume the instant connectivity returns, rather than waiting for
-  // whatever backoff delay is currently scheduled (up to 30s once an error
-  // has been surfaced for a while — see the nextDelay calc above). The
-  // offline error clears itself on the very next tick once isOnline() is
-  // true again (the offline branch at the top of translationRoutine simply
-  // stops matching), no separate clear-on-reconnect call needed here.
+  // Resume as soon as connectivity returns rather than wait out the backoff
+  // (up to 30s); the offline error clears itself on the next tick.
   connectivity.onChange((online) => {
     if (online && pageLanguageState === 'translated') wakeRoutine(0);
   });
@@ -1344,14 +783,8 @@ export function createPageTranslator(options: PageTranslatorOptions) {
       restorePage();
     }
 
-    // A one-off forced source language (the bubble's From picker) — only
-    // updated when explicitly passed, never reset by an ordinary
-    // translate/restore cycle, matching TWP's `improveTranslation`
-    // semantics exactly: it sticks for the rest of this page's lifetime
-    // (any later translate on this same load keeps using it), but a fresh
-    // page load starts a new module instance and goes back to 'auto'. See
-    // this file's `sourceLanguageOverride` declaration for the per-tick
-    // read side.
+    // The From picker's forced source sticks for this page load (later translates
+    // reuse it); only an explicit argument changes it.
     if (sourceLanguage !== undefined) sourceLanguageOverride = sourceLanguage;
 
     currentTargetLanguage = targetLanguage;
@@ -1366,15 +799,10 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     });
     queue = [...nodes];
     queuedSet = new WeakSet<Text>(nodes);
-    // A fresh cycle's queue is entirely new — the previous cycle's
-    // measurements (if any) don't apply to it. Bypasses queueNode()'s own
-    // viewportDirty=true (this populates `queue` directly, not through it).
+    // `queue` was filled directly, not via queueNode(), so mark it dirty here.
     viewportDirty = true;
 
-    // A fresh cycle's progress is entirely new too — `nodes.length` is the
-    // real total this cycle will actually translate (not an estimate),
-    // known up front since `collectTextNodes` already ran synchronously
-    // above.
+    // The real total, known up front from the synchronous collect above.
     totalPieces = nodes.length;
     completedPieces = 0;
     completedNodes = new WeakSet<Text>();
@@ -1411,24 +839,12 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     titleTranslator.restore();
     attributeTranslator.restore();
     consecutiveBatchFailures = 0;
-    // Reset alongside consecutiveBatchFailures: this drives the surfaced-error
-    // backoff (8s → 30s), and a fresh translate after a restore is a brand-new
-    // attempt. Leaving it set made the next run's very first error start near
-    // the 30s cap instead of 8s, contradicting this file's own backoff comment.
+    // A fresh translate after a restore starts its error backoff at 8s again.
     surfacedErrorStreak = 0;
     setError(null);
     setState('original');
-    // Reliability fix, found via audit alongside the cooldown-timer/restore
-    // race above: restorePage() cleared `queue` but never touched
-    // `working` itself — so a restore while a legitimate retry was still
-    // pending (routine: any batch with even one failing piece leaves
-    // `working` true until it resolves) left the bubble's primary button
-    // permanently disabled, showing "Translating…" on the now-untranslated
-    // page, since nothing left running will ever recompute it back to
-    // false. `queue` is empty and every in-flight request from this cycle
-    // is either already abandoned (checked via `cycleGeneration` before
-    // touching shared state) or about to be, so `false` is correct
-    // immediately, not just eventually.
+    // Nothing left from this cycle will recompute `working` (queue empty,
+    // in-flight results discarded by generation), so clear it now.
     setWorking(false);
   }
 
@@ -1441,30 +857,15 @@ export function createPageTranslator(options: PageTranslatorOptions) {
       return () => stateListeners.delete(cb);
     },
     /**
-     * Currently-translated text nodes and their pre-translation text. Kept as
-     * a public accessor, but the hover tooltip no longer uses it at all — it
-     * allocates one object per translated node, so the tooltip goes through
-     * `findOriginalTextForElement` below on every event instead.
+     * Translated text nodes and their pre-translation text. Allocates per node,
+     * so the hover tooltip uses `findOriginalTextForElement` instead.
      */
     getTranslatedNodes: (): ReadonlyArray<{ node: Text; original: string }> =>
       Array.from(nodesToRestore, ([node, original]) => ({ node, original })),
     /**
-     * Speed fix, found via a round-4 audit: `mountHoverTooltip.ts`'s
-     * `onMouseMove` used to call `getTranslatedNodes()` above — a fresh
-     * N-object array, one object per currently-translated node — on EVERY
-     * mousemove event while the tooltip is visible, then linear-scanned it
-     * (the tooltip's own `findOriginalTextForElement` scan) to find the
-     * one node under the cursor. On a page with a few thousand translated
-     * nodes at ~120 mousemove events/s while hovering, that's on the order
-     * of 100k+ short-lived object allocations per second for real jank
-     * while hovering translated text. Same underlying scan
-     * (`node.parentElement === target && node.data !== original`), just
-     * walking `nodesToRestore` directly instead of first copying it out —
-     * zero allocation beyond the Map iteration itself, which the array
-     * build would have paid on top of regardless. `onMouseOver` was moved
-     * onto this too by a later UI audit: it had been left on the allocating
-     * path on the assumption it fires once per hovered element, when it
-     * fires on every element boundary the pointer crosses.
+     * Original text of a translated node directly under `target`, or null. Walks
+     * `nodesToRestore` without allocating, since the hover tooltip calls it on
+     * every mouseover/mousemove.
      */
     findOriginalTextForElement: (target: Element): string | null => {
       for (const [node, original] of nodesToRestore) {
@@ -1472,7 +873,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
       }
       return null;
     },
-    /** Non-null once translation has been failing for `CONSECUTIVE_FAILURES_BEFORE_SURFACING` ticks in a row (or immediately, for `'offline'`) — see the header comment on that constant above. */
+    /** Non-null once failures reach `CONSECUTIVE_FAILURES_BEFORE_SURFACING` (at once when offline), or for the untranslated-share warning. */
     getLastError: (): string | null => lastErrorMessage,
     /** `'offline'` vs `'provider'` vs `null` — see the `ErrorKind` doc comment. */
     getLastErrorKind: (): ErrorKind => lastErrorKind,
@@ -1480,22 +881,15 @@ export function createPageTranslator(options: PageTranslatorOptions) {
       errorListeners.add(cb);
       return () => errorListeners.delete(cb);
     },
-    /** True while there's real translate work queued or in flight and nothing has given up and surfaced an error — see this file's `working`/`recomputeWorking` header comment. */
+    /** True while work is queued or in flight and no real error has surfaced; see `recomputeWorking`. */
     isWorking: (): boolean => working,
     onWorkingChange(cb: (working: boolean) => void): () => void {
       workingListeners.add(cb);
       return () => workingListeners.delete(cb);
     },
     /**
-     * Perceived-speed fix: `(done, total)` for the current cycle, updated
-     * as pieces actually complete — not an estimate. `done` can settle
-     * short of `total` (a genuinely untranslatable fragment gives up after
-     * 3 attempts, a node can leave the DOM for good) — this is by design,
-     * not a bug to chase: a consumer should hide/reset its progress UI on
-     * `working` going `false` (already fires for exactly this case, see
-     * `onWorkingChange` above), not by waiting for `done === total`, which
-     * isn't guaranteed to happen even on a fully successful, fully
-     * "done" translate.
+     * `(done, total)` for the current cycle. `done` may settle short of `total`
+     * (given-up or removed nodes), so hide progress UI when `working` goes false.
      */
     onProgressChange(cb: (done: number, total: number) => void): () => void {
       progressListeners.add(cb);

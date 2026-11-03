@@ -5,16 +5,9 @@ export type ProviderSetupFields = Pick<Config, 'googleCloudTranslateApiKey'>;
 
 /**
  * What a provider still needs before it can translate, as the labels the
- * settings page uses — or `null` when it's ready.
- *
- * The ONE place this rule lives. `background.ts`'s `buildProviderConfig`
- * decides whether a provider can be created from exactly this, and the UI
- * uses it to say "needs setup" before a translate fails. Previously the UI
- * said nothing at all: choosing an unconfigured provider was only discovered
- * when the next translation failed.
- *
- * Deliberately NOT `descriptors.ts`'s `requiresKey` flag, which is a single
- * boolean and can't say which of several fields is missing.
+ * settings page uses, or `null` when it's ready. The one place this rule
+ * lives: `background.ts` and the UI both use it. Not `descriptors.ts`'s
+ * `requiresKey`, which can't say which field is missing.
  */
 export function missingProviderSetup(id: ProviderId, fields: ProviderSetupFields): string[] | null {
   const has = (value: string) => value.trim() !== '';

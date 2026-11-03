@@ -4,8 +4,8 @@
  * part by part with missing parts counted as zero.
  *
  * - A prerelease `X.Y.Z-<tag>.N` becomes `X.Y.Z.N`.
- * - A stable `X.Y.Z` becomes `X.Y.Z.9999`, so it sorts above its own betas.
- *   Plain `X.Y.Z` would sort below them, which is what made 0.3.0 unusable.
+ * - A stable `X.Y.Z` becomes `X.Y.Z.9999`, so it sorts above its own betas
+ *   (plain `X.Y.Z` would sort below them).
  * - Stable versions up to 0.3.1 keep their plain form: Mozilla already holds
  *   them under that version, and fetch-signed-xpi looks them up by it.
  *

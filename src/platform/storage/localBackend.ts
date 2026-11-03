@@ -1,11 +1,8 @@
 import type { StorageBackend, StorageChange } from './types';
 
 /**
- * `browser.storage.local` — the only backend Gen 3 ships with at launch.
- * See docs/decisions/0003-settings-sync-deferred.md for why
- * `browser.storage.sync` is deliberately not implemented here (the old
- * repo shipped it, then fully removed it after a real WebKit split-brain
- * bug — see that ADR and the old repo's CLAUDE.md for the incident).
+ * `browser.storage.local`, the only backend. `storage.sync` is deliberately
+ * not implemented; see docs/decisions/0003-settings-sync-deferred.md.
  */
 export const localStorageBackend: StorageBackend = {
   async getAll() {

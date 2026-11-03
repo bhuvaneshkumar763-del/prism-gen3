@@ -1,19 +1,8 @@
 /**
- * Adaptive concurrency via the Network Information API — Phase 4b of the
- * graceful-degradation pass. `navigator.connection` is Chromium-only and
- * experimental (not `chrome`/`browser`-namespaced, so it's fine to touch
- * from `src/engine/**` per the purity boundary) — this must degrade to
- * exactly today's fixed behavior everywhere the API is absent (Firefox,
- * older Chrome), not fail or behave differently there.
- *
- * Deliberately scoped to `maxConcurrent` only — see
- * `batchedHttpProvider.ts`'s `pump()` for where this gets called. Does
- * NOT touch `maxBatchChars`, `batchingHint`, or `maxGroupChars` —
- * those are accuracy-tuned chunking knobs with their own hard-won tuning
- * history (including the Google reflow-corruption bug fixed just before
- * this pass), and mixing a speed/connection-quality signal into them would
- * multiply the surface a future accuracy bug could hide in for no clear
- * benefit over just adjusting how many requests run at once.
+ * Adaptive concurrency via the Network Information API (`navigator.connection`,
+ * Chromium-only). Must fall back to the fixed default where it's absent.
+ * Deliberately affects `maxConcurrent` only, never the accuracy-tuned
+ * chunking knobs (`maxBatchChars`, `batchingHint`, `maxGroupChars`).
  */
 
 interface NetworkInformationLike {
@@ -27,12 +16,7 @@ declare global {
   }
 }
 
-/**
- * Returns a concurrency cap adapted to the current connection quality, or
- * `defaultConcurrent` unchanged when `navigator.connection` isn't present
- * (Firefox, or a Chrome build/version without it) — the exact behavior
- * every provider had before this module existed.
- */
+/** A concurrency cap for the current connection quality, or `defaultConcurrent` when the API is absent. */
 export function getAdaptiveConcurrency(defaultConcurrent: number): number {
   const connection = typeof navigator === 'undefined' ? undefined : navigator.connection;
   if (!connection) return defaultConcurrent;

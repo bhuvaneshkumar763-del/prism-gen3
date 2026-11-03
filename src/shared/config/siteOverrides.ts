@@ -1,9 +1,4 @@
-/**
- * Per-hostname override resolution — the pre-rewrite fork duplicated the
- * "does this host have an explicit override, else fall back to the global
- * default" check in three separate places (popup, options, content script).
- * One tested home for it here instead.
- */
+/** Per-hostname override resolution: an explicit host override, else the global default. */
 
 export interface BubbleVisibilityInput {
   hostname: string;
@@ -42,7 +37,7 @@ export function resolveSourceLanguageForHost(
   return sourceLanguageByHost[hostname] ?? fallback;
 }
 
-/** Setting the code to `'auto'` clears the override rather than storing the literal string, matching the fork's `onSourceLanguageChange`. */
+/** Setting the code to `'auto'` clears the override rather than storing the literal string. */
 export function setSourceLanguageForHost(
   sourceLanguageByHost: Record<string, string>,
   hostname: string,
@@ -56,7 +51,7 @@ export function setSourceLanguageForHost(
   return { ...sourceLanguageByHost, [hostname]: code };
 }
 
-/** Removes a saved override outright — the options page's per-host table uses this for its remove button, distinct from `setSourceLanguageForHost(..., 'auto')` only because that name is specific to the bubble's "From" select semantics. */
+/** Removes a saved override outright (the options page's per-host remove button). */
 export function clearSourceLanguageOverrideForHost(
   sourceLanguageByHost: Record<string, string>,
   hostname: string,

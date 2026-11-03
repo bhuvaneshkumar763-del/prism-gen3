@@ -24,35 +24,19 @@ import { withTimeout } from '../../src/shared/withTimeout';
 import './App.css';
 
 /**
- * A content script that never replies (page navigated away mid-request, or
- * its tab crashed) used to leave the popup stuck on its "busy"/"translating…"
- * state forever, since a promise that never settles never reaches these
- * calls' existing try/catch either. Every content-script-directed message
- * from this popup goes through this so a hang becomes a real, catchable
- * error instead.
+ * Bounds every content-script message: a tab that never replies (navigated
+ * away, crashed) becomes a catchable error instead of a popup stuck on busy.
  */
 const CONTENT_SCRIPT_TIMEOUT_MS = 5000;
 
 const MAX_QUICK_LANGUAGES = 5;
 
 /**
- * Triggers the real page-translation engine
- * (`src/engine/pageTranslator/translateLoop.ts`, wired into
- * `entrypoints/content.ts`) — translate/restore the whole active tab.
- *
- * Post-launch UI-depth pass, Phase 2: rebuilt on the pre-rewrite fork's
- * popup layout (status pill, quick-language pills, per-site/per-language
- * toggles, a "More" section, a small menu) — see this repo's CLAUDE.md for
- * the full comparison that motivated it. All list/site mutations go through
- * `src/platform/configMutations.ts` + `src/shared/config/listMutations.ts`
- * rather than a raw `configStore.set(...)` on the four always/never-translate
- * keys, so the cross-list cleanup (adding to "always" removes from "never")
- * applies consistently everywhere, not just here.
- *
- * Every value read into local `createSignal`s on mount and kept live via
- * `configStore.onChanged` — never `configStore.get()` directly inside JSX
- * (the documented Solid-reactivity foot-gun, mechanically enforced by
- * `scripts/check-solid-reactivity.mjs`).
+ * Toolbar popup: translate/restore the active tab, quick languages and
+ * per-site/per-language toggles. List edits go through configMutations so the
+ * always/never cross-list cleanup applies everywhere. Config is mirrored into
+ * signals via `configStore.onChanged`, never read with `get()` in JSX
+ * (enforced by scripts/check-solid-reactivity.mjs).
  */
 function App() {
   const [status, setStatus] = createSignal<'idle' | 'busy' | 'error'>('idle');
@@ -90,14 +74,11 @@ function App() {
   const [unsupportedMessage, setUnsupportedMessage] = createSignal<string | null>(null);
   let tabId: number | null = null;
 
-  // Real bug this replaced: `pageState` flips to 'translated' well before
-  // any real work is done (translatePage() queues nodes and schedules the
-  // routine without awaiting it) — `status() !== 'busy'` (kept accurate by
-  // pollUntilWorkingDone below) must also hold before this counts as done.
-  // Same fix as FloatingBubble.tsx's `translated()`.
+  // `pageState` turns 'translated' before the work finishes, so also require
+  // not busy (kept accurate by pollUntilWorkingDone). Same rule as the bubble.
   const translated = createMemo(() => pageState() === 'translated' && status() !== 'busy');
-  // Via the shared helper, not `.includes()`: a `www.`/apex mismatch used
-  // to make these toggles read OFF while auto-translate fired anyway.
+  // The shared helper, not `.includes()`, so `www.`/apex hosts match the way
+  // auto-translate matches them.
   const alwaysSiteOn = createMemo(() => siteListIncludesHostname(alwaysSites(), hostname()));
   const neverSiteOn = createMemo(() => siteListIncludesHostname(neverSites(), hostname()));
   const alwaysLangOn = createMemo(() =>
@@ -140,7 +121,7 @@ function App() {
       try {
         setHostname(new URL(tab.url).hostname);
       } catch {
-        // non-http(s) URL (chrome://, about:, ...) — leave hostname empty, per-site controls stay disabled
+        // Non-http(s) URL (chrome://, about:): no hostname, per-site controls stay disabled.
       }
     }
     if (tabId === null) {
@@ -148,20 +129,17 @@ function App() {
       return;
     }
     const id = tabId;
-    // Concurrent, not three round trips in a row — see loadPageStatus. The
-    // error question matters here: a translation can keep failing in the
-    // background well after the page reports 'translated' (translateLoop.ts
-    // never reverts pageLanguageState on error), and without it the popup
-    // showed a plain "Translated" for a tab the on-page bubble correctly
-    // shows as failing.
+    // Concurrent (see loadPageStatus). The error matters: translateLoop.ts never
+    // reverts 'translated' on error, so without it a failing page would show
+    // "Translated".
     const pageStatus = await loadPageStatus({
       getPageState: () => withTimeout(sendMessage('getPageState', undefined, id), CONTENT_SCRIPT_TIMEOUT_MS),
       getOriginalLanguage: () =>
         withTimeout(sendMessage('getOriginalLanguage', undefined, id), CONTENT_SCRIPT_TIMEOUT_MS),
       getPageError: () => withTimeout(sendMessage('getPageError', undefined, id), CONTENT_SCRIPT_TIMEOUT_MS),
     });
-    // Replaces the browser's raw "Receiving end does not exist" with advice
-    // the user can act on — see describeUnsupportedPage.
+    // Actionable advice instead of the browser's raw "Receiving end does not
+    // exist" (see describeUnsupportedPage).
     setUnsupportedMessage(describeUnsupportedPage(tab.url ?? '', pageStatus.reachable));
     if (pageStatus.pageState) setPageState(pageStatus.pageState);
     if (pageStatus.originalLanguage) setOriginalLanguage(pageStatus.originalLanguage);
@@ -188,14 +166,9 @@ function App() {
   onCleanup(unsubscribe);
 
   /**
-   * A translate call can keep failing silently in the background well
-   * after `pageTranslate`'s own request/response round trip already
-   * resolved (see `translateLoop.ts`'s consecutive-failure guard) — this
-   * popup, unlike the always-open bubble, isn't subscribed to
-   * `pageTranslator.onError()` and typically closes before that fires.
-   * Polling `getPageError` once shortly after and once again a bit later
-   * is a reasonable middle ground without keeping the popup's message port
-   * open indefinitely.
+   * A translation can start failing after `pageTranslate` has answered, and
+   * the popup doesn't subscribe to onError like the bubble does, so it checks
+   * `getPageError` twice after a translate instead.
    */
   async function refreshError(): Promise<void> {
     if (tabId === null) return;
@@ -212,15 +185,9 @@ function App() {
   }
 
   /**
-   * Real bug this closed, found via a UI audit: changing the language here
-   * used to only SAVE it — the page stayed in its old language, while the
-   * quick-language pill (highlighted when `translated() && code ===
-   * targetLanguage()`) claimed the page was now in the new one. The bubble's
-   * own To/Service pickers already retranslate immediately; this now matches
-   * them. Keyed on `pageState` rather than `translated()` so picking a new
-   * language mid-translation also takes effect — `translatePage` restores and
-   * restarts cleanly. On an untranslated page the choice is just saved for
-   * the Translate button, as before.
+   * Retranslates immediately, like the bubble's pickers, so the quick-language
+   * pill can't claim a language the page isn't in. Keyed on `pageState` so it
+   * also applies mid-translation; on an untranslated page it only saves.
    */
   async function onTargetLanguageChange(code: string): Promise<void> {
     setTargetLanguage(code);
@@ -249,16 +216,9 @@ function App() {
   }
 
   /**
-   * `pageTranslate`'s own response resolves as soon as real work is
-   * QUEUED, not once it's actually done — same real bug fixed for the
-   * on-page bubble (`entrypoints/content.ts`'s `onWorkingChange` wiring):
-   * `translatePage()` never awaits real translate work, so awaiting the
-   * message alone made the popup's busy state clear in ~zero frames, with
-   * `pageState` already reporting 'translated' well before anything on the
-   * page had changed. Poll `getPageWorking` afterward (same shape as
-   * `refreshError`'s existing polling below) until real work actually
-   * finishes, and only then clear `busy` — bounded so a page that's still
-   * genuinely working after a while doesn't leave the button stuck.
+   * `pageTranslate` answers once work is queued, not done, so poll
+   * `getPageWorking` (like refreshError above) before clearing busy. Bounded
+   * so a long-running page can't leave the button stuck.
    */
   async function pollUntilWorkingDone(id: number): Promise<void> {
     const POLL_INTERVAL_MS = 400;
@@ -277,10 +237,7 @@ function App() {
         return;
       }
     }
-    // Gave up waiting rather than leaving the button stuck on "busy" forever
-    // — translation itself keeps going in the background either way (see
-    // translateLoop.ts's own retry/backoff), this only affects this popup's
-    // own busy indicator if it's still open that long.
+    // Give up on the indicator only; translation keeps going in the page.
     setStatus('idle');
   }
 
@@ -348,9 +305,8 @@ function App() {
         const state = await withTimeout(sendMessage('pageRestore', undefined, tabId), CONTENT_SCRIPT_TIMEOUT_MS);
         setPageState(state);
       } catch {
-        // The never-translate-list update above already succeeded; a
-        // failed/timed-out restore here just means the page's own state
-        // stays whatever it was — nothing else to surface for this action.
+        // The list update already succeeded; a failed restore just leaves the
+        // page as it was.
       }
     }
   }
@@ -413,10 +369,7 @@ function App() {
             disabled={status() === 'busy' || unsupportedMessage() !== null}
             onClick={onTranslateClick}
           >
-            {/* Perceived-speed fix: previously text-only while busy, the one
-                translate-triggering surface with no motion at all — see
-                FloatingBubble.tsx's matching .spinner for the pattern this
-                reuses. */}
+            {/* Same spinner pattern as FloatingBubble.tsx's .spinner. */}
             <span class="spinner" />
             {status() === 'busy' ? 'Translating…' : 'Translate this page'}
           </button>
@@ -489,8 +442,7 @@ function App() {
         </Show>
         <label class="toggleRow">
           {/* Disabled with no hostname (chrome://, the stores, ...): the handler
-              can't act there, but the native checkbox used to flip anyway and
-              show "on" for a setting that was never saved. */}
+              can't act there, so the checkbox mustn't flip to a state never saved. */}
           <input
             type="checkbox"
             checked={alwaysSiteOn()}

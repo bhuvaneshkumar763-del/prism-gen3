@@ -1,18 +1,10 @@
 /**
- * What the popup should say when the current tab has no Prism running in it.
- *
- * Found via a UI audit: on such a page the popup's Translate button used to
- * surface the browser's own raw error — "Could not establish connection.
- * Receiving end does not exist." — which tells a user nothing about what to
- * do. There are two genuinely different situations behind that one error,
- * and they need different advice:
- *
- * - The browser forbids extensions there (its own settings pages, other
- *   extensions' pages, the extension stores, local files). Nothing the user
- *   can do on that page will help.
- * - An ordinary web page simply has no content script yet — almost always a
- *   tab that was open before Prism was installed or updated. Reloading fixes
- *   it.
+ * What the popup should say when the current tab has no Prism running in it,
+ * instead of the browser's raw "Receiving end does not exist". Two cases:
+ * - The browser forbids extensions there (its own pages, other extensions,
+ *   the stores, local files): nothing the user can do on that page helps.
+ * - An ordinary web page has no content script yet (a tab open before Prism
+ *   was installed or updated): reloading fixes it.
  */
 
 export const CANT_TRANSLATE_MESSAGE = "Prism can't translate this page.";

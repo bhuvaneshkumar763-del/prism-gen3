@@ -16,75 +16,27 @@ import { missingProviderSetup } from '../src/shared/config/providerSetup';
 import { TOGGLE_TRANSLATE_COMMAND } from '../src/shared/shortcut';
 
 /**
- * Session 6: rewired onto the typed messaging protocol
- * (`src/platform/messaging/protocol.ts`) — `translateText`/`translatePieces`
- * handlers declared via `onMessage()` instead of a hand-rolled
- * `browser.runtime.onMessage` listener with type guards. Also adds the
- * context-menu and keyboard-command entry points for full-page
- * translate/restore, both going through `getActiveTabId()`
- * (`tabTarget.ts`) — the same helper `popup/App.tsx` uses.
- *
- * Session 7: `translatePieces` checks `translationCache`
- * (`src/platform/cache/translationCache.ts`) before hitting the provider —
- * cache key is the provider + language pair + the piece's own text (a
- * JSON-stringified string array, since a piece can hold more than one
- * grouped string). Only the pieces that miss actually get sent to the
- * provider; fresh results are written back for next time. `translateText`
- * deliberately does NOT go through the cache — it backs the selection
- * popup and title translator, both already have their own narrower
- * caching (title translator: an in-memory 50-entry cache; selection: a
- * one-off translation the user just asked for, no repeat-request pattern
- * to optimize).
- *
- * Post-launch UI-depth pass, Phase 3: `translationCacheEnabled` (settings
- * page toggle) actually skips both the cache read and the cache write when
- * off — not a checkbox with no wiring behind it.
- *
- * Session 8 (hardening pass): MV3 keepalive via chrome.alarms. A service
- * worker with no pending listener callback is eligible for suspension by
- * Chrome after ~30s of idle time — a translatePieces call involving
- * several provider round trips (retries/backoff in
- * batchedHttpProvider.ts) can outlast that window, which would kill the
- * in-flight request with no error surfaced to the page. A recurring
- * chrome.alarms alarm is the standard MV3 workaround: alarms fire even on
- * a suspended worker (Chrome wakes it to deliver the event), and simply
- * having a live alarms.onAlarm listener keeps the worker classified as
- * active in between. The interval is deliberately short (under the ~30s
- * idle threshold) — a longer period would let the worker suspend in the
- * gap anyway, defeating the point.
+ * Service worker: translates for content scripts over the typed messaging
+ * protocol and hosts the context-menu and keyboard-command entry points.
+ * `translatePieces` goes through the per-piece cache; `translateText`
+ * (selection popup, title translator) deliberately does not.
  */
 const KEEPALIVE_ALARM_NAME = 'prism-keepalive';
-const KEEPALIVE_INTERVAL_MINUTES = 0.4; // 24s — verified directly against real Chrome (chrome.alarms.getAll()'s reported scheduledTime advanced in exact 24s steps across 12 samples over ~110s) — NOT clamped to a 1-minute floor, despite that being a real risk worth checking rather than assuming.
+const KEEPALIVE_INTERVAL_MINUTES = 0.4; // 24 s unpacked; Chrome clamps packed builds' periodic alarms to 30 s.
 
 /**
- * Speed fix, found via audit: this alarm used to be created ONCE at
- * startup and left running for the entire browser session — waking the
- * service worker every 24s, ~2,880 times a day, for as long as the
- * browser stays open, even for a user who never translates anything in
- * that session. The alarm only needs to exist while a translate request
- * could actually be in flight (its whole purpose — see the module
- * comment above — is bridging Chrome's ~30s idle-suspend window during a
- * real `translatePieces`/`translateText` call's retries/backoff). Now
- * created lazily when a translate handler starts and cleared once none
- * are in flight, tracked via this plain in-memory counter — safe because
- * a service worker with an ACTIVE, PENDING listener invocation (which is
- * exactly what "a translate is in flight" means here) is never torn down
- * by Chrome mid-call; the only time this counter's state could be lost
- * to a worker restart is when it's already back at 0, which is the
- * correct state to restart into anyway.
+ * MV3 keepalive: Chrome suspends an idle worker after ~30 s, which can kill a
+ * translate mid-request (retries/backoff). Each alarm event resets that idle
+ * timer, so the alarm runs only while a translate is in flight. A worker
+ * restart loses in-flight work too, so this counter restarting at 0 is correct.
  */
 let activeTranslateCount = 0;
 
 function registerKeepaliveListener(): void {
   browser.alarms.onAlarm.addListener((alarm) => {
     if (alarm.name !== KEEPALIVE_ALARM_NAME) return;
-    // Self-terminating: if nothing is in flight by the time this fires
-    // (the common case — most fires happen mid-request, but the last one
-    // after a request just finished has nothing left to bridge), stop
-    // rescheduling instead of waking the worker again for no reason.
-    // Otherwise a no-op body is the whole mechanism — the listener's mere
-    // existence, and Chrome waking the worker to invoke it, is what keeps
-    // an in-flight request's idle clock from expiring.
+    // Stop once nothing is in flight. Otherwise the empty handler is the
+    // point: delivering the event is what resets the idle timer.
     if (activeTranslateCount === 0) void browser.alarms.clear(KEEPALIVE_ALARM_NAME);
   });
 }
@@ -114,16 +66,9 @@ function buildProviderConfig(): ProviderConfig {
   };
 }
 
-// Memoized per worker lifetime instead of constructed fresh on every
-// message. A fresh createProvider() call gets a fresh
-// createBatchedHttpProvider() closure, and that closure is where the
-// maxConcurrent cap and inFlightByKey dedupe actually live (see
-// batchedHttpProvider.ts) — reconstructing it per-message meant every
-// concurrent message (e.g. several tabs translating at once) got its OWN
-// independent rate limiter instead of sharing one, so 3 tabs could fire up
-// to 3x the intended concurrent request count at the provider. The
-// fingerprint check still picks up a live settings change (new API key,
-// switched provider) without needing a separate configStore.onChanged wire-up.
+// Memoized per worker lifetime: the batched provider's concurrency cap and
+// in-flight dedupe live in its closure, so every tab must share one instance.
+// The fingerprint picks up settings changes (API key, provider).
 let cachedProvider: { providerId: string; fingerprint: string; provider: Translator | null } | null = null;
 
 function providerFingerprint(providerId: string, config: ProviderConfig): string {
@@ -143,38 +88,15 @@ async function resolveActiveProvider() {
 }
 
 /**
- * A tab's main frame's auto-translate-on-load decision, so a same-origin
- * iframe in the same tab can inherit it instead of running its own
- * independent detection — real gap: `all_frames` was never enabled at all,
- * so no iframe got a decision, translated or not.
- *
- * Reliability/privacy fix, found via a round-4 audit: this used to rely
- * solely on "the main frame overwrites its own entry on every fresh load,
- * so a stale entry only matters for the brief window before that happens"
- * — real gap in that reasoning: on an ordinary navigation, a same-origin
- * sub-frame's content script can run BEFORE the new main frame's does
- * (it's typically the smaller document), so its very first
- * `getFrameLanguageDecision` poll could accept the PREVIOUS page's still-
- * present entry immediately, with no way to tell it was stale — including,
- * concretely, translating a site that IS on `neverTranslateSites` because
- * the entry it inherited was left over from a site that wasn't. Now
- * cleared proactively the instant a new top-level navigation starts
- * (`tabs.onUpdated` below), and `FrameLanguageDecision` itself carries the
- * reporting frame's origin so a sub-frame can independently reject a
- * decision that doesn't match its OWN current main frame's origin even if
- * a poll still races ahead of that clear — see that type's doc comment.
- * Also cleared on tab close (below) so this doesn't grow unbounded over a
- * long browser session.
+ * Each tab's main-frame auto-translate decision, inherited by same-origin
+ * sub-frames. Cleared on navigation start and tab close; it also carries
+ * `mainFrameOrigin` so a sub-frame that polls early rejects a stale entry.
  */
 const frameLanguageDecisions = new Map<number, FrameLanguageDecision>();
 
 const TRANSLATE_MENU_ID = 'prism-translate-page';
 const RESTORE_MENU_ID = 'prism-show-original';
-/**
- * Improvement, found via a UI audit: only page-level menu items existed. A
- * selection item gives keyboard users (Shift+F10 / the menu key) and anyone
- * who dismissed the floating button a real way to translate selected text.
- */
+/** Gives keyboard users (Shift+F10) and anyone who dismissed the floating button a way to translate a selection. */
 const TRANSLATE_SELECTION_MENU_ID = 'prism-translate-selection';
 
 async function translateActiveTab(): Promise<void> {
@@ -205,13 +127,9 @@ function unavailableMessage(providerId: string): string {
 }
 
 /**
- * The context menu and keyboard shortcut invoke translateActiveTab/
- * restoreActiveTab/toggleActiveTab fire-and-forget — a rejected
- * sendMessage (no content script on that tab: a chrome:// page, a PDF
- * viewer, a tab that predates install) used to produce nothing visible
- * anywhere. A brief toolbar-icon badge needs no new permission (the
- * `action` API is already available) and is visible regardless of which
- * surface triggered the action.
+ * Context-menu and shortcut actions are fire-and-forget. When the tab has no
+ * content script (chrome:// pages, PDF viewer, tabs predating install), a
+ * toolbar badge is the only visible sign of failure and needs no permission.
  */
 const FAILURE_BADGE_MS = 3000;
 
@@ -227,22 +145,9 @@ function showFailureBadge(e: unknown): void {
 const GOOGLE_AUTH_STORAGE_KEY = 'googleAuthKeySnapshot';
 
 /**
- * Speed fix, found via an audit: `google.ts`'s auth-key scrape used to
- * only ever run lazily, in-memory-only, inside the first real
- * `translateBatch` call of a fresh service-worker lifetime — paying a full
- * extra fetch to `translate.googleapis.com` serially before almost every
- * translation, since MV3 workers suspend after ~30s idle and this project
- * doesn't otherwise keep one alive between separate translate actions.
- * `browser.storage.session` (cleared on browser close, not synced —
- * appropriate for a key meant to refresh every 20 minutes anyway) lets a
- * still-fresh key survive a worker restart, and kicking the scrape off
- * here — at startup, in parallel with the content script's own startup
- * chain — instead of waiting for the first `translatePieces` message hides
- * its latency behind that other work rather than sitting on the critical
- * path. Fire-and-forget: nothing here needs to block `defineBackground`'s
- * own setup, and `google.ts`'s own `findAuth()` still runs its usual
- * lazy check if this hasn't finished (or failed) by the time a real
- * translate request needs it.
+ * Warms Google's auth key at startup, off the first translate's critical
+ * path, and keeps it in `storage.session` (cleared on browser close) so it
+ * survives MV3 worker restarts. Best-effort: `google.ts` still fetches lazily.
  */
 async function prefetchGoogleAuthKey(): Promise<void> {
   try {
@@ -252,9 +157,7 @@ async function prefetchGoogleAuthKey(): Promise<void> {
 
     const stored = await browser.storage.session.get(GOOGLE_AUTH_STORAGE_KEY);
     const snapshot = stored[GOOGLE_AUTH_STORAGE_KEY] as AuthKeySnapshot | undefined;
-    // Defensive shape check — this is stored data, not a value this
-    // module ever fully controls the origin of (a stale shape from a
-    // future/past version of this extension is plausible).
+    // Stored data may come from another extension version; check its shape.
     if (snapshot && typeof snapshot.key === 'string' && typeof snapshot.time === 'number') {
       hydrateAuthKey(snapshot);
     }
@@ -269,36 +172,9 @@ async function prefetchGoogleAuthKey(): Promise<void> {
 }
 
 export default defineBackground(() => {
-  // Reverted (0.3.0-beta.59) — beta.58 set `persistent: false` here
-  // universally, reasoning that this codebase's rebuild-on-wake assumption
-  // (see `registerKeepaliveListener` below) made a genuinely persistent MV2
-  // background page only a liability (any future in-memory leak surviving a
-  // whole browser session instead of being cleared on the next rebuild).
-  // That reasoning is real for the Safari-wrapped app (`safari/Prism/`),
-  // where Apple's own docs make `persistent: false` MANDATORY on iOS — see
-  // `scripts/sync-safari.mjs`'s own post-build patch, which still forces it
-  // there independently of this file. It does NOT hold for every MV2
-  // target this key used to also cover: Orion (and any other third-party
-  // browser loading this raw WebExtension package directly) is not going
-  // through Apple's native extension framework at all — it implements its
-  // own background-page lifecycle. beta.44 already fixed, and documented,
-  // a real "stuck busy spinner forever on mobile" bug reported live on
-  // sangtacviet.vip, root-caused to the background context dying MID-
-  // REQUEST under mobile memory pressure, permanently orphaning an
-  // in-flight message (`remoteTranslator.ts`'s 90s `withTimeout` bounds
-  // any ONE such orphaned request, but a text-dense chapter page needs
-  // several sequential round trips, so repeated mid-request deaths still
-  // add up to minutes of real, user-visible spinning). Making the
-  // background page non-persistent for Orion specifically makes that exact
-  // failure mode MORE likely to trigger, not less, if Orion's own
-  // "non-persistent page" implementation doesn't correctly recognize a
-  // pending `fetch()`/message handler as a reason to stay alive the way
-  // Chrome's real MV3 service worker does (unverified — Orion's internals
-  // aren't inspectable from here — but the timing correlation with this
-  // regression reappearing immediately after beta.58 shipped, on the exact
-  // same site beta.44 already fixed once, is strong enough to revert on).
-  // Back to WXT's own MV2 default (`persistent: true`) for every target
-  // except Safari, matching every release through beta.57.
+  // No `persistent: false` option here: a non-persistent page is suspected (not
+  // verified) of being suspended mid-request in MV2 browsers that load this
+  // package directly, such as Orion. Safari requires it; see scripts/sync-safari.mjs.
   registerKeepaliveListener();
   void prefetchGoogleAuthKey();
 
@@ -338,31 +214,16 @@ export default defineBackground(() => {
       return pieces.map(() => ({ ok: false, error }));
     }
 
-    // Security/privacy fix, found via a round-4 audit: extensions run in
-    // "spanning" mode by default (one shared service worker across normal
-    // AND incognito windows), so this handler runs the same regardless of
-    // which kind of window the request came from — `translationCacheEnabled`
-    // alone said nothing about that. A manual translate in an incognito
-    // window used to write the page's source text (the cache key literally
-    // contains it) into the NORMAL profile's IndexedDB, persisting past
-    // the incognito session ending, with no way for the user to know it
-    // happened. `sender.tab.incognito` is the standard WebExtensions field
-    // for exactly this; skips BOTH the read and the write below, so an
-    // incognito translate neither leaks into nor benefits from the normal
-    // profile's cache.
+    // One worker serves normal and incognito windows ("spanning" mode), so an
+    // incognito translate skips the cache entirely: it neither writes page text
+    // into the normal profile's IndexedDB nor reads from it.
     const cacheEnabled = configStore.get('translationCacheEnabled') && !sender.tab?.incognito;
     const pieceKeys = pieces.map((piece) =>
       cacheKeyFor(providerId, sourceLanguage, targetLanguage, JSON.stringify(piece)),
     );
-    // Caching is purely an optimization — a cache-layer failure (a closed
-    // IndexedDB connection, a quota/permission issue, or a corrupt/truncated
-    // stored entry) must never break an otherwise-successful translation.
-    // Treat a failed read OR a value that fails to parse as a cache miss
-    // (falls through to a live provider call below) and a failed write as a
-    // no-op, all logged but not propagated. getMany() reads every piece
-    // key in ONE IndexedDB transaction instead of one per key — a tick with
-    // ~40 pieces used to open ~40 separate transactions just to check the
-    // cache.
+    // The cache is only an optimization: a failed read or unparseable entry is
+    // a miss, and a failed write is a no-op. getMany() reads every key in one
+    // IndexedDB transaction.
     const rawCachedValues = cacheEnabled
       ? await translationCache.getMany(pieceKeys).catch((e) => {
           console.warn('[prism] translation cache read failed, treating every piece as a cache miss', e);
@@ -389,21 +250,10 @@ export default defineBackground(() => {
       const missingPieces = missingIndices
         .map((i) => pieces[i])
         .filter((p): p is (typeof pieces)[number] => p !== undefined);
-      // Reliability/speed fix, found via audit: relays each fresh piece's
-      // own completion back to the requesting frame the instant the
-      // provider resolves it — see remoteTranslator.ts's header comment
-      // for why this exists (a function property can't survive the
-      // messaging boundary on its own) and what it makes work again
-      // (beta.34's incremental write-back, previously inert outside a
-      // unit test's in-process translator). `missingIdx` is relative to
-      // `missingPieces`/`pieces` above; `missingIndices[missingIdx]` maps
-      // it back to the index in the ORIGINAL request the content script
-      // is keeping track of. Best-effort: a tab/frame that's navigated or
-      // closed between the request and this piece resolving just drops
-      // the notification — the final `outcomes` this function returns
-      // still carries every piece via the unchanged path below, so
-      // nothing is actually lost, only the early write-back for that one
-      // piece.
+      // Streams each fresh piece back to the requesting frame as it resolves
+      // (a callback can't cross the messaging boundary; see remoteTranslator.ts).
+      // `missingIndices` maps it back to the original request's index.
+      // Best-effort: the returned outcomes still carry every piece.
       const tabId = sender.tab?.id;
       freshOutcomes = await provider.translateBatch({
         sourceLanguage,
@@ -421,15 +271,14 @@ export default defineBackground(() => {
                   { requestId, index, outcome },
                   { tabId, frameId: sender.frameId },
                 ).catch(() => {
-                  // Tab/frame gone — see this block's own comment above.
+                  // Tab/frame gone; the final reply still carries this piece.
                 });
               },
       });
     }
 
-    // Built once so the reconstruction below is O(1) per piece instead of
-    // an indexOf() scan (O(n) per piece, O(n^2) overall — real cost on a
-    // cold/disabled cache, where every piece is "missing").
+    // O(1) lookup per piece instead of indexOf(); on a cold or disabled cache
+    // every piece is missing.
     const missingIdxByPiece = new Map(missingIndices.map((i, idx) => [i, idx]));
 
     const outcomes: PieceOutcome[] = pieces.map((_, i) => {
@@ -441,9 +290,7 @@ export default defineBackground(() => {
     });
 
     if (cacheEnabled) {
-      // setMany() writes every fresh piece in ONE IndexedDB transaction and
-      // runs ONE eviction pass, instead of set()'s old per-piece path (two
-      // transactions each — up to 2N for N fresh pieces in a tick).
+      // setMany(): one transaction and one eviction pass for all fresh pieces.
       const freshEntries = missingIndices
         .map((i, idx) => {
           const outcome = freshOutcomes[idx];
@@ -451,15 +298,8 @@ export default defineBackground(() => {
           return outcome?.ok && key ? { key, value: JSON.stringify(outcome.value) } : null;
         })
         .filter((e): e is { key: string; value: string } => e !== null);
-      // Speed fix, found via audit: this used to be awaited, so the reply
-      // carrying the freshly-translated outcomes — the thing the content
-      // script is actually waiting on to write text to the page — sat
-      // behind an IndexedDB commit AND, on a cold service worker, its
-      // first-call full-store cursor scan (`ensureRunningTotal`) plus a
-      // full eviction pass. Caching is purely an optimization (see the
-      // comment above the read path); a future request benefiting from
-      // this write a few milliseconds later than the reply already went
-      // out is the correct trade, not a regression.
+      // Not awaited: the reply the page is waiting on shouldn't sit behind the
+      // IndexedDB commit and eviction (a full store scan on a cold worker).
       void translationCache.setMany(freshEntries).catch((e) => {
         console.warn('[prism] translation cache write failed, continuing without caching these pieces', e);
       });
@@ -468,19 +308,9 @@ export default defineBackground(() => {
     return outcomes;
   }
 
-  // Registered inside onInstalled (fires on install/update/browser-update),
-  // NOT unconditionally at the top of main() — an MV3 service worker is
-  // fully re-executed on every wake from suspension (unlike a persistent
-  // background page), but context-menu items persist in the browser
-  // independently of the worker's own lifetime. Creating them unconditionally
-  // meant every wake after the first successful install called create() with
-  // an already-existing id, which the browser reports via
-  // runtime.lastError — unread here, so it printed as an unchecked-error
-  // warning on every single wake (which happens constantly: the keepalive
-  // alarm alone fires every ~24s while a page is translating). The callback
-  // reading lastError is a belt-and-braces guard, not the primary fix — a
-  // genuine extension update can still legitimately re-create an id that
-  // survived from the prior version.
+  // Context-menu items outlive the worker, which re-runs this file on every
+  // wake, so they're created only on install/update. Reading lastError
+  // silences the duplicate-id error an update can still raise.
   browser.runtime.onInstalled.addListener(() => {
     browser.contextMenus.create({ id: TRANSLATE_MENU_ID, title: 'Translate this page', contexts: ['page'] }, () => {
       void browser.runtime.lastError;
@@ -527,16 +357,9 @@ export default defineBackground(() => {
     frameLanguageDecisions.delete(tabId);
   });
 
-  // Reliability/privacy fix, found via a round-4 audit: proactively drop a
-  // tab's entry the instant a new top-level navigation starts, rather than
-  // only ever overwriting it once the new main frame's content script gets
-  // around to reporting its own fresh decision. Needs no extra permission
-  // — `changeInfo.status` alone is enough, no permission-gated field (url/
-  // title) is read. Belt-and-suspenders alongside the `mainFrameOrigin`
-  // check in content.ts's poll loop (the actual correctness fix, since
-  // this alone can't close a race where a sub-frame's poll still fires
-  // between this delete and the new main frame's report) — see
-  // `FrameLanguageDecision`'s doc comment for the full reasoning.
+  // Drop the tab's decision as soon as a top-level navigation starts (needs
+  // only `changeInfo.status`, no extra permission). The `mainFrameOrigin`
+  // check in content.ts covers the race this can't close.
   browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
     if (changeInfo.status === 'loading') frameLanguageDecisions.delete(tabId);
   });

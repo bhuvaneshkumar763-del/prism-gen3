@@ -1,10 +1,6 @@
 /**
- * The storage-adapter port (Gen 3 plan, Session 3's settings-sync
- * decision): `configStore.ts` depends on this interface, never on
- * `browser.storage` directly. Swapping backends — local (the only one
- * implemented so far), a future sync backend, a future account-based sync
- * — is one new file implementing this interface, not a rewrite of the
- * config store itself.
+ * The storage-adapter port: `configStore.ts` depends on this, never on
+ * `browser.storage` directly, so a new backend is one new implementation.
  */
 export interface StorageChange {
   oldValue?: unknown;

@@ -1,59 +1,14 @@
 /**
- * Versioned config migrations — the pattern itself is a "keep the good
- * part" from the old repo (pure functions over raw storage entries,
- * applied ascending, gated on a stored version marker), rebuilt fresh here
- * rather than retrofitted later, per the Gen 3 plan's design principle #2
- * (coverage/correctness infrastructure from day one, not backfilled).
+ * Versioned config migrations: pure functions over raw storage entries,
+ * applied in ascending order past the stored version marker.
  *
- * `CONFIG_SCHEMA_VERSION` starts at 1 with one real migration, not zero —
- * Session 2's `src/platform/providerConfig.ts` wrote two un-versioned raw
- * keys (`libreTranslateBaseUrl`, `libreTranslateApiKey`) directly to
- * `browser.storage.local` before this versioned system existed. Anyone who
- * ran that build has those keys sitting on disk; this migration adopts
- * them into the real schema's field names (`providerBaseUrl`/
- * `providerApiKey`) instead of leaving them orphaned or silently losing a
- * dev profile's settings the first time the real config store loads.
- *
- * Version 2 (Session 4): the generic `providerBaseUrl`/`providerApiKey`
- * fields from version 1 turned out to be the wrong shape once more than
- * one provider existed (LLM needs a model name too; Google Cloud needs
- * just a key; Google/Builtin need nothing) — a real, not contrived,
- * course correction. Renames them back to a provider-specific name
- * (`libreTranslateBaseUrl`/`libreTranslateApiKey`, since that's what they
- * were actually holding — the store only ever configured LibreTranslate
- * before Session 4 added the others).
- *
- * Version 3: the `builtin` (on-device Chrome Translator API) provider was
- * removed outright — a real user report traced this to a hard, unfixable
- * platform limitation rather than a bug: Chrome's on-device AI model is
- * Google's own proprietary service, gated to actual Google Chrome, and
- * never works in any other Chromium-based browser (Vivaldi, Brave, Opera,
- * Edge, ...) even though they share the same engine. Anyone with
- * `pageTranslatorProvider: 'builtin'` already stored falls back to the
- * default (`google`) rather than being left on a value `schema.ts`'s enum
- * no longer accepts — `initConfig()` reads raw storage straight into
- * state with no schema validation (see its own comment), so an orphaned
- * enum value here wouldn't be caught until `registry.ts`'s `createProvider`
- * switch hit a runtime type mismatch.
- *
- * Version 4: the `libretranslate` provider was removed outright too, at
- * the same user's explicit request right after the `builtin` removal
- * above — `schema.ts`'s default was already changed off it earlier
- * (public libretranslate.com rate-limits unauthenticated requests to the
- * point of being unusable), so nothing depended on it remaining selectable.
- * Same fallback pattern as version 3: any stored `pageTranslatorProvider:
- * 'libretranslate'` becomes `'google'`. The now-orphaned
- * `libreTranslateBaseUrl`/`libreTranslateApiKey` storage keys are left in
- * place rather than actively deleted — `initConfig()` only copies keys
- * present in `defaultConfig` (see configStore.ts), so removing them from
- * the schema already makes them inert; deleting the raw storage entries
- * too would be pure tidiness with no correctness benefit.
- *
- * Version 5: the OpenAI-compatible `llm` provider was removed (fix plan,
- * 2026-11: Prism is personal-use only and the owner never used it). Same
- * fallback as versions 3/4, but its fields ARE deleted from storage this
- * time, unlike version 4's, because one of them is an API key: there's no
- * reason to keep a credential on disk for a provider that no longer exists.
+ * - v1: adopt the pre-versioning `libreTranslate*` keys as `provider*`.
+ * - v2: rename `provider*` back to `libreTranslate*` (per-provider fields).
+ * - v3/v4: the `builtin` and `libretranslate` providers were removed; a
+ *   stored value falls back to `'google'`. The orphaned `libreTranslate*`
+ *   keys are left in storage; they're inert since nothing reads them.
+ * - v5: the `llm` provider was removed; falls back to `'google'`, and its
+ *   fields are deleted because one of them is an API key.
  */
 
 export interface ConfigMigration {

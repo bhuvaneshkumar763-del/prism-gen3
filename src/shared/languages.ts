@@ -1,12 +1,4 @@
-/**
- * A small curated list of common languages for quick-pick UI (the popup's
- * target-language selector). Deliberately NOT the full generated
- * language-name table the Gen 3 plan schedules for Session 7 (derived from
- * what each provider actually supports, plus the old repo's 43 locale
- * files' translated string values as a bootstrap corpus) — this is just
- * enough for a usable dropdown today instead of a bare text input, scoped
- * to popup/options polish, not a substitute for that later session's work.
- */
+/** A small curated list of common languages for quick-pick UI (the popup's target-language selector). */
 export interface LanguageOption {
   code: string;
   name: string;
@@ -63,13 +55,9 @@ const LEGACY_BASE_LANGUAGE_CODES = new Map<string, string>([
 ]);
 
 /**
- * Strips a region/script subtag ('pt-BR' -> 'pt', 'zh-Hans' -> 'zh') so
- * language-equality checks treat a regional variant the same as its base
- * language — without this, `autoTranslateDecision.ts`'s exact-string
- * comparisons treat "Portuguese" and "Brazilian Portuguese" as unrelated:
- * a pt-BR page against target 'pt' fails the same-language skip (so it gets
- * pointlessly "translated" into Portuguese), and a `neverTranslateLangs:
- * ['pt']` rule silently never matches it.
+ * Strips a region/script subtag ('pt-BR' -> 'pt', 'zh-Hans' -> 'zh') and maps
+ * legacy codes, so a regional variant compares equal to its base language
+ * (e.g. a pt-BR page matches a `neverTranslateLangs: ['pt']` rule).
  */
 export function baseLanguageTag(code: string): string {
   const base = code.split('-')[0]?.toLowerCase() ?? code;

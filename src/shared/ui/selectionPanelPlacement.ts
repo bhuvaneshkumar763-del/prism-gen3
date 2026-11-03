@@ -1,18 +1,10 @@
 /**
  * Where the selection popup's trigger and result panel go, kept on screen.
  *
- * The panel used to sit at the selection's bottom-left with no clamping and
- * no height limit: next to the right edge its 280px width ran off the side,
- * and a long selection's translation grew below the fold with no way to
- * scroll to it.
- *
- * Deliberately NOT `bubblePosition.ts`'s `computePanelPosition`, which looks
- * like the obvious thing to reuse: that places a panel BESIDE its anchor,
- * vertically centred, and needs the panel's measured size. A translation
- * belongs under (or over) the text it translates. Anchoring by `bottom` when
- * flipping above, and bounding height with `maxHeight`, means this never has
- * to measure the rendered panel at all — no layout read, and no second pass
- * once the translation arrives and changes its size.
+ * Not `bubblePosition.ts`'s `computePanelPosition`, which places a panel
+ * beside its anchor and needs its measured size. Anchoring by `bottom` when
+ * flipping above, and bounding height with `maxHeight`, means the rendered
+ * panel never has to be measured, even after the translation changes its size.
  */
 
 export interface SelectionAnchor {

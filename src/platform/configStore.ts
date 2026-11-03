@@ -5,12 +5,8 @@ import { localStorageBackend } from './storage/localBackend';
 import type { StorageBackend } from './storage/types';
 
 /**
- * The real config store (Gen 3 plan, Session 3) — replaces Session 2's ad
- * hoc `providerConfig.ts`. Public API shape (`get`/`set`/`onReady`/
- * `onChanged`/`export`/`import`) is a deliberate "keep the good part" from
- * the old repo's `twpConfig` — same proven surface, fresh implementation,
- * fresh name, and built on an injected `StorageBackend` instead of
- * `browser.storage` directly (see docs/decisions/0003-settings-sync-deferred.md
+ * The config store: `get`/`set`/`onReady`/`onChanged`/`export`/`import` over an
+ * injected `StorageBackend` (see docs/decisions/0003-settings-sync-deferred.md
  * for why that seam exists).
  */
 
@@ -24,17 +20,8 @@ export function createConfigStore(backend: StorageBackend = localStorageBackend)
   let readyPromise: Promise<void> | null = null;
 
   /**
-   * Returns the raw entries `initConfig()` should read from — the snapshot
-   * this function already fetched to check the version, whether or not a
-   * migration actually ran. Post-launch speed pass: this used to only
-   * migrate, and `initConfig()` did its own separate `backend.getAll()`
-   * right after — a second full `browser.storage.local.get(null)` round
-   * trip on every fresh content-script load and background service-worker
-   * wake, even in the common case (already at the current version) where
-   * nothing changed between the two reads. `applyConfigMigrations()`
-   * already returns the complete post-migration key set (not a patch), so
-   * it can be handed straight to the caller instead of re-reading it back
-   * from storage.
+   * Migrates stored config if it's behind the current schema version and
+   * returns the resulting entries, so `initConfig()` needn't read storage again.
    */
   async function migrateIfNeeded(): Promise<Record<string, unknown>> {
     const raw = await backend.getAll();
@@ -47,10 +34,8 @@ export function createConfigStore(backend: StorageBackend = localStorageBackend)
       await backend.set(changedEntries);
     }
 
-    // A migration signals "delete this key" by omitting it from its
-    // returned object — backend.set() above only ever merges, so anything
-    // a migration dropped needs an explicit remove() or it just sits there
-    // orphaned forever.
+    // A migration deletes a key by omitting it; backend.set() only merges,
+    // so dropped keys need an explicit remove().
     const removedKeys = Object.keys(raw).filter((key) => key !== VERSION_KEY && !Object.hasOwn(migrated, key));
     if (removedKeys.length > 0) {
       await backend.remove(removedKeys);
@@ -61,13 +46,8 @@ export function createConfigStore(backend: StorageBackend = localStorageBackend)
   }
 
   /**
-   * Validates each stored value against its own schema before adopting it
-   * — real gap: only the import/restore path (`applyValidatedConfig`
-   * below) validated; a value corrupted directly in extension storage was
-   * trusted as-is and could fail somewhere far from the real cause. Never
-   * throws — startup must never fail because of this — a key that fails
-   * validation just keeps `state`'s existing default (set at this
-   * closure's top) instead of adopting the bad value.
+   * Adopts each stored value only if it passes its validator; otherwise the
+   * default stays. Never throws on bad values, so startup can't fail on them.
    */
   async function initConfig(): Promise<void> {
     const raw = await migrateIfNeeded();
@@ -91,18 +71,8 @@ export function createConfigStore(backend: StorageBackend = localStorageBackend)
       if (key === VERSION_KEY) continue;
       if (!Object.hasOwn(defaultConfig, key)) continue;
       const configKey = key as ConfigKey;
-      // Reliability fix, found via a round-6 audit: this used to adopt
-      // `change.newValue` straight into `state` with no validation at
-      // all — unlike `initConfig` above, which runs every key through
-      // `configValidators` and falls back to the existing/default value
-      // on failure, precisely because storage can hold a value this
-      // module doesn't fully control the origin of (a stale shape from a
-      // different extension version, or a genuine removal, which reports
-      // as `change.newValue === undefined` here — silently adopting that
-      // would have propagated `undefined` straight into a `ConfigKey`
-      // this store's own type guarantees always have a value). Same
-      // validate-or-keep-existing discipline as `initConfig`, applied to
-      // the live path too.
+      // Validate live changes too: storage may hold a shape from another
+      // extension version, and a removal arrives as `newValue === undefined`.
       const result = configValidators[configKey](change.newValue);
       if (!result.ok) {
         console.warn(
@@ -118,7 +88,7 @@ export function createConfigStore(backend: StorageBackend = localStorageBackend)
     }
   });
 
-  /** Shared by `import()` and `restoreToDefault()` — not called via `this` so neither depends on how the returned object is invoked. */
+  /** Shared by `import()` and `restoreToDefault()`; not called via `this` so neither depends on how the returned object is invoked. */
   async function applyValidatedConfig(json: string): Promise<void> {
     const parsed: unknown = JSON.parse(json);
     const validated = parsePartialConfigOrThrow(parsed);
@@ -128,10 +98,8 @@ export function createConfigStore(backend: StorageBackend = localStorageBackend)
         .map((key) => [key, validated[key]]),
     );
     if (Object.keys(entries).length > 0) await backend.set(entries);
-    // Reflect the change immediately in this instance's own state too — the
-    // onChanged round trip above will also eventually update it, but
-    // callers that read get() right after shouldn't see stale values while
-    // waiting on that.
+    // Update local state now so a get() right after doesn't wait on the
+    // onChanged round trip.
     for (const key of Object.keys(validated) as ConfigKey[]) {
       const value = validated[key];
       if (value !== undefined) (state as Record<ConfigKey, unknown>)[key] = value;
@@ -142,12 +110,8 @@ export function createConfigStore(backend: StorageBackend = localStorageBackend)
     onReady(): Promise<void> {
       if (!readyPromise) {
         readyPromise = initConfig().catch((e) => {
-          // A rejected promise is still truthy, so without clearing it here
-          // a single transient failure (a storage API hiccup, a quota edge
-          // case) would wedge every future onReady() call in this context
-          // onto the same dead rejection forever — including this store's
-          // own diagnostics tool, whose whole job is to help debug exactly
-          // this kind of failure. Clearing it lets the next call retry.
+          // Clear the rejected promise so one transient storage failure
+          // doesn't wedge every later onReady() call in this context.
           readyPromise = null;
           throw e;
         });
@@ -163,19 +127,13 @@ export function createConfigStore(backend: StorageBackend = localStorageBackend)
     async set<K extends ConfigKey>(key: K, value: Config[K]): Promise<void> {
       state[key] = value;
       await backend.set({ [key]: value });
-      // backend.onChanged fires for this same write too (chrome.storage's
-      // own onChanged event covers same-context writes), so listeners
-      // aren't notified twice — see the localBackend doc comment.
+      // Listeners aren't notified here: backend.onChanged also fires for
+      // same-context writes (see localBackend).
     },
     /**
-     * Writes several keys as ONE storage operation instead of N independent
-     * `set()` calls. Needed anywhere a caller's own invariant spans more than
-     * one key — e.g. `configMutations.ts`'s `applyListPatch`, which can touch
-     * both the always- and never-translate lists in a single site-list patch.
-     * N separate `backend.set()` calls means a mid-sequence failure can land
-     * only some of them, leaving the two lists in a state neither surface
-     * ever intended (a site on both simultaneously). One combined call
-     * either fully applies or fully fails.
+     * Writes several keys as one storage operation, so a caller whose
+     * invariant spans keys (e.g. the always/never-translate lists) can't be
+     * left half-applied by a mid-sequence failure.
      */
     async setMany(entries: Partial<Config>): Promise<void> {
       const keys = Object.keys(entries) as ConfigKey[];
@@ -195,14 +153,9 @@ export function createConfigStore(backend: StorageBackend = localStorageBackend)
       await applyValidatedConfig(json);
     },
     /**
-     * Writes every key back to `defaultConfig`'s value. Implemented as
-     * `import(JSON.stringify(defaultConfig))` — deliberately NOT followed by
-     * a `browser.runtime.reload()` the way the pre-rewrite fork's equivalent
-     * did: this store's `import()` already updates in-memory state and
-     * fires `onChanged` on its own, and reloading the extension mid-write
-     * from inside the options page that called this would just kill the
-     * page. Callers that want a visible "defaults restored" confirmation
-     * show it themselves (see `entrypoints/options/App.tsx`).
+     * Writes every key back to `defaultConfig`. No extension reload: `import()`
+     * already updates state and fires `onChanged`, and reloading would kill
+     * the options page that called this.
      */
     async restoreToDefault(): Promise<void> {
       await applyValidatedConfig(JSON.stringify(defaultConfig));

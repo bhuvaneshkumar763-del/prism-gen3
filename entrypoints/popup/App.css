@@ -88,9 +88,7 @@ body {
   cursor: default;
 }
 
-/* Perceived-speed fix: this button used to show nothing but a frozen word
-   while busy — see FloatingBubble.tsx's .spinner (components/bubble/bubbleStyles.ts)
-   for the same pattern reused here. */
+/* Same busy spinner as the bubble's .spinner (components/bubble/bubbleStyles.ts). */
 .primaryBtn .spinner {
   display: none;
   width: 13px;

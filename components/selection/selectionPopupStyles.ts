@@ -2,7 +2,7 @@
  * Rationale lives here, in a JS comment the minifier strips — CSS comments
  * inside the string below ship verbatim in the content script on every page.
  *
- * - `.trigger` is 30px (was 26), matching SELECTION_TRIGGER_SIZE in
+ * - `.trigger` is 30px, matching SELECTION_TRIGGER_SIZE in
  *   selectionPanelPlacement.ts, which uses that number to keep it on screen.
  * - `.panel` gets max-width/max-height inline from selectionPanelPlacement.ts,
  *   clamped to the room actually available; `overflow: auto` lets a long

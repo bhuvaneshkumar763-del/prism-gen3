@@ -1,37 +1,22 @@
 /**
- * Inline CSS for the floating bubble's shadow root — duplicated here rather
- * than imported (a shadow root injected into an arbitrary third-party page
- * can't reach this extension's own stylesheets by a relative path). Ported
- * from the pre-rewrite fork's `FloatingBubble.tsx` palette/layout, which was
- * restyled onto an indigo/violet gradient with a documented green
- * "translated" accent — kept here rather than reinvented, plus a red/amber
- * "error" accent for the "Translation failed" state, which the fork never had.
+ * Inline CSS for the floating bubble's shadow root. Inlined because a shadow
+ * root on a third-party page can't load the extension's stylesheets by path.
  */
 /*
- * Why some rules are the way they are. Kept HERE, in a JS comment the
- * minifier strips, rather than as CSS comments inside the string below:
- * anything inside that template literal ships verbatim in the content
- * script, on every page. A UI audit found ~2KB of such comments had crept in.
+ * Notes on the rules below live here, where the minifier strips them; CSS
+ * comments inside the template literal would ship on every page.
  *
- * - `.wrap:focus-within .ball` — keyboard focus raises the ball to full
- *   opacity; only :hover used to, so a tabbed-to ball stayed at 55%.
- * - `.panel:focus-within`, NOT `.wrap:focus-within` — the latter opened the
- *   whole panel as soon as the ball was focused, dragging a keyboard user
- *   through every control on the way past, and made Escape unable to close
- *   it visibly. ArrowDown on the ball opens it deliberately instead.
- * - `visibility 0s` in the OPEN-state transition — visibility flips instantly
- *   on the way in; the base rule's 160ms delay applies only on the way out,
- *   so it stays visible while fading. Without it, ArrowDown's focus() landed
- *   while visibility was still mid-transition from hidden, and a real browser
- *   won't focus inside a hidden ancestor. Test DOMs don't model focusability,
- *   so this is guarded by the e2e suite, not the unit tests.
- * - `.srOnly` — visually hidden but read aloud; hosts the status live region,
- *   which must sit outside the usually-hidden panel to be announced.
- * - `.chip.on` — the tint follows `--accent` like its border and text, rather
- *   than a hard-coded indigo that clashed with the green/red states. The rgba
- *   line is the fallback for engines without color-mix().
- * - `.sellbl` — 10.5px at 70% opacity is ~6.6:1 (light) / ~7.8:1 (dark); it
- *   was 9.5px at 55%, about 4.0:1, under WCAG AA's 4.5:1.
+ * - `.wrap:focus-within .ball`: keyboard focus raises the ball to full opacity.
+ * - `.panel:focus-within`, not `.wrap:focus-within`: focusing the ball alone
+ *   must not open the panel (ArrowDown opens it), so Escape can close it.
+ * - `visibility 0s` in the open-state transition: visibility flips instantly
+ *   on the way in (the 160ms delay is for fading out), so ArrowDown's focus()
+ *   doesn't land in a still-hidden panel. Only the e2e suite can catch this.
+ * - `.srOnly`: visually hidden status live region, outside the usually-hidden
+ *   panel so it is announced.
+ * - `.chip.on`: tint follows `--accent`; the rgba line is the fallback for
+ *   engines without color-mix().
+ * - `.sellbl`: 10.5px at 70% opacity keeps contrast above WCAG AA's 4.5:1.
  */
 export const BUBBLE_STYLES = `
   * { box-sizing: border-box; margin: 0; padding: 0;

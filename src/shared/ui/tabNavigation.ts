@@ -1,9 +1,4 @@
-/**
- * Arrow/Home/End roving-tabindex navigation for an ARIA `role="tablist"` —
- * the WAI-ARIA APG "automatic activation" pattern the pre-rewrite fork's
- * options page used. Pure so the wrap-around math is unit-tested rather
- * than only exercised by clicking through a real tablist.
- */
+/** Arrow/Home/End roving-tabindex navigation for an ARIA `role="tablist"` (APG automatic activation). */
 export type TabNavigationKey = 'ArrowLeft' | 'ArrowRight' | 'Home' | 'End';
 
 /** Returns the next tab index for a keypress, or `null` if the key isn't a tab-navigation key. */

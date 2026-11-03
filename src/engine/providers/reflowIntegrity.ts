@@ -1,37 +1,12 @@
 /**
- * Detects a SAME-COUNT reflow in a grouped multi-node piece — Google's
- * `<a i=N>` wire format handing back the right NUMBER of entries, with no
- * literal markers left over, but with content redistributed across the
- * node boundaries.
+ * Detects a SAME-COUNT reflow in a grouped multi-node piece: the right number
+ * of entries and no leaked markers, but content shifted across node
+ * boundaries (e.g. `System (192673) Fantasy (` / `189348)` in adjacent chips).
  *
- * `google.ts`'s two older signals both miss this shape by construction: one
- * counts decoded entries against nodes sent (unchanged here), the other
- * looks for literal `<a i=N>`/`</a>` text surviving in a value (nothing
- * leaks here — the markers parsed fine, they just ended up in the wrong
- * places). Found via a real user report on sangtacviet.vip's search page:
- * a ~1000-chip facet panel rendered `System (192673) Fantasy (` in one chip
- * and `189348)` in the next, i.e. one node absorbed the head of its
- * neighbour's translation and the neighbour kept only the tail.
- *
- * The checks below are deliberately NOT a general "does this translation
- * look plausible" heuristic. Each one is a structural invariant that a
- * correct per-node translation cannot violate, chosen so that a violation
- * means content crossed a node boundary rather than merely that the
- * translation was surprising. They were validated against the exact
- * reported failure (transcribed from the report's own screenshots) BEFORE
- * being written: bracket balance flags the `System (192673) Fantasy (` /
- * `189348)` pair, the digit check flags the `(163847)` / `Urban Romance`
- * pair — disjoint node sets, which is why both earn their place — and
- * NEITHER fires on the same page's known-good translation.
- *
- * **Cost of a false positive is bounded and never corruption.** A `true`
- * here makes `google.ts` re-request that one piece as individual
- * single-string pieces, which is the safest wire shape available (a
- * single-item piece has no multi-index structure left to reflow across).
- * So the failure mode of an over-eager check is one extra, slower request
- * for that piece — not wrong text on the page. That asymmetry is why these
- * lean toward catching a real reflow over avoiding an occasional
- * unnecessary repair.
+ * Each check is a structural invariant a correct per-node translation can't
+ * violate, not a plausibility heuristic. A false positive only costs one
+ * extra per-node re-request in `google.ts`, never wrong text, so the checks
+ * lean toward catching a real reflow.
  */
 
 const HAS_LETTER = /\p{L}/u;

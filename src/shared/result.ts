@@ -1,9 +1,7 @@
 /**
- * A minimal Result type used across the engine so translation
- * failures (a provider error, a malformed response) are values the caller
- * must handle, not exceptions that can silently escape a batch job. Kept
- * here (not in src/engine/) because both the engine and platform adapters
- * need the same shape.
+ * A minimal Result type, so translation failures are values the caller must
+ * handle rather than exceptions escaping a batch job. Shared by the engine
+ * and platform adapters.
  */
 export type Result<T, E = Error> = { ok: true; value: T } | { ok: false; error: E };
 
