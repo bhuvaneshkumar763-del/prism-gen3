@@ -3,8 +3,9 @@
 // approval and published an unsigned zip instead (beta.69 and beta.70 both
 // did, Sept 2026, while the step still reported success).
 //
-// Run by .github/workflows/fetch-signed-xpi.yml. Node built-ins only, so it
-// needs no install step and pulls nothing from npm at run time.
+// Run by .github/workflows/fetch-signed-xpi.yml. Node built-ins only (plus one
+// TypeScript file Node runs directly), so it needs no install step and pulls
+// nothing from npm at run time.
 //
 // Env: AMO_JWT_ISSUER, AMO_JWT_SECRET, VERSION (e.g. "0.3.0-beta.70"),
 // optional OUT_DIR (default "."). Writes the path of the saved file to
@@ -17,18 +18,14 @@ import { createHmac, randomUUID } from 'node:crypto';
 import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { manifestVersionFor } from '../src/shared/manifestVersion.ts';
 
 const ADDON_GUID = 'prism-gen3@bhuvaneshkumar763-del.github.io';
 const API = 'https://addons.mozilla.org/api/v5';
 
-/**
- * The version string Mozilla knows a release by. Must match wxt.config.ts,
- * which turns "0.3.0-beta.70" into the 4-part "0.3.0.70" (WXT's own default
- * would collapse every beta to "0.3.0").
- */
+/** The version string Mozilla knows a release by: the manifest version (see src/shared/manifestVersion.ts). */
 export function amoVersionFor(releaseVersion) {
-  const beta = /^(\d+\.\d+\.\d+)-beta\.(\d+)$/.exec(releaseVersion);
-  return beta ? `${beta[1]}.${beta[2]}` : releaseVersion;
+  return manifestVersionFor(releaseVersion);
 }
 
 /** AMO's API auth: a short-lived HS256 JWT, a fresh one per request (each needs a unique jti). */

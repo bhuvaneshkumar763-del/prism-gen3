@@ -5,7 +5,13 @@ import { createAttributeTranslator } from './attributeTranslator';
 import { restoreBoundaryText } from './boundaryText';
 import { collectTextNodes, isNoTranslateNode } from './collectTextNodes';
 import { createDedupeTracker } from './dedupe';
-import { groupNodesForBatching, nearestBlockAncestor, type PieceSlot, slotsForGroup } from './grouping';
+import {
+  groupNodesForBatching,
+  isWordElementText,
+  nearestBlockAncestor,
+  type PieceSlot,
+  slotsForGroup,
+} from './grouping';
 import { createMutationWatcher } from './mutationWatcher';
 import { createResweepScheduler } from './resweep';
 import { createTitleTranslator } from './titleTranslator';
@@ -52,6 +58,8 @@ import { prioritizeByViewport } from './viewportPriority';
 // tick still fits comfortably inside a handful of concurrent HTTP batches
 // rather than queueing hundreds of them at once.
 const MAX_PIECES_PER_TICK = 300;
+/** Upper bound when one oversized block is taken whole into a tick. */
+const MAX_NODES_PER_BLOCK_TICK = 5000;
 // Speed fix, found via a live-page audit (a text-dense, continuously-
 // churning page — a chapter reader whose own translate widget periodically
 // replaces its whole content subtree): once `queue.length` exceeds
@@ -719,7 +727,23 @@ export function createPageTranslator(options: PageTranslatorOptions) {
           // block holding more than MAX_PIECES_PER_TICK nodes would
           // otherwise trim the batch to empty on every tick and translate
           // nothing, forever. Such a block simply gets split, as before.
-          if (cut > 0 && cut < batch.length) queue.unshift(...batch.splice(cut));
+          if (cut > 0 && cut < batch.length) {
+            queue.unshift(...batch.splice(cut));
+          } else if (cut === 0 && batch[0] && isWordElementText(batch[0])) {
+            // The whole batch is one word-per-element chapter bigger than a
+            // tick. Take the rest of it too, so grouping splits it at sentence
+            // ends instead of at this node count.
+            let extra = 0;
+            while (
+              extra < queue.length &&
+              batch.length + extra < MAX_NODES_PER_BLOCK_TICK &&
+              // biome-ignore lint/style/noNonNullAssertion: extra is always in bounds
+              nearestBlockAncestor(queue[extra]!) === straddledBlock
+            ) {
+              extra++;
+            }
+            batch.push(...queue.splice(0, extra));
+          }
         }
       }
       for (const node of batch) queuedSet.delete(node);
@@ -876,6 +900,8 @@ export function createPageTranslator(options: PageTranslatorOptions) {
         }
         writeTranslatedNode(head, rawTranslated);
         if (head.data !== sentText.get(head)) return;
+        // The run's translation stands for every word in it, not just the head.
+        for (const node of tail) if (!completedNodes.has(node)) translatedChars += node.data.trim().length;
         for (const node of [...tail, ...slot.separators]) {
           if (!node.isConnected || node.data === '') continue;
           if (!nodesToRestore.has(node)) nodesToRestore.set(node, node.data);

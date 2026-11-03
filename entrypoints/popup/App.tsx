@@ -229,22 +229,22 @@ function App() {
     if (pageState() === 'translated') await onTranslateClick();
   }
 
-  async function onProviderChange(id: ProviderId): Promise<void> {
-    setProvider(id);
-    // Awaited before retranslating: the provider is read from config by the
-    // background at translate time, so the write has to have landed first.
-    await configStore.set('pageTranslatorProvider', id);
-    // Improvement, found via a UI audit: an unconfigured provider used to be
-    // accepted silently and fail on the next translate. Now it opens Settings
-    // at the fields it still needs, rather than retranslating into an error.
+  async function onProviderChange(select: HTMLSelectElement): Promise<void> {
+    const id = select.value as ProviderId;
+    // A provider that still needs setup is not switched to (every page would
+    // fail until its key is entered); Settings opens where it is set up. The
+    // popup opens Settings itself if the background doesn't answer.
     if (providerGaps(id)) {
-      // The popup can open Settings itself if the background doesn't answer
-      // — just without jumping to the provider section.
+      select.value = provider();
       sendMessage('openOptionsPage', { section: 'page' }).catch(() => {
         void browser.runtime.openOptionsPage();
       });
       return;
     }
+    setProvider(id);
+    // Awaited before retranslating: the provider is read from config by the
+    // background at translate time, so the write has to have landed first.
+    await configStore.set('pageTranslatorProvider', id);
     if (pageState() === 'translated') await onTranslateClick();
   }
 
@@ -467,7 +467,7 @@ function App() {
 
         <label class="quickField">
           <span>Service</span>
-          <select value={provider()} onChange={(e) => void onProviderChange(e.currentTarget.value as ProviderId)}>
+          <select value={provider()} onChange={(e) => void onProviderChange(e.currentTarget)}>
             <For each={providerDescriptors}>
               {(d) => (
                 <option value={d.id}>

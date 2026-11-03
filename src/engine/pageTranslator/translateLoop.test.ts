@@ -73,6 +73,31 @@ describe('createPageTranslator', () => {
     expect(document.body.innerHTML).toBe(html);
   });
 
+  it('sends a word-per-element paragraph longer than one tick in a single tick, not cut every 300 words', async () => {
+    const words = Array.from({ length: 1500 }, (_, i) => `<i>chữ</i>${i % 10 === 9 ? '. ' : ' '}`).join('');
+    document.body.innerHTML = `<div>${words}</div>`;
+    const translateBatch = vi.fn(
+      async (request: { pieces: string[][] }): Promise<PieceOutcome[]> =>
+        request.pieces.map((piece): PieceOutcome => ok(piece.map((s) => s.toUpperCase()))),
+    );
+    const pageTranslator = createPageTranslator({
+      translator: { translateBatch },
+      getSourceLanguage: () => 'vi',
+      getBatchingHint: () => ({ groupByBlock: true, maxGroupChars: 2000 }),
+    });
+
+    try {
+      await pageTranslator.translatePage('en');
+      await waitFor(() => !(document.body.textContent ?? '').includes('chữ'), 5000);
+
+      expect(translateBatch).toHaveBeenCalledTimes(1);
+      const sentText = translateBatch.mock.calls[0]?.[0].pieces.flat().join(' ') ?? '';
+      expect(sentText.match(/chữ/g)?.length).toBe(1500);
+    } finally {
+      pageTranslator.restorePage();
+    }
+  });
+
   it('restorePage() restores the original text and returns to the original state', async () => {
     document.body.innerHTML = '<p>hello</p>';
     const pageTranslator = createPageTranslator({
@@ -926,7 +951,11 @@ describe('createPageTranslator', () => {
   describe('untranslated-share warning', () => {
     const long = (word: string) => `${word} `.repeat(30).trim();
 
-    async function translateWithEchoes(html: string, echoes: (text: string) => boolean) {
+    async function translateWithEchoes(
+      html: string,
+      echoes: (text: string) => boolean,
+      batchingHint?: { groupByBlock: boolean; maxGroupChars: number },
+    ) {
       document.body.innerHTML = html;
       const translateBatch = vi.fn(
         async (request: { pieces: string[][] }): Promise<PieceOutcome[]> =>
@@ -938,7 +967,7 @@ describe('createPageTranslator', () => {
       const pageTranslator = createPageTranslator({
         translator: { translateBatch },
         getSourceLanguage: () => 'ja',
-        getBatchingHint: () => undefined,
+        getBatchingHint: () => batchingHint,
       });
       vi.useFakeTimers();
       try {
@@ -979,6 +1008,21 @@ describe('createPageTranslator', () => {
       );
       expect(pageTranslator.getLastError()).toBeNull();
       pageTranslator.restorePage();
+    });
+
+    it('counts every word of a translated word-per-element paragraph, so a fully translated chapter does not warn', async () => {
+      const words = Array.from({ length: 400 }, (_, i) => `<i>chữ</i>${i % 10 === 9 ? '. ' : ' '}`).join('');
+      const { pageTranslator } = await translateWithEchoes(
+        `<div>${words}</div><p>${long('echoed')}</p>`,
+        (text) => text.startsWith('echoed'),
+        { groupByBlock: true, maxGroupChars: 2000 },
+      );
+      try {
+        expect(document.body.textContent).not.toContain('chữ');
+        expect(pageTranslator.getLastError()).toBeNull();
+      } finally {
+        pageTranslator.restorePage();
+      }
     });
 
     it('stays quiet when the untranslated share is large but tiny in absolute terms', async () => {

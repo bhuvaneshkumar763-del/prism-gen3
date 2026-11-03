@@ -60,4 +60,15 @@ describe('restoreBoundaryText', () => {
       '。Its theme is fidelity',
     );
   });
+
+  it('does not double an opening bracket the translator already gave its own form of', () => {
+    expect(restoreBoundaryText({ leading: '（', trailing: '' }, '(End of this chapter)')).toBe('(End of this chapter)');
+    expect(restoreBoundaryText({ leading: '【', trailing: '' }, '[Chapter 1]')).toBe('[Chapter 1]');
+    expect(restoreBoundaryText({ leading: '(', trailing: '' }, '(Fin del capítulo)')).toBe('(Fin del capítulo)');
+    expect(restoreBoundaryText({ leading: '[', trailing: ' ' }, '[Nota]')).toBe('[Nota] ');
+  });
+
+  it('does not force an opening bracket onto a translation that dropped it', () => {
+    expect(restoreBoundaryText({ leading: '（', trailing: '' }, 'End of this chapter')).toBe('End of this chapter');
+  });
 });

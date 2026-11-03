@@ -1,19 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { defineConfig } from 'wxt';
+import { manifestVersionFor } from './src/shared/manifestVersion';
 
-// Real bug (0.3.0-beta.20 -> beta.21): WXT derives the manifest's `version`
-// from package.json but strips prerelease suffixes ("0.3.0-beta.20" ->
-// "0.3.0") — every beta build produces the exact same manifest version.
-// Harmless for the Chrome zip (nothing checks it), but AMO signing keys off
-// this field to tell releases apart: the very first beta signed fine, and
-// every beta after it hit "Version 0.3.0 already exists" and failed. Fixed
-// by overriding `manifest.version` below to a 4-segment numeric version
-// (both Chrome's and Firefox's manifest schemas support up to 4 dot-
-// separated integers, no letters/hyphens needed) that actually changes
-// every beta — "0.3.0-beta.20" -> "0.3.0.20".
+// See manifestVersionFor: betas get a fourth number, and stable releases sort above them.
 const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf-8')) as { version: string };
-const betaMatch = /^(\d+\.\d+\.\d+)-beta\.(\d+)$/.exec(pkg.version);
-const manifestVersion = betaMatch ? `${betaMatch[1]}.${betaMatch[2]}` : pkg.version;
+const manifestVersion = manifestVersionFor(pkg.version);
 
 // See https://wxt.dev/api/config.html
 //

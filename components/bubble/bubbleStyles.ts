@@ -158,6 +158,9 @@ export const BUBBLE_STYLES = `
     text-overflow: ellipsis;
   }
   .sel:hover { border-color: var(--accent); }
+  @media (hover: none) {
+    .sel { font-size: 16px; }
+  }
 
   @media (prefers-color-scheme: dark) {
     .panel { background: #1f1f38; color: #f1f5f9; box-shadow: 0 12px 40px -10px rgba(0,0,0,.7), 0 0 0 1px rgba(255,255,255,.06); }
