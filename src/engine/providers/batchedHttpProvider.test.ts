@@ -17,36 +17,6 @@ function plainCallbacks() {
   };
 }
 
-describe('createBatchedHttpProvider — GET requests', () => {
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  it('uses getQueryString to build a GET request URL, sending no body', async () => {
-    const fetchMock = vi.fn(async () => jsonResponse({ texts: ['hola'] }));
-    vi.stubGlobal('fetch', fetchMock);
-
-    const provider = createBatchedHttpProvider({
-      name: 'get-provider',
-      baseUrl: 'https://example.com/translate',
-      method: 'GET',
-      callbacks: {
-        ...plainCallbacks(),
-        getQueryString: (source, target, texts) => `?q=${texts.join(',')}&from=${source}&to=${target}`,
-      },
-    });
-
-    const results = await provider.translateBatch({ sourceLanguage: 'en', targetLanguage: 'es', pieces: [['hello']] });
-
-    expect(results).toEqual([{ ok: true, value: ['hola'] }]);
-    const call = fetchMock.mock.calls[0];
-    if (!call) throw new Error('fetch was not called');
-    const [url, init] = call as unknown as [string, RequestInit];
-    expect(url).toBe('https://example.com/translate?q=hello&from=en&to=es');
-    expect(init.body).toBeUndefined();
-  });
-});
-
 describe('createBatchedHttpProvider — batching budget', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -62,7 +32,6 @@ describe('createBatchedHttpProvider — batching budget', () => {
     const provider = createBatchedHttpProvider({
       name: 'small-budget',
       baseUrl: 'https://example.com',
-      method: 'POST',
       maxBatchChars: 5,
       callbacks: {
         ...plainCallbacks(),
@@ -97,7 +66,6 @@ describe('createBatchedHttpProvider — batching budget', () => {
     const provider = createBatchedHttpProvider({
       name: 'default-budget',
       baseUrl: 'https://example.com',
-      method: 'POST',
       // No maxBatchChars override — exercising the real default.
       callbacks: {
         ...plainCallbacks(),
@@ -130,7 +98,6 @@ describe('createBatchedHttpProvider — batching budget', () => {
     const provider = createBatchedHttpProvider({
       name: 'default-budget-bundling',
       baseUrl: 'https://example.com',
-      method: 'POST',
       callbacks: {
         ...plainCallbacks(),
         getRequestBody: (_s, _t, texts) => JSON.stringify(texts),
@@ -185,7 +152,6 @@ describe('createBatchedHttpProvider — batching budget', () => {
     const provider = createBatchedHttpProvider({
       name: 'chapter-shaped',
       baseUrl: 'https://example.com',
-      method: 'POST',
       // No maxBatchChars override — exercising the real 2000 default.
       callbacks: {
         ...googleShapedCallbacks(),
@@ -216,7 +182,6 @@ describe('createBatchedHttpProvider — batching budget', () => {
     const provider = createBatchedHttpProvider({
       name: 'wire-ceiling',
       baseUrl: 'https://example.com',
-      method: 'POST',
       callbacks: {
         ...googleShapedCallbacks(),
         getRequestBody: (_s, _t, texts) => JSON.stringify(texts),
@@ -253,7 +218,6 @@ describe('createBatchedHttpProvider — batching budget', () => {
     const provider = createBatchedHttpProvider({
       name: 'short-response',
       baseUrl: 'https://example.com',
-      method: 'POST',
       callbacks: { ...plainCallbacks(), getRequestBody: (_s, _t, texts) => JSON.stringify(texts) },
     });
 
@@ -301,7 +265,6 @@ describe('createBatchedHttpProvider — onPieceComplete (incremental delivery)',
     const provider = createBatchedHttpProvider({
       name: 'incremental',
       baseUrl: 'https://example.com',
-      method: 'POST',
       maxConcurrent: 2,
       maxBatchChars: 0,
       callbacks: { ...plainCallbacks(), getRequestBody: (_s, _t, texts) => JSON.stringify(texts) },
@@ -342,7 +305,6 @@ describe('createBatchedHttpProvider — onPieceComplete (incremental delivery)',
     const provider = createBatchedHttpProvider({
       name: 'incremental-failure',
       baseUrl: 'https://example.com',
-      method: 'POST',
       callbacks: { ...plainCallbacks(), getRequestBody: () => '{}' },
     });
 
@@ -357,7 +319,7 @@ describe('createBatchedHttpProvider — onPieceComplete (incremental delivery)',
     });
 
     expect(results).toEqual([
-      { ok: false, error: { kind: 'network', message: '[incremental-failure] no result for this piece' } },
+      { ok: false, error: { kind: 'badResponse', message: '[incremental-failure] no result for this piece' } },
     ]);
     expect(completed).toEqual([{ index: 0, ok: false }]);
   });
@@ -369,7 +331,6 @@ describe('createBatchedHttpProvider — onPieceComplete (incremental delivery)',
     const provider = createBatchedHttpProvider({
       name: 'no-callback',
       baseUrl: 'https://example.com',
-      method: 'POST',
       callbacks: { ...plainCallbacks(), getRequestBody: () => '{}' },
     });
 
@@ -396,7 +357,6 @@ describe('createBatchedHttpProvider — lifecycle hooks and concurrency', () => 
     const provider = createBatchedHttpProvider({
       name: 'hooks',
       baseUrl: 'https://example.com',
-      method: 'POST',
       callbacks: { ...plainCallbacks(), getRequestBody: () => '{}' },
       onBatchStart,
       onBatchEnd,
@@ -423,7 +383,6 @@ describe('createBatchedHttpProvider — lifecycle hooks and concurrency', () => 
     const provider = createBatchedHttpProvider({
       name: 'concurrency',
       baseUrl: 'https://example.com',
-      method: 'POST',
       maxConcurrent: 2,
       maxBatchChars: 1, // force every piece into its own request
       callbacks: { ...plainCallbacks(), getRequestBody: () => '{}' },
@@ -462,7 +421,6 @@ describe('createBatchedHttpProvider — lifecycle hooks and concurrency', () => 
     const provider = createBatchedHttpProvider({
       name: 'stuck-fetch',
       baseUrl: 'https://example.com',
-      method: 'POST',
       maxConcurrent: 1,
       callbacks: { ...plainCallbacks(), getRequestBody: () => '{}' },
     });
@@ -509,7 +467,6 @@ describe('createBatchedHttpProvider — lifecycle hooks and concurrency', () => 
     const provider = createBatchedHttpProvider({
       name: 'clears-both-timers',
       baseUrl: 'https://example.com',
-      method: 'POST',
       callbacks: { ...plainCallbacks(), getRequestBody: () => '{}' },
     });
 
@@ -539,7 +496,6 @@ describe('createBatchedHttpProvider — lifecycle hooks and concurrency', () => 
     const provider = createBatchedHttpProvider({
       name: 'repair-concurrency',
       baseUrl: 'https://example.com',
-      method: 'POST',
       maxConcurrent: 3,
       callbacks: { ...plainCallbacks(), getRequestBody: (_s, _t, texts) => JSON.stringify(texts) },
     });
@@ -570,7 +526,6 @@ describe('createBatchedHttpProvider — lifecycle hooks and concurrency', () => 
     const provider = createBatchedHttpProvider({
       name: 'shared-across-calls',
       baseUrl: 'https://example.com',
-      method: 'POST',
       maxConcurrent: 2,
       maxBatchChars: 1, // force every piece into its own request
       callbacks: { ...plainCallbacks(), getRequestBody: () => '{}' },
@@ -606,7 +561,6 @@ describe('createBatchedHttpProvider — lifecycle hooks and concurrency', () => 
     const provider = createBatchedHttpProvider({
       name: 'low-limit-repair',
       baseUrl: 'https://example.com',
-      method: 'POST',
       maxConcurrent: 1,
       callbacks: { ...plainCallbacks(), getRequestBody: (_s, _t, texts) => JSON.stringify(texts) },
     });
@@ -644,7 +598,6 @@ describe('createBatchedHttpProvider — lifecycle hooks and concurrency', () => 
       const provider = createBatchedHttpProvider({
         name: 'deadline-sharing',
         baseUrl: 'https://example.com',
-        method: 'POST',
         callbacks: { ...plainCallbacks(), getRequestBody: (_s, _t, texts) => JSON.stringify(texts) },
       });
 
@@ -688,7 +641,6 @@ describe('createBatchedHttpProvider — lifecycle hooks and concurrency', () => 
     const provider = createBatchedHttpProvider({
       name: 'adaptive-concurrency',
       baseUrl: 'https://example.com',
-      method: 'POST',
       maxConcurrent: 6, // would normally allow 6 in flight
       maxBatchChars: 1,
       callbacks: { ...plainCallbacks(), getRequestBody: () => '{}' },
@@ -718,7 +670,6 @@ describe('createBatchedHttpProvider — lifecycle hooks and concurrency', () => 
     const provider = createBatchedHttpProvider({
       name: 'retry-after',
       baseUrl: 'https://example.com',
-      method: 'POST',
       callbacks: { ...plainCallbacks(), getRequestBody: () => '{}' },
     });
 
@@ -748,7 +699,6 @@ describe('createBatchedHttpProvider — suspicious vs. network failure kind', ()
     const provider = createBatchedHttpProvider({
       name: 'suspicious-test',
       baseUrl: 'https://example.com',
-      method: 'POST',
       callbacks: { ...plainCallbacks(), getRequestBody: () => '{}' },
     });
 
@@ -765,7 +715,7 @@ describe('createBatchedHttpProvider — suspicious vs. network failure kind', ()
     ]);
   });
 
-  it("still classifies a genuinely missing result (no data at all for this piece) as kind:'network', unaffected by the suspicious-kind fix", async () => {
+  it("classifies a genuinely missing result (no data at all for this piece) as kind:'badResponse', unaffected by the suspicious-kind fix", async () => {
     // Echoes back one FEWER text than pieces actually sent in each call's
     // body. The short response can't be matched to a piece, so both pieces
     // fall through to repair, which also comes back empty — the real "no
@@ -779,7 +729,6 @@ describe('createBatchedHttpProvider — suspicious vs. network failure kind', ()
     const provider = createBatchedHttpProvider({
       name: 'missing-test',
       baseUrl: 'https://example.com',
-      method: 'POST',
       callbacks: { ...plainCallbacks(), getRequestBody: (_s, _t, texts) => JSON.stringify(texts) },
     });
 
@@ -791,11 +740,11 @@ describe('createBatchedHttpProvider — suspicious vs. network failure kind', ()
 
     expect(results[0]).toEqual({
       ok: false,
-      error: { kind: 'network', message: '[missing-test] no result for this piece' },
+      error: { kind: 'badResponse', message: '[missing-test] no result for this piece' },
     });
     expect(results[1]).toEqual({
       ok: false,
-      error: { kind: 'network', message: '[missing-test] no result for this piece' },
+      error: { kind: 'badResponse', message: '[missing-test] no result for this piece' },
     });
   });
 
@@ -806,7 +755,6 @@ describe('createBatchedHttpProvider — suspicious vs. network failure kind', ()
     const provider = createBatchedHttpProvider({
       name: 'dedupe-suspicious-test',
       baseUrl: 'https://example.com',
-      method: 'POST',
       callbacks: { ...plainCallbacks(), getRequestBody: () => '{}' },
     });
 
@@ -841,7 +789,6 @@ describe('createBatchedHttpProvider — suspicious vs. network failure kind', ()
     const provider = createBatchedHttpProvider({
       name: 'auto-repair-test',
       baseUrl: 'https://example.com',
-      method: 'POST',
       callbacks: { ...plainCallbacks(), getRequestBody: (source) => JSON.stringify({ source }) },
     });
 
@@ -866,7 +813,6 @@ describe('createBatchedHttpProvider — suspicious vs. network failure kind', ()
     const provider = createBatchedHttpProvider({
       name: 'missing-not-auto-test',
       baseUrl: 'https://example.com',
-      method: 'POST',
       callbacks: { ...plainCallbacks(), getRequestBody: (source, _t, texts) => JSON.stringify({ source, texts }) },
     });
 
@@ -880,7 +826,7 @@ describe('createBatchedHttpProvider — suspicious vs. network failure kind', ()
     expect(sourcesSent).toEqual(['en', 'en', 'en']);
     expect(results[1]).toEqual({
       ok: false,
-      error: { kind: 'network', message: '[missing-not-auto-test] no result for this piece' },
+      error: { kind: 'badResponse', message: '[missing-not-auto-test] no result for this piece' },
     });
   });
 });
@@ -898,7 +844,6 @@ describe('createBatchedHttpProvider — onNonRetryableStatus hook (auth-key reli
     const provider = createBatchedHttpProvider({
       name: 'auth-test',
       baseUrl: 'https://example.com',
-      method: 'POST',
       callbacks: { ...plainCallbacks(), getRequestBody: () => '{}' },
       onNonRetryableStatus,
     });
@@ -906,7 +851,10 @@ describe('createBatchedHttpProvider — onNonRetryableStatus hook (auth-key reli
     const results = await provider.translateBatch({ sourceLanguage: 'en', targetLanguage: 'es', pieces: [['hello']] });
 
     expect(onNonRetryableStatus).toHaveBeenCalledExactlyOnceWith(401, 'unauthorized');
-    expect(results[0]).toEqual({ ok: false, error: { kind: 'network', message: expect.any(String) } });
+    expect(results[0]).toEqual({
+      ok: false,
+      error: { kind: 'http', status: 401, reason: 'unauthorized', message: expect.any(String) },
+    });
   });
 
   it('does NOT fire onNonRetryableStatus for a retryable status (429/5xx) — that path already gets its own retry/backoff handling and is not evidence of a bad credential', async () => {
@@ -919,7 +867,6 @@ describe('createBatchedHttpProvider — onNonRetryableStatus hook (auth-key reli
       const provider = createBatchedHttpProvider({
         name: 'retryable-test',
         baseUrl: 'https://example.com',
-        method: 'POST',
         callbacks: { ...plainCallbacks(), getRequestBody: () => '{}' },
         onNonRetryableStatus,
       });
@@ -944,7 +891,7 @@ describe('createBatchedHttpProvider — suspicious-ratio window (auth-key reliab
     vi.unstubAllGlobals();
   });
 
-  it("reclassifies a sustained run of suspicious results as kind:'network' once the rolling window is full and overwhelmingly suspicious, and fires onSuspiciousStreak exactly once at the crossing — lets translateLoop.ts's existing failure-surfacing logic correctly treat a broken provider as broken instead of silently doing nothing forever", async () => {
+  it("reclassifies a sustained run of suspicious results as kind:'untranslated' once the rolling window is full and overwhelmingly suspicious, and fires onSuspiciousStreak exactly once at the crossing — lets translateLoop.ts's existing failure-surfacing logic correctly treat a broken provider as broken instead of silently doing nothing forever", async () => {
     // Every request comes back with an empty string for a non-empty
     // input — isSuspiciousOutcome's own unconditional signature (see the
     // "suspicious vs. network failure kind" tests above), matching the
@@ -957,7 +904,6 @@ describe('createBatchedHttpProvider — suspicious-ratio window (auth-key reliab
     const provider = createBatchedHttpProvider({
       name: 'streak-test',
       baseUrl: 'https://example.com',
-      method: 'POST',
       callbacks: { ...plainCallbacks(), getRequestBody: () => '{}' },
       onSuspiciousStreak,
     });
@@ -982,7 +928,7 @@ describe('createBatchedHttpProvider — suspicious-ratio window (auth-key reliab
     // over the threshold — reclassified, and the streak hook fires.
     expect(outcomes[29]).toMatchObject({
       ok: false,
-      error: { kind: 'network', message: '[streak-test] kept sending text back untranslated' },
+      error: { kind: 'untranslated', message: '[streak-test] kept sending text back untranslated' },
     });
     expect(onSuspiciousStreak).toHaveBeenCalledTimes(1);
   });
@@ -1010,7 +956,6 @@ describe('createBatchedHttpProvider — suspicious-ratio window (auth-key reliab
     const provider = createBatchedHttpProvider({
       name: 'mixed-page-test',
       baseUrl: 'https://example.com',
-      method: 'POST',
       callbacks: { ...plainCallbacks(), getRequestBody: () => '{}' },
       onSuspiciousStreak,
     });
@@ -1048,14 +993,15 @@ describe('createBatchedHttpProvider — connectivity awareness', () => {
     const provider = createBatchedHttpProvider({
       name: 'offline',
       baseUrl: 'https://example.com',
-      method: 'POST',
       callbacks: { ...plainCallbacks(), getRequestBody: () => '{}' },
     });
 
     const results = await provider.translateBatch({ sourceLanguage: 'en', targetLanguage: 'es', pieces: [['hello']] });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(results).toEqual([{ ok: false, error: { kind: 'network', message: '[offline] no result for this piece' } }]);
+    expect(results).toEqual([
+      { ok: false, error: { kind: 'network', message: '[offline] network error: network down' } },
+    ]);
   });
 
   it('retries normally (up to MAX_ATTEMPTS) while online', async () => {
@@ -1069,7 +1015,6 @@ describe('createBatchedHttpProvider — connectivity awareness', () => {
     const provider = createBatchedHttpProvider({
       name: 'online-retry',
       baseUrl: 'https://example.com',
-      method: 'POST',
       callbacks: { ...plainCallbacks(), getRequestBody: () => '{}' },
     });
 
@@ -1093,7 +1038,6 @@ describe('createBatchedHttpProvider — connectivity awareness', () => {
     const provider = createBatchedHttpProvider({
       name: 'bad-key',
       baseUrl: 'https://example.com',
-      method: 'POST',
       callbacks: { ...plainCallbacks(), getRequestBody: () => '{}' },
     });
 
@@ -1103,7 +1047,10 @@ describe('createBatchedHttpProvider — connectivity awareness', () => {
     // The server's own reason is carried through now, instead of a generic
     // "no result for this piece" — see the rejection tests below.
     expect(results).toEqual([
-      { ok: false, error: { kind: 'network', message: '[bad-key] rejected (HTTP 401): bad key' } },
+      {
+        ok: false,
+        error: { kind: 'http', status: 401, reason: 'bad key', message: '[bad-key] rejected (HTTP 401): bad key' },
+      },
     ]);
   });
 
@@ -1125,7 +1072,6 @@ describe('createBatchedHttpProvider — connectivity awareness', () => {
       const provider = createBatchedHttpProvider({
         name: 'svc',
         baseUrl: 'https://example.com',
-        method: 'POST',
         callbacks: { ...plainCallbacks(), getRequestBody: () => '{}' },
       });
       const [outcome] = await provider.translateBatch({ sourceLanguage: 'en', targetLanguage: 'es', pieces: [['hi']] });
@@ -1149,9 +1095,9 @@ describe('createBatchedHttpProvider — connectivity awareness', () => {
       expect(error.message).toBe('[svc] rejected (HTTP 400): API key not valid. Please pass a valid API key.');
     });
 
-    it('keeps the error kind unchanged — the translate loop keys its failure handling off the kind, so only the message improves', async () => {
+    it("reports a rejection as kind 'http' with its status", async () => {
       const error = await rejectionMessage(jsonResponse({ error: { message: 'nope' } }, 403));
-      expect(error.kind).toBe('network');
+      expect(error).toMatchObject({ kind: 'http', status: 403 });
     });
 
     it('surfaces a short plain-text body', async () => {
@@ -1201,7 +1147,6 @@ describe('createBatchedHttpProvider — connectivity awareness', () => {
     const provider = createBatchedHttpProvider({
       name: 'slow-provider',
       baseUrl: 'https://example.com',
-      method: 'POST',
       callbacks: { ...plainCallbacks(), getRequestBody: () => '{}' },
     });
 
@@ -1233,7 +1178,6 @@ describe('createBatchedHttpProvider — connectivity awareness', () => {
     const provider = createBatchedHttpProvider({
       name: 'jitter',
       baseUrl: 'https://example.com',
-      method: 'POST',
       callbacks: { ...plainCallbacks(), getRequestBody: () => '{}' },
     });
 
@@ -1265,7 +1209,6 @@ describe('createBatchedHttpProvider — connectivity awareness', () => {
     const provider = createBatchedHttpProvider({
       name: 'retry-after-no-jitter',
       baseUrl: 'https://example.com',
-      method: 'POST',
       callbacks: { ...plainCallbacks(), getRequestBody: () => '{}' },
     });
 
@@ -1279,5 +1222,89 @@ describe('createBatchedHttpProvider — connectivity awareness', () => {
 
     expect(results).toEqual([{ ok: true, value: ['ok'] }]);
     vi.useRealTimers();
+  });
+});
+
+describe('createBatchedHttpProvider — structured failure kinds', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  function svc() {
+    return createBatchedHttpProvider({
+      name: 'svc',
+      baseUrl: 'https://example.com',
+      callbacks: { ...plainCallbacks(), getRequestBody: () => '{}' },
+    });
+  }
+
+  async function failWith(fetchImpl: (url: string, init?: RequestInit) => Promise<Response>, advanceMs = 0) {
+    vi.spyOn(connectivity, 'isOnline').mockReturnValue(true);
+    const fetchMock = vi.fn(fetchImpl);
+    vi.stubGlobal('fetch', fetchMock);
+    if (advanceMs > 0) vi.useFakeTimers();
+    const resultPromise = svc().translateBatch({ sourceLanguage: 'en', targetLanguage: 'es', pieces: [['hello']] });
+    if (advanceMs > 0) await vi.advanceTimersByTimeAsync(advanceMs);
+    const [outcome] = await resultPromise;
+    if (!outcome || outcome.ok) throw new Error('expected a failed outcome');
+    return { error: outcome.error, calls: fetchMock.mock.calls.length };
+  }
+
+  it("reports exhausted 429 retries as 'rateLimited' with the status, not as a network failure", async () => {
+    const { error, calls } = await failWith(async () => new Response('', { status: 429 }), 5000);
+    expect(calls).toBe(3);
+    expect(error).toMatchObject({ kind: 'rateLimited', status: 429 });
+  });
+
+  it("reports exhausted 5xx retries as 'http' with the status", async () => {
+    const { error, calls } = await failWith(async () => new Response('', { status: 503 }), 5000);
+    expect(calls).toBe(3);
+    expect(error).toMatchObject({ kind: 'http', status: 503 });
+  });
+
+  it("reports a rejection as 'http' with the status and the service's reason", async () => {
+    const { error } = await failWith(async () => jsonResponse({ error: { message: 'nope' } }, 400));
+    expect(error).toMatchObject({ kind: 'http', status: 400, reason: 'nope' });
+  });
+
+  it("reports malformed JSON as 'badResponse' and does not retry it as if it were transient", async () => {
+    const { error, calls } = await failWith(async () => new Response('{"texts": [', { status: 200 }), 5000);
+    expect(calls).toBe(1);
+    expect(error.kind).toBe('badResponse');
+  });
+
+  it("reports a response whose shape can't be read as 'badResponse', without retrying", async () => {
+    const { error, calls } = await failWith(async () => jsonResponse({ somethingElse: true }), 5000);
+    expect(calls).toBe(1);
+    expect(error.kind).toBe('badResponse');
+  });
+
+  it("reports a request that never answers as 'timeout'", async () => {
+    const { error } = await failWith(
+      (_url, init) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            const abortError = new Error('The operation was aborted');
+            abortError.name = 'AbortError';
+            reject(abortError);
+          });
+        }),
+      35000,
+    );
+    expect(error.kind).toBe('timeout');
+  });
+
+  it("reports a fetch that fails outright as 'network'", async () => {
+    const { error } = await failWith(async () => {
+      throw new TypeError('Failed to fetch');
+    }, 5000);
+    expect(error.kind).toBe('network');
+  });
+
+  it("reports a piece still missing after its retry as 'badResponse', not as a network failure", async () => {
+    const { error } = await failWith(async () => jsonResponse({ texts: [] }));
+    expect(error.kind).toBe('badResponse');
   });
 });

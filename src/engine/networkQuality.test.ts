@@ -46,3 +46,16 @@ describe('getAdaptiveConcurrency', () => {
     expect(getAdaptiveConcurrency(6)).toBe(6);
   });
 });
+
+describe('getAdaptiveConcurrency — never raises a lower configured cap', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('keeps a configured cap of 1 on a slow connection instead of raising it to 2 or 4', () => {
+    vi.stubGlobal('navigator', { connection: { effectiveType: '2g' } });
+    expect(getAdaptiveConcurrency(1)).toBe(1);
+    vi.stubGlobal('navigator', { connection: { effectiveType: '3g' } });
+    expect(getAdaptiveConcurrency(3)).toBe(3);
+  });
+});

@@ -85,7 +85,7 @@ describe('createRestoreLedger', () => {
     document.body.innerHTML = '';
   });
 
-  it('restores originals, finds a translated node by its parent, and lists entries', () => {
+  it('restores originals and finds a translated node by its parent', () => {
     document.body.innerHTML = '<p>hello</p>';
     const p = document.querySelector('p') as HTMLElement;
     const node = p.firstChild as Text;
@@ -94,12 +94,12 @@ describe('createRestoreLedger', () => {
     expect(ledger.findOriginalTextForElement(p)).toBeNull();
     node.data = 'HOLA';
     expect(ledger.findOriginalTextForElement(p)).toBe('hello');
-    expect(ledger.entries()).toEqual([{ node, original: 'hello' }]);
     const noteOwnWrite = vi.fn();
     ledger.restoreAll(noteOwnWrite);
     expect(node.data).toBe('hello');
     expect(noteOwnWrite).toHaveBeenCalledWith(node, 'hello');
-    expect(ledger.entries()).toEqual([]);
+    node.data = 'HOLA';
+    expect(ledger.findOriginalTextForElement(p)).toBeNull();
   });
 
   it('prunes a node only after two consecutive disconnected checks', () => {

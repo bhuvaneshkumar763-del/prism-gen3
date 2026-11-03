@@ -120,7 +120,6 @@ export function createAttributeTranslator(options: AttributeTranslatorOptions) {
         sourceLanguageIsExplicit: options.isSourceLanguageExplicit?.() ?? false,
         targetLanguage: currentTargetLanguage,
         pieces: sentValues.map((value) => [value]),
-        dontSortResults: false,
       });
     } catch (e) {
       console.error('[prism] attribute translation request failed', e);

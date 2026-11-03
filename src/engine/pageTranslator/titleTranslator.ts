@@ -77,7 +77,6 @@ export function createTitleTranslator(options: TitleTranslatorOptions) {
           sourceLanguageIsExplicit: options.isSourceLanguageExplicit?.() ?? false,
           targetLanguage: currentTargetLanguage,
           pieces: [[text]],
-          dontSortResults: false,
         });
       } catch (e) {
         console.error('[prism] title translation request failed', e);

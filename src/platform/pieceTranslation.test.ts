@@ -77,13 +77,11 @@ function deps(
 const keyFor = (piece: string[]) => cacheKeyFor('google', 'zh', 'en', JSON.stringify(piece));
 
 describe('buildProviderConfig', () => {
-  it('always configures google, and Cloud Translate only with a non-blank API key', () => {
+  it('configures Cloud Translate only with a non-blank API key', () => {
     expect(buildProviderConfig(fakeConfig({ googleCloudTranslateApiKey: 'k1' }))).toEqual({
-      google: {},
       googleCloudTranslate: { apiKey: 'k1' },
     });
     expect(buildProviderConfig(fakeConfig({ googleCloudTranslateApiKey: '   ' }))).toEqual({
-      google: {},
       googleCloudTranslate: undefined,
     });
   });
@@ -134,7 +132,6 @@ describe('createProviderResolver', () => {
     const next = await resolve();
     expect(create).toHaveBeenCalledTimes(2);
     expect(create).toHaveBeenLastCalledWith('googleCloudTranslate', {
-      google: {},
       googleCloudTranslate: { apiKey: 'k1' },
     });
     expect(next.providerId).toBe('googleCloudTranslate');
@@ -158,7 +155,7 @@ describe('createProviderResolver', () => {
 });
 
 describe('translateTextWithProvider', () => {
-  it('returns a network error naming the provider when it is unavailable', async () => {
+  it("returns a 'notConfigured' error naming the provider when it is unavailable, not a network error", async () => {
     const result = await translateTextWithProvider(
       async () => ({ providerId: 'googleCloudTranslate', provider: null }),
       {
@@ -169,7 +166,7 @@ describe('translateTextWithProvider', () => {
     );
     expect(result).toEqual({
       ok: false,
-      error: { kind: 'network', message: '[googleCloudTranslate] not configured or unavailable' },
+      error: { kind: 'notConfigured', message: '[googleCloudTranslate] not configured or unavailable' },
     });
   });
 
@@ -186,10 +183,10 @@ describe('translateTextWithProvider', () => {
 });
 
 describe('translatePiecesWithCache', () => {
-  it('fails every piece with a network error, without touching the cache, when the provider is unavailable', async () => {
+  it("fails every piece with a 'notConfigured' error, without touching the cache, when the provider is unavailable", async () => {
     const d = deps({ provider: null });
     const outcomes = await translatePiecesWithCache(request([['a'], ['b']]), TAB_SENDER, d);
-    const error = { kind: 'network', message: '[google] not configured or unavailable' };
+    const error = { kind: 'notConfigured', message: '[google] not configured or unavailable' };
     expect(outcomes).toEqual([
       { ok: false, error },
       { ok: false, error },
@@ -229,10 +226,10 @@ describe('translatePiecesWithCache', () => {
     expect(outcomes).toEqual([{ ok: true, value: ['x'] }]);
   });
 
-  it('passes the language pair and dontSortResults through to the provider', async () => {
+  it('passes the language pair through to the provider', async () => {
     const { provider, requests } = fakeProvider();
-    await translatePiecesWithCache({ ...request([['a']]), dontSortResults: true }, TAB_SENDER, deps({ provider }));
-    expect(requests[0]).toMatchObject({ sourceLanguage: 'zh', targetLanguage: 'en', dontSortResults: true });
+    await translatePiecesWithCache(request([['a']]), TAB_SENDER, deps({ provider }));
+    expect(requests[0]).toMatchObject({ sourceLanguage: 'zh', targetLanguage: 'en' });
   });
 
   it('writes only the successful fresh pieces back, JSON-encoded, in one setMany call', async () => {
@@ -310,10 +307,10 @@ describe('translatePiecesWithCache', () => {
     warn.mockRestore();
   });
 
-  it('reports a parse error for a missing piece the provider returned no outcome for', async () => {
+  it('reports a bad response for a missing piece the provider returned no outcome for', async () => {
     const provider: Translator = { translateBatch: async () => [{ ok: true, value: ['A'] }] };
     const outcomes = await translatePiecesWithCache(request([['a'], ['b']]), TAB_SENDER, deps({ provider }));
-    expect(outcomes[1]).toEqual({ ok: false, error: { kind: 'parse', message: 'no result for this piece' } });
+    expect(outcomes[1]).toEqual({ ok: false, error: { kind: 'badResponse', message: 'no result for this piece' } });
   });
 
   it("relays each fresh piece to the requesting tab and frame under the original request's index", async () => {

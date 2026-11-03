@@ -70,10 +70,6 @@ export function createRestoreLedger() {
     has(node: Text): boolean {
       return originals.has(node);
     },
-    /** Allocates per node; the hover tooltip uses `findOriginalTextForElement` instead. */
-    entries(): ReadonlyArray<{ node: Text; original: string }> {
-      return Array.from(originals, ([node, original]) => ({ node, original }));
-    },
     /** Original text of a translated node directly under `target`, or null. Doesn't allocate: called on every mousemove. */
     findOriginalTextForElement(target: Element): string | null {
       for (const [node, original] of originals) {

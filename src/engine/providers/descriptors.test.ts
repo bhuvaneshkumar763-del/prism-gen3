@@ -27,7 +27,7 @@ describe('descriptors', () => {
     expect(getBatchingHint('googleCloudTranslate', false)).toBeUndefined();
   });
 
-  it('isProviderAvailable is true for providers with no isAvailable check', () => {
+  it('isProviderAvailable is true for a known provider', () => {
     expect(isProviderAvailable('google')).toBe(true);
   });
 

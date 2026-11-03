@@ -19,8 +19,6 @@ export interface ProviderDescriptor {
   displayName: string;
   /** True if the provider needs a user-supplied key/URL before it can be used. */
   requiresKey: boolean;
-  /** Runtime feature-detection for providers that may not exist in every environment. Omit for providers that are always usable once configured. */
-  isAvailable?(): boolean;
   batchingHint?: BatchingHint;
 }
 
@@ -51,7 +49,5 @@ export function getBatchingHint(id: string, groupParagraphs = true): BatchingHin
 }
 
 export function isProviderAvailable(id: string): boolean {
-  const descriptor = getProviderDescriptor(id);
-  if (!descriptor) return false;
-  return descriptor.isAvailable ? descriptor.isAvailable() : true;
+  return getProviderDescriptor(id) !== undefined;
 }

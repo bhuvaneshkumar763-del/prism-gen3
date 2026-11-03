@@ -35,7 +35,6 @@ export function buildProviderConfig(config: ConfigReader): ProviderConfig {
   // "Configured" is decided by the same rule the UI uses to show "needs
   // setup" (missingProviderSetup), so the two can't disagree.
   return {
-    google: {},
     googleCloudTranslate:
       missingProviderSetup('googleCloudTranslate', fields) === null
         ? { apiKey: fields.googleCloudTranslateApiKey }
@@ -71,8 +70,8 @@ export function createProviderResolver(
   };
 }
 
-function unavailableMessage(providerId: string): string {
-  return `[${providerId}] not configured or unavailable`;
+function notConfigured(providerId: string): TranslateError {
+  return { kind: 'notConfigured', message: `[${providerId}] not configured or unavailable` };
 }
 
 /** `translateText` (selection popup, title translator): one string, deliberately not cached. */
@@ -82,7 +81,7 @@ export async function translateTextWithProvider(
 ): Promise<Result<string, TranslateError>> {
   const { providerId, provider } = await resolveProvider();
   if (!provider) {
-    return { ok: false, error: { kind: 'network', message: unavailableMessage(providerId) } };
+    return { ok: false, error: notConfigured(providerId) };
   }
   return translateOne(provider, data.text, data.sourceLanguage, data.targetLanguage);
 }
@@ -110,10 +109,10 @@ export async function translatePiecesWithCache(
   deps: PieceTranslationDeps,
 ): Promise<PieceOutcome[]> {
   const { providerId, provider } = await deps.resolveProvider();
-  const { sourceLanguage, targetLanguage, pieces, dontSortResults, requestId } = data;
+  const { sourceLanguage, targetLanguage, pieces, requestId } = data;
 
   if (!provider) {
-    const error = { kind: 'network' as const, message: unavailableMessage(providerId) };
+    const error = notConfigured(providerId);
     return pieces.map(() => ({ ok: false, error }));
   }
 
@@ -162,7 +161,6 @@ export async function translatePiecesWithCache(
       sourceLanguage,
       targetLanguage,
       pieces: missingPieces,
-      dontSortResults,
       onPieceComplete:
         tabId === undefined
           ? undefined
@@ -185,7 +183,7 @@ export async function translatePiecesWithCache(
     if (cached !== null && cached !== undefined) return { ok: true, value: cached };
     const missingIdx = missingIdxByPiece.get(i);
     const fresh = missingIdx !== undefined ? freshOutcomes[missingIdx] : undefined;
-    return fresh ?? { ok: false, error: { kind: 'parse', message: 'no result for this piece' } };
+    return fresh ?? { ok: false, error: { kind: 'badResponse', message: 'no result for this piece' } };
   });
 
   if (cacheEnabled) {

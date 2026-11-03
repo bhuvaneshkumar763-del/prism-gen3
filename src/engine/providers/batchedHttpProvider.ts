@@ -1,7 +1,7 @@
-import { err, ok } from '../../shared/result';
+import { err, ok, type Result } from '../../shared/result';
 import { connectivity } from '../connectivity';
 import { getAdaptiveConcurrency } from '../networkQuality';
-import type { PieceOutcome, TranslateBatchRequest, Translator } from '../translator';
+import type { PieceOutcome, TranslateBatchRequest, TranslateError, Translator } from '../translator';
 import { isSuspiciousOutcome } from './outputSanityCheck';
 
 /**
@@ -18,21 +18,28 @@ import { isSuspiciousOutcome } from './outputSanityCheck';
  * its original N-string shape.
  */
 
+interface RawPieceResult {
+  text: string;
+  detectedLanguage: string | null;
+}
+
 export interface BatchedProviderCallbacks {
   transformPiece(strings: string[]): string;
-  /** Given the raw parsed response body and how many pieces were sent, return one outcome per piece (null = missing). */
-  parseResponse(response: unknown, pieceCount: number): Array<{ text: string; detectedLanguage: string | null } | null>;
-  splitPieceResponse(raw: string, dontSortResults: boolean): string[];
-  /** For GET-based providers that encode the whole batch in the query string rather than a request body. */
-  getQueryString?(sourceLanguage: string, targetLanguage: string, pieceWireTexts: string[]): string;
+  /**
+   * Given the parsed response body and how many pieces were sent, return one
+   * entry per piece (null = missing), or null when the body's shape can't be
+   * read at all. Validate rather than cast: a changed shape is a bad response.
+   */
+  parseResponse(response: unknown, pieceCount: number): Array<RawPieceResult | null> | null;
+  splitPieceResponse(raw: string): string[];
   getRequestBody?(sourceLanguage: string, targetLanguage: string, pieceWireTexts: string[]): string | undefined;
   getExtraHeaders?(): Array<{ name: string; value: string }>;
 }
 
 export interface BatchedProviderOptions {
   name: string;
+  /** Requests are POSTed here. */
   baseUrl: string;
-  method: 'GET' | 'POST';
   callbacks: BatchedProviderCallbacks;
   /**
    * Soft per-request budget of CONTENT characters (pre-`transformPiece`).
@@ -69,19 +76,23 @@ export interface BatchedProviderOptions {
   onSuspiciousStreak?(): void;
 }
 
-interface RetryableError extends Error {
-  retryAfterMs?: number;
+/**
+ * A failed attempt and whether another attempt could help. A 4xx other than
+ * 429 (bad key, malformed request) and an unreadable answer are permanent;
+ * retrying them only burns the retry budget.
+ */
+class RequestFailure extends Error {
+  constructor(
+    readonly error: TranslateError,
+    readonly retryable: boolean,
+    readonly retryAfterMs?: number,
+  ) {
+    super(error.message);
+  }
 }
 
-/** A 4xx other than 429 (bad key, malformed request) is permanent; retrying it only burns the retry budget. */
-class NonRetryableHttpError extends Error {
-  constructor(
-    readonly status: number,
-    /** The service's own explanation, if it gave a usable one — see `readRejectionReason`. */
-    readonly reason: string | null,
-  ) {
-    super(`HTTP ${status}`);
-  }
+function describeThrown(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
 }
 
 const MAX_REJECTION_REASON_CHARS = 200;
@@ -130,18 +141,11 @@ interface PendingRequest {
    * request (Google wraps in `<pre>`) can never equal an unwrapped response.
    */
   originalText: string;
-  /**
-   * `wasSuspicious`: a null `result` was confirmed suspicious after a repair
-   * retry rather than a network/HTTP failure (see translator.ts's
-   * `'suspicious'` kind). Ignored when `result` is non-null.
-   */
-  resolve(
-    result: { text: string; detectedLanguage: string | null } | null,
-    wasSuspicious?: boolean,
-    /** Why it failed, when that's known — replaces the generic "no result for this piece". */
-    failureMessage?: string,
-  ): void;
+  resolve(settlement: PieceSettlement): void;
 }
+
+/** A piece's raw wire result, or why it has none. */
+type PieceSettlement = Result<RawPieceResult, TranslateError>;
 
 const DEFAULT_MAX_BATCH_CHARS = 2000;
 /**
@@ -218,12 +222,9 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
   const concurrencyGate = createConcurrencyGate(() => getAdaptiveConcurrency(configuredMaxConcurrent));
 
   /** In-flight dedupe: two identical concurrent piece requests share one HTTP call's result. */
-  const inFlightByKey = new Map<string, Promise<{ text: string; detectedLanguage: string | null } | null>>();
-  // Provider-level like `inFlightByKey`: a piece deduped into another call's
-  // in-flight promise must see the same set. Keyed by the shared promise.
-  const suspiciousPromises = new WeakSet<Promise<{ text: string; detectedLanguage: string | null } | null>>();
-  /** A specific failure reason per piece promise, when one is known — see `readRejectionReason`. */
-  const failureMessages = new WeakMap<Promise<{ text: string; detectedLanguage: string | null } | null>, string>();
+  const inFlightByKey = new Map<string, Promise<PieceSettlement>>();
+  const label = `[${options.name}]`;
+  const timedOut = (): RequestFailure => new RequestFailure({ kind: 'timeout', message: `${label} timed out` }, true);
 
   // Provider-level rolling window of the last SUSPICIOUS_WINDOW_SIZE piece
   // classifications (the auth key it protects is provider-wide).
@@ -260,7 +261,6 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
     pieceWireTexts: string[],
     timeoutMs: number,
   ): Promise<unknown> {
-    const query = options.callbacks.getQueryString?.(sourceLanguage, targetLanguage, pieceWireTexts) ?? '';
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     let backstopTimeout: ReturnType<typeof setTimeout> | undefined;
@@ -271,31 +271,59 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
       // long-lived singleton. The +500 lets the real abort error win normally.
       return await Promise.race([
         (async () => {
-          const response = await fetch(options.baseUrl + query, {
-            method: options.method,
-            headers: Object.fromEntries((options.callbacks.getExtraHeaders?.() ?? []).map((h) => [h.name, h.value])),
-            body:
-              options.method === 'GET'
-                ? undefined
-                : options.callbacks.getRequestBody?.(sourceLanguage, targetLanguage, pieceWireTexts),
-            signal: controller.signal,
-          });
+          // An abort is our own timer firing, so it's a timeout, not a dropped connection.
+          const unreachable = (e: unknown): RequestFailure =>
+            controller.signal.aborted
+              ? timedOut()
+              : new RequestFailure({ kind: 'network', message: `${label} network error: ${describeThrown(e)}` }, true);
+          let response: Response;
+          try {
+            response = await fetch(options.baseUrl, {
+              method: 'POST',
+              headers: Object.fromEntries((options.callbacks.getExtraHeaders?.() ?? []).map((h) => [h.name, h.value])),
+              body: options.callbacks.getRequestBody?.(sourceLanguage, targetLanguage, pieceWireTexts),
+              signal: controller.signal,
+            });
+          } catch (e) {
+            throw unreachable(e);
+          }
 
-          if (response.status === 429 || response.status >= 500) {
-            const retryableError: RetryableError = new Error(`HTTP ${response.status}`);
+          const { status } = response;
+          if (status === 429 || status >= 500) {
             const retryAfter = Number.parseFloat(response.headers.get('retry-after') ?? '');
-            if (retryAfter > 0) retryableError.retryAfterMs = Math.min(6000, retryAfter * 1000);
-            throw retryableError;
+            const error: TranslateError =
+              status === 429
+                ? { kind: 'rateLimited', status, message: `${label} rate-limited (HTTP 429)` }
+                : { kind: 'http', status, message: `${label} server error (HTTP ${status})` };
+            throw new RequestFailure(error, true, retryAfter > 0 ? Math.min(6000, retryAfter * 1000) : undefined);
           }
           if (!response.ok) {
             const reason = await readRejectionReason(response);
-            options.onNonRetryableStatus?.(response.status, reason);
-            throw new NonRetryableHttpError(response.status, reason);
+            options.onNonRetryableStatus?.(status, reason);
+            throw new RequestFailure(
+              {
+                kind: 'http',
+                status,
+                ...(reason ? { reason } : {}),
+                message: `${label} rejected (HTTP ${status})${reason ? `: ${reason}` : ''}`,
+              },
+              false,
+            );
           }
-          return await response.json();
+          let body: string;
+          try {
+            body = await response.text();
+          } catch (e) {
+            throw unreachable(e);
+          }
+          try {
+            return JSON.parse(body) as unknown;
+          } catch {
+            throw new RequestFailure({ kind: 'badResponse', message: `${label} response is not valid JSON` }, false);
+          }
         })(),
         new Promise<never>((_, reject) => {
-          backstopTimeout = setTimeout(() => reject(new Error('Request timed out (backstop)')), timeoutMs + 500);
+          backstopTimeout = setTimeout(() => reject(timedOut()), timeoutMs + 500);
         }),
       ]);
     } finally {
@@ -313,7 +341,7 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
     inheritedDeadline?: number,
   ): Promise<unknown> {
     const deadline = inheritedDeadline ?? Date.now() + OVERALL_DEADLINE_MS;
-    let lastError: RetryableError | undefined;
+    let lastFailure: RequestFailure | undefined;
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       if (attempt > 0) {
         // Offline: remaining attempts are doomed, so stop retrying. Only the
@@ -322,9 +350,9 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
         if (!connectivity.isOnline()) break;
 
         let delay = attempt === 1 ? 400 : 1200;
-        if (lastError?.retryAfterMs && lastError.retryAfterMs > delay) {
+        if (lastFailure?.retryAfterMs && lastFailure.retryAfterMs > delay) {
           // A server-specified Retry-After is used exactly, not jittered.
-          delay = lastError.retryAfterMs;
+          delay = lastFailure.retryAfterMs;
         } else {
           // ±25% jitter so many pieces failing together don't retry in lockstep.
           delay = delay * 0.75 + Math.random() * delay * 0.5;
@@ -339,11 +367,12 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
       try {
         return await sendOnce(sourceLanguage, targetLanguage, pieceWireTexts, Math.min(REQUEST_TIMEOUT_MS, remaining));
       } catch (e) {
-        if (e instanceof NonRetryableHttpError) throw e;
-        lastError = e as RetryableError;
+        if (!(e instanceof RequestFailure) || !e.retryable) throw e;
+        lastFailure = e;
       }
     }
-    throw lastError;
+    // No failure yet means the deadline ran out before the first attempt.
+    throw lastFailure ?? timedOut();
   }
 
   /**
@@ -372,8 +401,11 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
         pending.map((p) => p.wireText),
         deadline,
       );
-      // Results are matched by position; on a count mismatch, treat the whole request as missing.
       const parsed = options.callbacks.parseResponse(response, pending.length);
+      if (parsed === null) {
+        throw new RequestFailure({ kind: 'badResponse', message: `${label} response has an unexpected shape` }, false);
+      }
+      // Results are matched by position; on a count mismatch, treat the whole request as missing.
       const results = parsed.length === pending.length ? parsed : [];
       const missing: PendingRequest[] = [];
       // Which `missing` entries were a 200 OK that looked like a silent echo,
@@ -390,19 +422,28 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
         // Decode the wire response back to plain text before the sanity
         // check, so the comparison is original-vs-translation rather than
         // wrapped-request-vs-unwrapped-response (see PendingRequest.originalText).
-        const decoded = options.callbacks.splitPieceResponse(result.text, false).join('');
+        const decoded = options.callbacks.splitPieceResponse(result.text).join('');
         if (isSuspiciousOutcome(p.originalText, { ...result, text: decoded }, sourceLanguage, targetLanguage)) {
           missing.push(p);
           missingBecauseSuspicious.add(p);
           return;
         }
-        p.resolve(result);
+        p.resolve(ok(result));
       });
 
       if (missing.length === 0) return;
       if (isIndividualRetry) {
         missing.forEach((p) => {
-          p.resolve(null, missingBecauseSuspicious.has(p));
+          p.resolve(
+            err(
+              missingBecauseSuspicious.has(p)
+                ? {
+                    kind: 'suspicious',
+                    message: `${label} result kept looking like a silent-echo failure after a repair retry`,
+                  }
+                : { kind: 'badResponse', message: `${label} no result for this piece` },
+            ),
+          );
         });
         return;
       }
@@ -428,27 +469,21 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
         );
       });
     } catch (e) {
-      console.error(`[${options.name}] translation request failed`, e);
-      const failureMessage =
-        e instanceof NonRetryableHttpError
-          ? `[${options.name}] rejected (HTTP ${e.status})${e.reason ? `: ${e.reason}` : ''}`
-          : undefined;
+      console.error(`${label} translation request failed`, e);
+      // Anything but a RequestFailure was thrown while reading the answer.
+      const error: TranslateError =
+        e instanceof RequestFailure
+          ? e.error
+          : { kind: 'badResponse', message: `${label} couldn't read the response: ${describeThrown(e)}` };
       pending.forEach((p) => {
-        p.resolve(null, false, failureMessage);
+        p.resolve(err(error));
       });
     }
   }
 
   return {
     async translateBatch(request: TranslateBatchRequest): Promise<PieceOutcome[]> {
-      const {
-        sourceLanguage,
-        targetLanguage,
-        pieces,
-        dontSortResults = false,
-        onPieceComplete,
-        suspiciousRetrySourceLanguage,
-      } = request;
+      const { sourceLanguage, targetLanguage, pieces, onPieceComplete, suspiciousRetrySourceLanguage } = request;
 
       // Bundle pieces into HTTP-request-sized batches, sharing in-flight
       // requests for identical (already-transformed) piece text.
@@ -458,7 +493,7 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
       let currentChars = 0;
       /** Wire length (post-`transformPiece`) — the hard ceiling only, independent of the content budget above. */
       let currentWireChars = 0;
-      const resultPromises: Array<Promise<{ text: string; detectedLanguage: string | null } | null>> = [];
+      const resultPromises: Array<Promise<PieceSettlement>> = [];
       // Filled in as each `resultPromises[i]` settles (see below) and returned as-is.
       const outcomes: PieceOutcome[] = new Array(pieces.length);
 
@@ -472,26 +507,18 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
           continue;
         }
 
-        let resolveFn!: (
-          result: { text: string; detectedLanguage: string | null } | null,
-          wasSuspicious?: boolean,
-          failureMessage?: string,
-        ) => void;
-        const promise = new Promise<{ text: string; detectedLanguage: string | null } | null>((resolve) => {
-          resolveFn = (result, wasSuspicious, failureMessage) => {
-            if (failureMessage) failureMessages.set(promise, failureMessage);
-            // Success and real failures record `false`, confirmed-suspicious
-            // `true`. Once the window is over threshold, suspicious results are
-            // reported as `'network'` (likely provider breakage, e.g. broken
-            // auth) by leaving them out of `suspiciousPromises`.
-            const overThreshold = recordSuspiciousSample(!!wasSuspicious);
-            if (wasSuspicious && !overThreshold) suspiciousPromises.add(promise);
-            // The service answered; it just kept sending the text back. Saying
-            // so beats the generic "no result", which the bubble words as
-            // "couldn't reach the translation service".
-            else if (wasSuspicious)
-              failureMessages.set(promise, `[${options.name}] kept sending text back untranslated`);
-            resolve(result);
+        let resolveFn!: (settlement: PieceSettlement) => void;
+        const promise = new Promise<PieceSettlement>((resolve) => {
+          resolveFn = (settlement) => {
+            // Once the window is over threshold, a suspicious result is
+            // reported as `'untranslated'`, a provider failure (likely a broken key).
+            const wasSuspicious = !settlement.ok && settlement.error.kind === 'suspicious';
+            const overThreshold = recordSuspiciousSample(wasSuspicious);
+            resolve(
+              wasSuspicious && overThreshold
+                ? err({ kind: 'untranslated', message: `${label} kept sending text back untranslated` })
+                : settlement,
+            );
           };
         });
         inFlightByKey.set(dedupeKey, promise);
@@ -523,23 +550,13 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
       // the transform here delivers `onPieceComplete` per piece instead of
       // holding every piece until the slowest settles.
       resultPromises.forEach((resultPromise, idx) => {
-        resultPromise.then((result) => {
+        resultPromise.then((settlement) => {
           const piece = pieces[idx];
           const outcome: PieceOutcome = !piece
-            ? err({ kind: 'parse', message: 'internal: piece/result index mismatch' })
-            : !result
-              ? err(
-                  suspiciousPromises.has(resultPromise)
-                    ? {
-                        kind: 'suspicious',
-                        message: `[${options.name}] result kept looking like a silent-echo failure after a repair retry`,
-                      }
-                    : {
-                        kind: 'network',
-                        message: failureMessages.get(resultPromise) ?? `[${options.name}] no result for this piece`,
-                      },
-                )
-              : ok(options.callbacks.splitPieceResponse(result.text, dontSortResults));
+            ? err({ kind: 'badResponse', message: 'internal: piece/result index mismatch' })
+            : settlement.ok
+              ? ok(options.callbacks.splitPieceResponse(settlement.value.text))
+              : settlement;
           outcomes[idx] = outcome;
           onPieceComplete?.(idx, outcome);
         });

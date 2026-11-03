@@ -1,7 +1,8 @@
 import { HAS_LETTER } from '../../shared/text';
+import { TimeoutError } from '../../shared/withTimeout';
 import { connectivity } from '../connectivity';
 import type { BatchingHint } from '../providers/descriptors';
-import type { PieceOutcome, Translator } from '../translator';
+import type { PieceOutcome, TranslateError, Translator } from '../translator';
 import { createAttributeTranslator } from './attributeTranslator';
 import { collectTextNodes, isNoTranslateNode } from './collectTextNodes';
 import { createDedupeTracker } from './dedupe';
@@ -67,13 +68,14 @@ export interface PageTranslatorOptions {
   getSourceLanguage(): string;
   /** Looked up per translate cycle to decide chunking — see descriptors.ts's `batchingHint`. */
   getBatchingHint(): BatchingHint | undefined;
-  getDontSortResults?(): boolean;
   /** See `NoTranslateOptions.translatePreTags`. Omitted means `<pre>` is skipped. */
   getTranslatePreTags?(): boolean;
 }
 
 const isGenuineFailure = (o: PieceOutcome | undefined): boolean => !!o && !o.ok && o.error.kind !== 'suspicious';
-const failureMessage = (o: PieceOutcome | undefined): string => (o && !o.ok ? o.error.message : 'translation failed');
+// An empty slot breaks the one-outcome-per-piece contract: an answer that couldn't be read.
+const failureOf = (o: PieceOutcome | undefined): TranslateError =>
+  o && !o.ok ? o.error : { kind: 'badResponse', message: 'translation failed: no outcome for this piece' };
 
 export function createPageTranslator(options: PageTranslatorOptions) {
   const dedupe = createDedupeTracker();
@@ -287,8 +289,8 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     requeueChangedTextNode(node);
   }
 
-  function recordFailure(rawMessage: string): void {
-    setErrors(batchFailed(errors, rawMessage));
+  function recordFailure(error: TranslateError): void {
+    setErrors(batchFailed(errors, error));
   }
 
   /**
@@ -421,7 +423,6 @@ export function createPageTranslator(options: PageTranslatorOptions) {
         sourceLanguageIsExplicit: sourceLanguageOverride !== null,
         targetLanguage: currentTargetLanguage,
         pieces: slotGroups.map((slots) => slots.map((slot) => slot.text)),
-        dontSortResults: options.getDontSortResults?.() ?? false,
         // Writes each piece as soon as its own sub-request completes instead of
         // waiting for the slowest. Only early writes of successes; everything else is
         // handled after this await.
@@ -446,9 +447,11 @@ export function createPageTranslator(options: PageTranslatorOptions) {
       // old cycle's nodes into a queue that now belongs to a new one.
       if (requestedUnderGeneration !== cycleGeneration) return false;
       console.error('[prism] translation batch failed', e);
-      // Transient failure (network blip, background restart): retry next tick.
+      // No outcomes at all: the background didn't answer (restart, blip), or
+      // not in time. Retry next tick.
       requeueBatch(batch);
-      recordFailure(e instanceof Error ? e.message : String(e));
+      const message = e instanceof Error ? e.message : String(e);
+      recordFailure({ kind: e instanceof TimeoutError ? 'timeout' : 'network', message });
     } finally {
       // Only the cycle that set this may clear it — see
       // `inFlightGeneration`'s declaration comment.
@@ -474,7 +477,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     const allFailedAreSuspicious =
       allFailed && failedOutcomes.every((o) => o && !o.ok && o.error.kind === 'suspicious');
     if (allFailed && !allFailedAreSuspicious) {
-      recordFailure(failureMessage(failedOutcomes[0]));
+      recordFailure(failureOf(failedOutcomes[0]));
       requeueBatch(batch);
       return;
     }
@@ -484,7 +487,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     // otherwise a partial outage would never surface.
     const firstGenuineFailure = outcomes.find(isGenuineFailure);
     if (firstGenuineFailure) {
-      recordFailure(failureMessage(firstGenuineFailure));
+      recordFailure(failureOf(firstGenuineFailure));
     } else {
       setErrors(batchSucceeded(progress.untranslatedWarning()));
     }
@@ -662,11 +665,6 @@ export function createPageTranslator(options: PageTranslatorOptions) {
       stateListeners.add(cb);
       return () => stateListeners.delete(cb);
     },
-    /**
-     * Translated text nodes and their pre-translation text. Allocates per node,
-     * so the hover tooltip uses `findOriginalTextForElement` instead.
-     */
-    getTranslatedNodes: (): ReadonlyArray<{ node: Text; original: string }> => ledger.entries(),
     /**
      * Original text of a translated node directly under `target`, or null. Walks
      * the ledger without allocating, since the hover tooltip calls it on every

@@ -82,7 +82,6 @@ describe('createTitleTranslator', () => {
       sourceLanguageIsExplicit: false,
       targetLanguage: 'es',
       pieces: [['Hello World']],
-      dontSortResults: false,
     });
   });
 

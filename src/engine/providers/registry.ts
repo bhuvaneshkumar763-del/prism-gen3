@@ -8,7 +8,6 @@ import { createGoogleCloudTranslateProvider } from './googleCloudTranslate';
  * background.ts maps real config into this shape.
  */
 export interface ProviderConfig {
-  google?: Record<string, never>;
   googleCloudTranslate?: { apiKey: string };
 }
 

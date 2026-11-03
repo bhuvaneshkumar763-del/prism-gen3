@@ -25,17 +25,17 @@ describe('translateOne', () => {
     expect(result).toEqual({ ok: false, error: { kind: 'network', message: 'boom' } });
   });
 
-  it('returns a parse error when the batch comes back empty', async () => {
+  it('returns a bad-response error when the batch comes back empty', async () => {
     const translator = stubTranslator([]);
     const result = await translateOne(translator, 'hello', 'en', 'es');
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error.kind).toBe('parse');
+    if (!result.ok) expect(result.error.kind).toBe('badResponse');
   });
 
-  it('returns a parse error when the piece result has no string at index 0', async () => {
+  it('returns a bad-response error when the piece result has no string at index 0', async () => {
     const translator = stubTranslator([ok([])]);
     const result = await translateOne(translator, 'hello', 'en', 'es');
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error.kind).toBe('parse');
+    if (!result.ok) expect(result.error.kind).toBe('badResponse');
   });
 });

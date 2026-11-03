@@ -3,12 +3,41 @@ import { err, ok, type Result } from '../shared/result';
 /** The port every translation provider implements. */
 
 /**
- * `'suspicious'`: the request succeeded but the response still looked like a
- * silent echo after a repair retry. Unlike `'network'`/`'http'` it isn't
- * evidence the provider is down, so callers shouldn't retry it forever (the
- * result may be legitimate, e.g. a proper noun). See translateLoop.ts.
+ * Why a piece failed, set where the failure happens and carried unchanged to
+ * the bubble (errorState.ts words it per kind). Never parse `message`.
+ * - `network`: no answer at all (no connection, connection reset).
+ * - `timeout`: no answer in time.
+ * - `rateLimited`: HTTP 429 after every retry.
+ * - `http`: another HTTP failure, a 5xx after every retry or a 4xx rejection.
+ * - `auth`: the credential was rejected or is missing.
+ * - `badResponse`: an answer Prism can't read (bad JSON, changed shape, a missing piece).
+ * - `suspicious`: a 200 that still looked like a silent echo after a repair
+ *   retry. Not evidence the provider is down (it may be a proper noun), so
+ *   callers shouldn't retry it forever.
+ * - `untranslated`: suspicious results across most of the page, which is
+ *   treated as a provider failure.
+ * - `notConfigured`: the chosen provider isn't set up.
  */
-export type TranslateError = { kind: 'network' | 'http' | 'parse' | 'suspicious'; message: string };
+export type TranslateErrorKind =
+  | 'network'
+  | 'timeout'
+  | 'rateLimited'
+  | 'http'
+  | 'auth'
+  | 'badResponse'
+  | 'suspicious'
+  | 'untranslated'
+  | 'notConfigured';
+
+export interface TranslateError {
+  kind: TranslateErrorKind;
+  /** Diagnostic text for logs and for surfaces that show the provider's own words (selection popup, Settings test). */
+  message: string;
+  /** The HTTP status, when the service answered with one. */
+  status?: number;
+  /** The service's own explanation of a rejection, when it gave a usable one. */
+  reason?: string;
+}
 
 /**
  * One unit of translation work: usually a single string, or a group of
@@ -34,11 +63,6 @@ export interface TranslateBatchRequest {
    */
   suspiciousRetrySourceLanguage?: string;
   /**
-   * When true, return results in the provider's response order instead of
-   * reordering to request order (index markers can drop/merge under real HTML).
-   */
-  dontSortResults?: boolean;
-  /**
    * Optional incremental delivery: called as soon as each piece's result is
    * known, so one slow sub-request doesn't hold back the rest. The returned
    * array stays the source of truth for bookkeeping (retries, errors).
@@ -62,9 +86,9 @@ export async function translateOne(
 ): Promise<Result<string, TranslateError>> {
   const outcomes = await translator.translateBatch({ sourceLanguage, targetLanguage, pieces: [[text]] });
   const outcome = outcomes[0];
-  if (!outcome) return err({ kind: 'parse', message: 'provider returned no result' });
+  if (!outcome) return err({ kind: 'badResponse', message: 'provider returned no result' });
   if (!outcome.ok) return outcome;
   const [value] = outcome.value;
-  if (value === undefined) return err({ kind: 'parse', message: 'provider returned an empty piece result' });
+  if (value === undefined) return err({ kind: 'badResponse', message: 'provider returned an empty piece result' });
   return ok(value);
 }

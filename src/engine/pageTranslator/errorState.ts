@@ -1,3 +1,5 @@
+import type { TranslateError } from '../translator';
+
 /**
  * The translate loop's error state as one value with pure transitions, so
  * "what does the bubble show" and "how long until the next try" are functions
@@ -43,15 +45,15 @@ export function wentOffline(state: ErrorState): ErrorState {
   };
 }
 
-/** A batch failed for real (not just a suspicious echo); surfaces `rawMessage` once the threshold is reached. */
-export function batchFailed(state: ErrorState, rawMessage: string): ErrorState {
+/** A batch failed for real (not just a suspicious echo); surfaces `error` once the threshold is reached. */
+export function batchFailed(state: ErrorState, error: TranslateError): ErrorState {
   const failures = state.failures + 1;
   if (failures < CONSECUTIVE_FAILURES_BEFORE_SURFACING) return { ...state, failures };
   return {
     ...state,
     failures,
     surfacedStreak: state.surfacedStreak + 1,
-    error: { message: toUserFacingErrorMessage(rawMessage), kind: 'provider' },
+    error: { message: describeTranslateError(error), kind: 'provider' },
   };
 }
 
@@ -89,24 +91,38 @@ export function untranslatedShareWarning(untranslatedChars: number, translatedCh
   return `About ${Math.round(share * 100)}% of this page came back untranslated. Try again; if it keeps happening, switch provider in Settings.`;
 }
 
-/**
- * Maps raw provider errors to plain language. Unrecognized messages pass
- * through unchanged, since they're still useful diagnostics.
- */
-export function toUserFacingErrorMessage(raw: string): string {
-  if (/kept sending text back untranslated/i.test(raw)) {
-    return 'The translation service keeps sending text back untranslated. Prism keeps retrying; if it keeps happening, switch provider in Settings.';
+const UNTRANSLATED_MESSAGE =
+  'The translation service keeps sending text back untranslated. Prism keeps retrying; if it keeps happening, switch provider in Settings.';
+
+/** What the bubble says for a failure, in plain words. Both providers are Google's, so naming Google is accurate. */
+export function describeTranslateError(error: TranslateError): string {
+  switch (error.kind) {
+    case 'network':
+      return "Couldn't reach the translation service — retrying automatically.";
+    case 'timeout':
+      return 'The translation service is taking too long to answer — retrying automatically.';
+    case 'rateLimited':
+      return 'Google is limiting requests right now; Prism will retry automatically.';
+    case 'http':
+      if (error.status === undefined) return 'The translation service answered with an error — retrying automatically.';
+      if (error.status >= 500) {
+        return `Google's translation service is having trouble (HTTP ${error.status}) — retrying automatically.`;
+      }
+      // A rejection won't change on retry, so don't promise one.
+      return error.reason
+        ? `The translation service rejected the request: ${error.reason}`
+        : `The translation service rejected the request (HTTP ${error.status}).`;
+    case 'auth': {
+      const reason = error.reason?.endsWith('.') ? error.reason.slice(0, -1) : error.reason;
+      const detail = error.status === undefined ? '' : ` (HTTP ${error.status}${reason ? `: ${reason}` : ''})`;
+      return `Google's free translation key isn't working${detail}. Prism keeps retrying with a new key. To translate now, switch to Google Cloud in Settings and add your own API key.`;
+    }
+    case 'badResponse':
+      return "Google changed how its translation service answers, so Prism can't read the replies. Switch to Google Cloud in Settings until Prism is updated.";
+    case 'suspicious':
+    case 'untranslated':
+      return UNTRANSLATED_MESSAGE;
+    case 'notConfigured':
+      return "The chosen translation service isn't set up yet. Add its API key in Settings, or switch to Google (free).";
   }
-  if (/no result for this piece/i.test(raw)) {
-    return "Couldn't reach the translation service — retrying automatically.";
-  }
-  // A rejection (bad API key, refused request) won't change on retry, so
-  // don't say "retrying".
-  const rejected = /rejected \(HTTP (\d+)\)(?::\s*(.+))?$/.exec(raw);
-  if (rejected) {
-    return rejected[2]
-      ? `The translation service rejected the request: ${rejected[2]}`
-      : `The translation service rejected the request (HTTP ${rejected[1]}).`;
-  }
-  return raw;
 }
