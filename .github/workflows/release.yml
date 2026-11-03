@@ -1,40 +1,33 @@
 name: Release
 
-# Gen 3 plan, Session 9: triggered by CI's own completion, not
-# independently on push — keeps a broken build from ever getting
-# auto-released just because package.json changed. Whether this run
-# actually needs to do anything (i.e. whether the version changed) is
-# decided inside the job via `gh release view`, so it's safe to fire on
-# every CI completion rather than only on version-bump commits.
+# Runs after CI passes on a push to main, so a broken build is never released.
+# Whether there is anything to release (a version with no GitHub Release yet)
+# is decided inside the job, so it is safe to run on every CI completion.
 on:
   workflow_run:
     workflows: ["CI"]
     types: [completed]
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   release:
-    # CI's workflow_run event fires once per underlying trigger (push or
-    # pull_request); restricting to the push-triggered run avoids two
-    # Release jobs racing to create the same tag when a PR is open against
-    # main at the same time a direct push lands.
+    # Only the push-triggered CI run, so a PR's CI run can't race it for the tag.
     if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     env:
-      # A step's own `if:` can't read `secrets.*` directly (GitHub Actions
-      # restriction) — compute it once here instead. Both must be set: a
-      # JWT issuer with no secret (or vice versa) can't actually sign.
+      # A step's `if:` can't read secrets directly; both are needed to sign.
       HAS_AMO_KEYS: ${{ secrets.AMO_JWT_ISSUER != '' && secrets.AMO_JWT_SECRET != '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          # The exact commit CI just verified, not necessarily the branch
-          # tip (which may have moved on by the time this job starts).
+          # The exact commit CI verified, not the branch tip.
           ref: ${{ github.event.workflow_run.head_sha }}
-          # Keep the contents:write token out of .git/config while `npm ci`
-          # runs install scripts; the gh steps get it explicitly via GH_TOKEN.
+          # Keep the write token out of .git/config while npm ci runs install scripts.
           persist-credentials: false
 
       - id: version
@@ -51,53 +44,15 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # Runs before anything is installed or built, so the gate below can
-      # refuse a release without wasting a build or an AMO signing request.
-      - name: Extract this version's changelog section
+      # Before anything is installed or built, so a refused release costs no
+      # build or signing request. Fails unless the version's changelog entry has
+      # a "Checked on: <page>, <browser>, <date>" line (fix-plan.md rule 3); then
+      # add the line and push again. Also trims notes to GitHub's size limit.
+      - name: Release notes and real-page check
         if: steps.check.outputs.exists == 'false'
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          if [ -f CHANGELOG.md ]; then
-            awk -v ver="## $VERSION" 'index($0, ver) == 1 { found=1; next } found && /^## / { exit } found' CHANGELOG.md > release-notes.md
-          fi
-          if [ ! -s release-notes.md ]; then echo "(No changelog entry found for $VERSION.)" > release-notes.md; fi
+        run: node scripts/release-notes.mjs "${{ steps.version.outputs.version }}" "${{ github.repository }}" release-notes.md
 
-      # fix-plan.md rule 3: a release is checked on the real page where it
-      # broke, in a real browser, before it ships. The version's changelog
-      # entry must say where, e.g. "Checked on: sangtacviet, Orion iPhone,
-      # 2026-11-02". A refused version stays unreleased: add the line to
-      # CHANGELOG.md and push again.
-      - name: Require a real-page check
-        if: steps.check.outputs.exists == 'false'
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          # Only a line that starts with "Checked on:" counts, so prose that
-          # merely mentions the format (as the 0.3.0 notes do) can't pass.
-          if ! grep -Eq '^[[:space:]]*Checked on:[[:space:]]*[^[:space:]]' release-notes.md \
-             || grep -Eiq '^[[:space:]]*Checked on:[[:space:]]*(todo|tbd)\b' release-notes.md; then
-            echo "::error::v$VERSION has no 'Checked on: <page>, <browser>, <date>' line in its CHANGELOG.md entry. Check the release on a real page first, then add the line and push."
-            exit 1
-          fi
-
-      # GitHub rejects a release body over 125,000 characters (0.3.0's
-      # entry, which repeated all 73 betas, hit this and failed the
-      # release). Trim long notes and link to the full changelog instead.
-      - name: Fit release notes to GitHub's size limit
-        if: steps.check.outputs.exists == 'false'
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          if [ "$(wc -c < release-notes.md)" -gt 120000 ]; then
-            head -c 118000 release-notes.md > release-notes.trimmed
-            printf '\n\n…\n\nNotes trimmed to fit GitHub. Full notes: https://github.com/%s/blob/v%s/CHANGELOG.md\n' \
-              "${{ github.repository }}" "$VERSION" >> release-notes.trimmed
-            mv release-notes.trimmed release-notes.md
-            echo "::warning::Release notes for v$VERSION were trimmed to fit GitHub's size limit."
-          fi
-
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         if: steps.check.outputs.exists == 'false'
         with:
           node-version: 22
@@ -115,47 +70,36 @@ jobs:
         if: steps.check.outputs.exists == 'false'
         run: npm run zip:firefox
 
-      # AMO refuses to install any unsigned extension in regular Release/
-      # Beta Firefox at all — the browser's own error for that is the
-      # confusing "this add-on appears to be corrupt", not anything naming
-      # signing as the cause. Without AMO_JWT_ISSUER/AMO_JWT_SECRET repo
-      # secrets set (see docs/decisions — self-distribution via AMO's
-      # "unlisted" channel, no public listing), this step is skipped and
-      # the release falls back to the same unsigned zip as before: it still
-      # builds, just still won't install permanently until the secrets
-      # exist. `unlisted`, not `listed`: no AMO review queue, no public
-      # store presence, exactly matching Chrome's unlisted-zip release flow
-      # already used above.
+      # Firefox only installs signed add-ons. Unlisted: no public listing.
+      # A signing failure must not stop the release, so the next step and the
+      # release step fall back as needed. The 45-minute wait covers Mozilla's
+      # slow days; web-ext comes from the lockfile, not a fresh npx download.
       - name: Sign Firefox add-on (AMO)
+        id: sign
         if: steps.check.outputs.exists == 'false' && env.HAS_AMO_KEYS == 'true'
-        # A signing failure (AMO downtime, a rate limit, a version
-        # conflict) shouldn't take down the whole release — real bug hit
-        # on the very first re-sign attempt (beta.20): the step failed and
-        # aborted the job before "Create GitHub Release" ever ran, so even
-        # the unrelated Chrome zip and changelog notes silently never got
-        # published. continue-on-error lets the job reach that step
-        # regardless; it already falls back to the unsigned zip when no
-        # signed .xpi exists.
         continue-on-error: true
         env:
           WEB_EXT_API_KEY: ${{ secrets.AMO_JWT_ISSUER }}
           WEB_EXT_API_SECRET: ${{ secrets.AMO_JWT_SECRET }}
-        # --approval-timeout: 45 min. web-ext's default is 15, and Mozilla's
-        # approval time climbed from ~2 min to past 15 over a few days in
-        # Sept 2026 — beta.69 and beta.70 both timed out and shipped an
-        # UNSIGNED zip while this step still reported success
-        # (continue-on-error). A late approval can still be attached
-        # afterwards with the "Fetch signed Firefox XPI" workflow.
-        #
-        # Pinned: `npx web-ext` would otherwise fetch whatever version is
-        # newest on npm at run time and execute it with the AMO signing
-        # credentials in its environment.
         run: |
-          npx --yes web-ext@10.7.0 sign \
+          npx --no-install web-ext sign \
             --source-dir=.output/firefox-mv2 \
             --artifacts-dir=web-ext-artifacts \
             --channel=unlisted \
             --approval-timeout=2700000
+
+      # When signing produced nothing (for example "version already exists"
+      # after a re-run, or a timeout), Mozilla may already hold a signed copy of
+      # this version: download it instead of shipping the unsigned zip.
+      - name: Fetch an already-signed Firefox add-on
+        if: steps.check.outputs.exists == 'false' && env.HAS_AMO_KEYS == 'true' && hashFiles('web-ext-artifacts/*.xpi') == ''
+        continue-on-error: true
+        env:
+          AMO_JWT_ISSUER: ${{ secrets.AMO_JWT_ISSUER }}
+          AMO_JWT_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+          VERSION: ${{ steps.version.outputs.version }}
+          OUT_DIR: web-ext-artifacts
+        run: node scripts/fetch-signed-xpi.mjs
 
       - name: Create GitHub Release
         if: steps.check.outputs.exists == 'false'
@@ -163,20 +107,19 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
+          # A semver prerelease (0.3.2-beta.0) is marked as a GitHub prerelease.
           PRERELEASE_FLAG=()
-          # A semver prerelease (e.g. 0.2.0-beta.0) always ships as a GitHub
-          # prerelease — just labels the GitHub Release itself so it doesn't
-          # show up as "Latest", independent of any store review channel.
           if [[ "$VERSION" == *-* ]]; then PRERELEASE_FLAG=(--prerelease); fi
 
-          # Prefer the signed .xpi (actually installable) over the raw zip
-          # (install-blocked by Firefox's signing requirement) whenever the
-          # sign step above actually ran and produced one.
+          # The signed .xpi when there is one; otherwise the unsigned zip.
           FIREFOX_ASSET=(.output/*-firefox.zip)
           shopt -s nullglob
           SIGNED=(web-ext-artifacts/*.xpi)
           if [ ${#SIGNED[@]} -gt 0 ]; then FIREFOX_ASSET=("${SIGNED[@]}"); fi
           shopt -u nullglob
+          if [ ${#SIGNED[@]} -eq 0 ] && [ "$HAS_AMO_KEYS" = "true" ]; then
+            echo "::warning::No signed Firefox add-on yet; shipping the unsigned zip. Run 'Fetch signed Firefox XPI' once Mozilla approves."
+          fi
 
           gh release create "v$VERSION" \
             .output/*-chrome.zip "${FIREFOX_ASSET[@]}" \

@@ -1,0 +1,6 @@
+export async function read() {
+  const id = chrome.runtime.id;
+  await browser.storage.local.get('x');
+  return storage.getItem(`local:${id}`);
+}
+export type Tab = browser.tabs.Tab;

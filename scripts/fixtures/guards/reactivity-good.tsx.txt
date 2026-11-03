@@ -1,0 +1,13 @@
+import { createSignal } from 'solid-js';
+import { configStore } from '../../../src/platform/configStore';
+
+export function Good() {
+  const [theme, setTheme] = createSignal(configStore.get('theme'));
+  const save = () => configStore.set('theme', configStore.get('theme'));
+  return (
+    <button type="button" onClick={() => setTheme(configStore.get('theme'))} title={theme()}>
+      {theme()}
+      <span onClick={save}>{'configStore.get(x) in a string'}</span>
+    </button>
+  );
+}

@@ -33,6 +33,16 @@ npm run test:e2e                # loads the built extension in real Chromium
 npm run test:replay             # replays saved real pages with recorded Google answers
 ```
 
+`npm test` also runs the guard scripts' own tests against known-bad fixtures
+(`scripts/fixtures/guards/`), so a guard that stops catching what it claims
+fails CI. `npm run test:live` calls the real free Google endpoint; the Google
+canary workflow runs it every day.
+
+**Safari:** the Xcode project in `safari/Prism/` builds from a committed copy of
+the Safari build. After any code or version change, run `npm run safari:sync`
+and commit `safari/`; CI fails when the copy is out of date, and the Safari
+workflow builds the macOS and iOS-simulator targets without signing.
+
 ## Releasing
 
 Every merge to `main` with a new version in `package.json` publishes a

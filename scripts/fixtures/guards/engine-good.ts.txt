@@ -1,0 +1,10 @@
+import { ok } from '../../../src/shared/result';
+import type { Translator } from '../../../src/engine/translator';
+
+// chrome.runtime in a comment and 'browser.storage' in a string are fine.
+const label = 'browser.storage.local';
+export function make(storage: Map<string, string>, browser: { name: string }) {
+  const config = { chrome: true, storage: 1 };
+  return { label, config, value: storage.get('k'), name: browser.name, result: ok(1) };
+}
+export type T = Translator;

@@ -1,0 +1,41 @@
+# Builds the Safari app (macOS, and iOS for the simulator) from the committed
+# Xcode project, without code signing. Signing and App Store distribution need
+# the owner's Apple account and are not done here; see safari/README.md.
+name: Safari
+
+on:
+  push:
+    branches: [main]
+    paths: ['safari/**', 'src/**', 'entrypoints/**', 'components/**', 'package.json', '.github/workflows/safari.yml']
+  pull_request:
+    paths: ['safari/**', 'src/**', 'entrypoints/**', 'components/**', 'package.json', '.github/workflows/safari.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  xcode:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: Prism (macOS)
+            sdk: macosx
+          - target: Prism (iOS)
+            sdk: iphonesimulator
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Build ${{ matrix.target }}
+        run: |
+          xcodebuild build \
+            -project safari/Prism/Prism.xcodeproj \
+            -target "${{ matrix.target }}" \
+            -sdk ${{ matrix.sdk }} \
+            -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""

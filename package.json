@@ -2,7 +2,7 @@
   "name": "prism-gen3",
   "description": "Prism — AI Page Translator (Gen 3, ground-up rewrite)",
   "private": true,
-  "version": "0.3.2-beta.1",
+  "version": "0.3.2-beta.2",
   "type": "module",
   "scripts": {
     "dev": "wxt",
@@ -47,6 +47,7 @@
     "vite": "^8.1.5",
     "vite-plugin-solid": "^2.11.14",
     "vitest": "^4.1.10",
+    "web-ext": "10.7.0",
     "wxt": "^0.21.3"
   }
 }

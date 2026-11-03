@@ -30,8 +30,8 @@ _From [senior-engineer-audit.md](senior-engineer-audit.md). The owner asked for 
 |---|---|---|
 | 2 | The reading bugs and release safety, below | **Shipped as 0.3.2-beta.0** |
 | 3 | Diary comments cut to short "why" notes (proven by identical builds); copied rules made into shared helpers | **Shipped as 0.3.2-beta.1** |
-| 4 | Release, CI and tooling hardening (tested release script, AMO duplicate handling, guard scripts, Safari/Xcode) | Next |
-| 5 | Structural refactors behind locked-down tests (split `createPageTranslator`, structured errors, one frame model, cache accounting) | |
+| 4 | Release, CI and tooling hardening (tested release script, AMO duplicate handling, guard scripts, Safari/Xcode) | **0.3.2-beta.2** |
+| 5 | Structural refactors behind locked-down tests (split `createPageTranslator`, structured errors, one frame model, cache accounting) | Next |
 | 6 | UI and iPhone redesign (popup, bubble, selection popup, Settings) | |
 | 7 | Every remaining audit finding, each fixed or closed with a reason | |
 

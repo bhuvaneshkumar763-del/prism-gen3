@@ -61,7 +61,7 @@ async function main() {
   const { AMO_JWT_ISSUER: issuer, AMO_JWT_SECRET: secret, VERSION: version, OUT_DIR: outDir = '.' } = process.env;
   if (!issuer || !secret) throw new Error('AMO_JWT_ISSUER and AMO_JWT_SECRET must both be set.');
   // Validated before use: it comes from a workflow input and ends up in a file name.
-  if (!version || !/^\d+\.\d+\.\d+(-beta\.\d+)?$/.test(version)) {
+  if (!version || !/^\d+\.\d+\.\d+(-[a-z]+\.\d+)?$/.test(version)) {
     throw new Error(`VERSION must look like 0.3.0-beta.70, got ${JSON.stringify(version)}.`);
   }
   const amoVersion = amoVersionFor(version);
