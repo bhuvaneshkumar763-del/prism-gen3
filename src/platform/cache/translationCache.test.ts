@@ -492,6 +492,294 @@ describe('translationCache', () => {
   });
 });
 
+describe('translationCache: one size total shared by every context', () => {
+  // Two cache instances on one IndexedDB stand in for two extension contexts
+  // (the background worker and the Settings page).
+  const ENTRY = 'x'.repeat(1000); // with a one-letter key, ~2002 bytes
+  beforeEach(() => {
+    globalThis.indexedDB = new IDBFactory();
+  });
+
+  it("Clear cache in another context resets this context's size total, so fresh entries aren't evicted afterwards", async () => {
+    const background = createTranslationCache(5000);
+    const settings = createTranslationCache(5000);
+    await background.set('a', ENTRY);
+    await background.set('b', ENTRY);
+
+    await settings.clear();
+
+    await background.set('c', ENTRY);
+    await background.set('d', ENTRY);
+    expect(await background.getMany(['c', 'd'])).toEqual([ENTRY, ENTRY]);
+  });
+
+  it("counts another context's writes toward the budget", async () => {
+    const first = createTranslationCache(5000);
+    const second = createTranslationCache(5000);
+    await first.set('a', ENTRY);
+    await second.set('b', ENTRY);
+    await first.set('c', ENTRY);
+
+    expect(await first.getSizeBytes()).toBeLessThanOrEqual(5000);
+    expect(await first.get('a')).toBeNull();
+    expect(await first.getMany(['b', 'c'])).toEqual([ENTRY, ENTRY]);
+  });
+
+  it('two contexts evicting at the same time delete only what the budget needs, not twice as much', async () => {
+    const seed = createTranslationCache(100_000);
+    await seed.set('a', ENTRY);
+    await seed.set('b', ENTRY);
+    await seed.set('c', ENTRY);
+    const first = createTranslationCache(100_000);
+    const second = createTranslationCache(100_000);
+    // Both contexts have seen the store before the evictions race.
+    await Promise.all([first.getSizeBytes(), second.getSizeBytes()]);
+    await first.get('zz');
+    await second.get('zz');
+
+    await Promise.all([first.evictUntilUnderBudget(4500), second.evictUntilUnderBudget(4500)]);
+
+    expect(await seed.get('a')).toBeNull();
+    expect(await seed.getMany(['b', 'c'])).toEqual([ENTRY, ENTRY]);
+  });
+
+  it('recovers from a stored size total that is too high instead of emptying the cache on every write', async () => {
+    const cache = createTranslationCache(5000);
+    await cache.set('a', ENTRY);
+    await new Promise<void>((resolve) => {
+      const request = indexedDB.open('prism-translation-cache');
+      request.onsuccess = () => {
+        const tx = request.result.transaction('meta', 'readwrite');
+        tx.objectStore('meta').put(1_000_000, 'totalBytes');
+        tx.oncomplete = () => {
+          request.result.close();
+          resolve();
+        };
+      };
+    });
+
+    await cache.set('b', ENTRY);
+    await cache.set('c', ENTRY);
+    expect(await cache.get('c')).toBe(ENTRY);
+  });
+
+  it("concurrent writes from two contexts don't lose each other's bytes", async () => {
+    const first = createTranslationCache(7000);
+    const second = createTranslationCache(7000);
+    await Promise.all([first.set('a', ENTRY), second.set('b', ENTRY)]);
+    await Promise.all([first.set('c', ENTRY), second.set('d', ENTRY)]);
+
+    // Four entries (~8008 bytes) don't fit a 7000-byte budget, whichever
+    // context wrote them.
+    const stored = (await first.getMany(['a', 'b', 'c', 'd'])).filter((v) => v !== null);
+    expect(stored.length).toBeLessThanOrEqual(3);
+  });
+});
+
+describe('translationCache: transaction failures settle', () => {
+  beforeEach(() => {
+    globalThis.indexedDB = new IDBFactory();
+  });
+
+  /** Resolves 'hung' if `promise` hasn't settled within `ms`. */
+  function settlesWithin(promise: Promise<unknown>, ms = 500): Promise<'settled' | 'hung'> {
+    return Promise.race([
+      promise.then(
+        () => 'settled' as const,
+        () => 'settled' as const,
+      ),
+      new Promise<'hung'>((resolve) => setTimeout(() => resolve('hung'), ms)),
+    ]);
+  }
+
+  /**
+   * Makes every readwrite transaction fail at commit the way a full disk
+   * does: every request succeeds, then the transaction aborts with a
+   * QuotaExceededError instead of completing.
+   */
+  function failReadwriteCommits(): void {
+    const original = IDBDatabase.prototype.transaction;
+    vi.spyOn(IDBDatabase.prototype, 'transaction').mockImplementation(function (
+      this: IDBDatabase,
+      ...args: Parameters<typeof original>
+    ) {
+      const tx = original.apply(this, args);
+      if (args[1] !== 'readwrite') return tx;
+      const quota = new DOMException('simulated: quota exceeded', 'QuotaExceededError');
+      const abortListeners: Array<(event: Event) => void> = [];
+      let onabort: ((event: Event) => void) | null = null;
+      Object.defineProperty(tx, 'oncomplete', { configurable: true, get: () => null, set: () => {} });
+      Object.defineProperty(tx, 'onabort', {
+        configurable: true,
+        get: () => onabort,
+        set: (handler) => {
+          onabort = handler;
+        },
+      });
+      let committing = false;
+      Object.defineProperty(tx, 'error', { configurable: true, get: () => (committing ? quota : null) });
+      const addEventListener = tx.addEventListener.bind(tx);
+      tx.addEventListener = ((type: string, listener: EventListenerOrEventListenerObject) => {
+        if (type === 'complete') return;
+        if (type === 'abort' && typeof listener === 'function') {
+          abortListeners.push(listener as (event: Event) => void);
+          return;
+        }
+        addEventListener(type, listener);
+      }) as typeof tx.addEventListener;
+      addEventListener('complete', () => {
+        committing = true;
+        const event = new Event('abort');
+        onabort?.call(tx, event);
+        for (const listener of abortListeners) listener(event);
+      });
+      return tx;
+    });
+  }
+
+  it('setMany() settles when the write aborts at commit (quota exceeded) instead of hanging', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const cache = createTranslationCache();
+    await cache.get('warm');
+    failReadwriteCommits();
+    try {
+      expect(await settlesWithin(cache.setMany([{ key: 'a', value: 'hola' }]))).toBe('settled');
+      expect(await settlesWithin(cache.clear())).toBe('settled');
+    } finally {
+      vi.restoreAllMocks();
+      warn.mockRestore();
+    }
+  });
+});
+
+describe('translationCache: other connections and versions', () => {
+  const DB_NAME = 'prism-translation-cache';
+  beforeEach(() => {
+    globalThis.indexedDB = new IDBFactory();
+  });
+
+  function open(
+    version: number,
+    onUpgrade?: (db: IDBDatabase) => void,
+  ): Promise<{ db: IDBDatabase | null; blocked: boolean }> {
+    return new Promise((resolve) => {
+      let blocked = false;
+      const request = indexedDB.open(DB_NAME, version);
+      request.onupgradeneeded = () => onUpgrade?.(request.result);
+      request.onblocked = () => {
+        blocked = true;
+      };
+      request.onsuccess = () => resolve({ db: request.result, blocked });
+      setTimeout(() => resolve({ db: null, blocked }), 500);
+    });
+  }
+
+  it("closes its connection when another context needs to upgrade the database, so that upgrade isn't blocked", async () => {
+    const cache = createTranslationCache();
+    await cache.set('a', 'hola');
+
+    const newer = await open(1000);
+    newer.db?.close();
+    expect(newer.blocked).toBe(false);
+    expect(newer.db).not.toBeNull();
+  });
+
+  it("doesn't hang when an older connection blocks its upgrade: reads miss and writes are dropped", async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const older = await open(1, (db) => {
+      db.createObjectStore('entries', { keyPath: 'key' }).createIndex('lastUsed', 'lastUsed');
+    });
+    // The old connection deliberately ignores versionchange.
+    if (older.db) older.db.onversionchange = null;
+    const cache = createTranslationCache();
+    try {
+      const read = cache.get('a');
+      const outcome = await Promise.race([
+        read.then((value) => ({ value })),
+        new Promise<'hung'>((resolve) => setTimeout(() => resolve('hung'), 500)),
+      ]);
+      expect(outcome).toEqual({ value: null });
+
+      // Once the old connection goes, the next call upgrades and works.
+      older.db?.close();
+      await cache.set('a', 'hola');
+      expect(await cache.get('a')).toBe('hola');
+    } finally {
+      older.db?.close();
+      warn.mockRestore();
+    }
+  });
+
+  it('keeps entries written by the previous database version and counts them toward the budget', async () => {
+    const lastUsed = Date.now();
+    const older = await open(1, (db) => {
+      const store = db.createObjectStore('entries', { keyPath: 'key' });
+      store.createIndex('lastUsed', 'lastUsed');
+      store.put({ key: 'a', value: 'x'.repeat(1000), size: 2002, lastUsed });
+      store.put({ key: 'b', value: 'y'.repeat(1000), size: 2002, lastUsed: lastUsed + 1 });
+    });
+    older.db?.close();
+
+    const cache = createTranslationCache(5000);
+    expect(await cache.get('a')).toBe('x'.repeat(1000));
+    expect(await cache.getSizeBytes()).toBe(4004);
+    await cache.set('c', 'z'.repeat(1000));
+    expect(await cache.get('a')).toBeNull();
+    expect(await cache.getMany(['b', 'c'])).toEqual(['y'.repeat(1000), 'z'.repeat(1000)]);
+  });
+});
+
+describe('translationCache: 30-day maximum entry age', () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  beforeEach(() => {
+    globalThis.indexedDB = new IDBFactory();
+  });
+
+  it('reads an entry older than 30 days as a miss', async () => {
+    const now = Date.now();
+    vi.setSystemTime(now);
+    try {
+      const cache = createTranslationCache();
+      await cache.set('a', 'hola');
+      vi.setSystemTime(now + 29 * DAY);
+      expect(await cache.get('a')).toBe('hola');
+      vi.setSystemTime(now + 31 * DAY);
+      expect(await cache.get('a')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('counts age from when the entry was written, not when it was last read', async () => {
+    const now = Date.now();
+    vi.setSystemTime(now);
+    try {
+      const cache = createTranslationCache();
+      await cache.set('a', 'hola');
+      vi.setSystemTime(now + 20 * DAY);
+      expect(await cache.get('a')).toBe('hola'); // refreshes lastUsed
+      vi.setSystemTime(now + 31 * DAY);
+      expect(await cache.get('a')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('removes expired entries on the next write even when the cache is under budget', async () => {
+    const now = Date.now();
+    vi.setSystemTime(now);
+    try {
+      const cache = createTranslationCache();
+      await cache.set('a', 'x'.repeat(1000));
+      vi.setSystemTime(now + 31 * DAY);
+      await cache.set('b', 'y'.repeat(10));
+      expect(await cache.getSizeBytes()).toBe((1 + 10) * 2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe('cacheKeyFor', () => {
   it('combines provider, language pair, and text into one key', () => {
     expect(cacheKeyFor('llm', 'en', 'es', 'hello')).toBe('llm>en>es:hello');

@@ -4,15 +4,17 @@ import {
   getAuthKeySnapshot,
   hydrateAuthKey,
 } from '../src/engine/providers/google';
-import { createProvider, type ProviderConfig } from '../src/engine/providers/registry';
-import type { PieceOutcome, TranslateBatchRequest, Translator } from '../src/engine/translator';
-import { translateOne } from '../src/engine/translator';
-import { cacheKeyFor, translationCache } from '../src/platform/cache/translationCache';
+import { createProvider } from '../src/engine/providers/registry';
+import { translationCache } from '../src/platform/cache/translationCache';
 import { configStore } from '../src/platform/configStore';
 import type { FrameLanguageDecision } from '../src/platform/messaging/protocol';
 import { onTrustedMessage, sendMessage } from '../src/platform/messaging/protocol';
 import { getActiveTabId } from '../src/platform/messaging/tabTarget';
-import { missingProviderSetup } from '../src/shared/config/providerSetup';
+import {
+  createProviderResolver,
+  translatePiecesWithCache,
+  translateTextWithProvider,
+} from '../src/platform/pieceTranslation';
 import { TOGGLE_TRANSLATE_COMMAND } from '../src/shared/shortcut';
 
 /**
@@ -51,41 +53,8 @@ function endTranslateActivity(): void {
   activeTranslateCount = Math.max(0, activeTranslateCount - 1);
 }
 
-function buildProviderConfig(): ProviderConfig {
-  const fields = {
-    googleCloudTranslateApiKey: configStore.get('googleCloudTranslateApiKey'),
-  };
-  // "Configured" is decided by the same rule the UI uses to show "needs
-  // setup" (missingProviderSetup), so the two can't disagree.
-  return {
-    google: {},
-    googleCloudTranslate:
-      missingProviderSetup('googleCloudTranslate', fields) === null
-        ? { apiKey: fields.googleCloudTranslateApiKey }
-        : undefined,
-  };
-}
-
-// Memoized per worker lifetime: the batched provider's concurrency cap and
-// in-flight dedupe live in its closure, so every tab must share one instance.
-// The fingerprint picks up settings changes (API key, provider).
-let cachedProvider: { providerId: string; fingerprint: string; provider: Translator | null } | null = null;
-
-function providerFingerprint(providerId: string, config: ProviderConfig): string {
-  return JSON.stringify(config[providerId as keyof ProviderConfig] ?? null);
-}
-
-async function resolveActiveProvider() {
-  await configStore.onReady();
-  const providerId = configStore.get('pageTranslatorProvider');
-  const config = buildProviderConfig();
-  const fingerprint = providerFingerprint(providerId, config);
-
-  if (!cachedProvider || cachedProvider.providerId !== providerId || cachedProvider.fingerprint !== fingerprint) {
-    cachedProvider = { providerId, fingerprint, provider: createProvider(providerId, config) };
-  }
-  return { providerId, provider: cachedProvider.provider };
-}
+// One resolver per worker lifetime, so every tab shares one provider instance.
+const resolveActiveProvider = createProviderResolver(configStore, createProvider);
 
 /**
  * Each tab's main-frame auto-translate decision, inherited by same-origin
@@ -120,10 +89,6 @@ async function toggleActiveTab(): Promise<void> {
     await configStore.onReady();
     await sendMessage('pageTranslate', { targetLanguage: configStore.get('targetLanguage') }, tabId);
   }
-}
-
-function unavailableMessage(providerId: string): string {
-  return `[${providerId}] not configured or unavailable`;
 }
 
 /**
@@ -181,11 +146,7 @@ export default defineBackground(() => {
   onTrustedMessage('translateText', async (message) => {
     beginTranslateActivity();
     try {
-      const { providerId, provider } = await resolveActiveProvider();
-      if (!provider) {
-        return { ok: false, error: { kind: 'network', message: unavailableMessage(providerId) } };
-      }
-      return await translateOne(provider, message.data.text, message.data.sourceLanguage, message.data.targetLanguage);
+      return await translateTextWithProvider(resolveActiveProvider, message.data);
     } finally {
       endTranslateActivity();
     }
@@ -194,117 +155,16 @@ export default defineBackground(() => {
   onTrustedMessage('translatePieces', async (message) => {
     beginTranslateActivity();
     try {
-      return await translatePiecesWithCache(message.data, message.sender);
+      return await translatePiecesWithCache(message.data, message.sender, {
+        resolveProvider: resolveActiveProvider,
+        config: configStore,
+        cache: translationCache,
+        sendProgress: (data, target) => sendMessage('translatePiecesProgress', data, target),
+      });
     } finally {
       endTranslateActivity();
     }
   });
-
-  async function translatePiecesWithCache(
-    data: TranslateBatchRequest & { requestId: number },
-    sender: Browser.runtime.MessageSender,
-  ): Promise<PieceOutcome[]> {
-    const { providerId, provider } = await resolveActiveProvider();
-    const { sourceLanguage, targetLanguage, pieces, dontSortResults, requestId } = data;
-
-    if (!provider) {
-      const error = { kind: 'network' as const, message: unavailableMessage(providerId) };
-      return pieces.map(() => ({ ok: false, error }));
-    }
-
-    // One worker serves normal and incognito windows ("spanning" mode), so an
-    // incognito translate skips the cache entirely: it neither writes page text
-    // into the normal profile's IndexedDB nor reads from it.
-    const cacheEnabled = configStore.get('translationCacheEnabled') && !sender.tab?.incognito;
-    const pieceKeys = pieces.map((piece) =>
-      cacheKeyFor(providerId, sourceLanguage, targetLanguage, JSON.stringify(piece)),
-    );
-    // The cache is only an optimization: a failed read or unparseable entry is
-    // a miss, and a failed write is a no-op. getMany() reads every key in one
-    // IndexedDB transaction.
-    const rawCachedValues = cacheEnabled
-      ? await translationCache.getMany(pieceKeys).catch((e) => {
-          console.warn('[prism] translation cache read failed, treating every piece as a cache miss', e);
-          return pieces.map(() => null);
-        })
-      : pieces.map(() => null);
-    const cachedValues: Array<string[] | null> = rawCachedValues.map((raw) => {
-      if (raw === null) return null;
-      try {
-        return JSON.parse(raw) as string[];
-      } catch (e) {
-        console.warn('[prism] cached entry failed to parse, treating as a cache miss', e);
-        return null;
-      }
-    });
-
-    const missingIndices: number[] = [];
-    pieces.forEach((_, i) => {
-      if (cachedValues[i] === null) missingIndices.push(i);
-    });
-
-    let freshOutcomes: PieceOutcome[] = [];
-    if (missingIndices.length > 0) {
-      const missingPieces = missingIndices
-        .map((i) => pieces[i])
-        .filter((p): p is (typeof pieces)[number] => p !== undefined);
-      // Streams each fresh piece back to the requesting frame as it resolves
-      // (a callback can't cross the messaging boundary; see remoteTranslator.ts).
-      // `missingIndices` maps it back to the original request's index.
-      // Best-effort: the returned outcomes still carry every piece.
-      const tabId = sender.tab?.id;
-      freshOutcomes = await provider.translateBatch({
-        sourceLanguage,
-        targetLanguage,
-        pieces: missingPieces,
-        dontSortResults,
-        onPieceComplete:
-          tabId === undefined
-            ? undefined
-            : (missingIdx, outcome) => {
-                const index = missingIndices[missingIdx];
-                if (index === undefined) return;
-                void sendMessage(
-                  'translatePiecesProgress',
-                  { requestId, index, outcome },
-                  { tabId, frameId: sender.frameId },
-                ).catch(() => {
-                  // Tab/frame gone; the final reply still carries this piece.
-                });
-              },
-      });
-    }
-
-    // O(1) lookup per piece instead of indexOf(); on a cold or disabled cache
-    // every piece is missing.
-    const missingIdxByPiece = new Map(missingIndices.map((i, idx) => [i, idx]));
-
-    const outcomes: PieceOutcome[] = pieces.map((_, i) => {
-      const cached = cachedValues[i];
-      if (cached !== null && cached !== undefined) return { ok: true, value: cached };
-      const missingIdx = missingIdxByPiece.get(i);
-      const fresh = missingIdx !== undefined ? freshOutcomes[missingIdx] : undefined;
-      return fresh ?? { ok: false, error: { kind: 'parse', message: 'no result for this piece' } };
-    });
-
-    if (cacheEnabled) {
-      // setMany(): one transaction and one eviction pass for all fresh pieces.
-      const freshEntries = missingIndices
-        .map((i, idx) => {
-          const outcome = freshOutcomes[idx];
-          const key = pieceKeys[i];
-          return outcome?.ok && key ? { key, value: JSON.stringify(outcome.value) } : null;
-        })
-        .filter((e): e is { key: string; value: string } => e !== null);
-      // Not awaited: the reply the page is waiting on shouldn't sit behind the
-      // IndexedDB commit and eviction (a full store scan on a cold worker).
-      void translationCache.setMany(freshEntries).catch((e) => {
-        console.warn('[prism] translation cache write failed, continuing without caching these pieces', e);
-      });
-    }
-
-    return outcomes;
-  }
 
   // Context-menu items outlive the worker, which re-runs this file on every
   // wake, so they're created only on install/update. Reading lastError
