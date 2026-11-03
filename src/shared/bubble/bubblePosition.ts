@@ -7,8 +7,8 @@
  * pinned to an edge whatever the viewport size or orientation.
  */
 
-export const BALL_SIZE = 40;
-export const DRAG_THRESHOLD_PX = 4;
+export const BALL_SIZE = 44;
+export const DRAG_THRESHOLD_PX = 10;
 export const LONG_PRESS_MS = 450;
 const PANEL_EDGE_GAP = 8;
 const PANEL_BALL_GAP = 10;

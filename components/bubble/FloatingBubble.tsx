@@ -24,6 +24,7 @@ import {
 } from '../../src/shared/config/listMutations';
 import { missingProviderSetup, type ProviderSetupFields } from '../../src/shared/config/providerSetup';
 import {
+  clearBubbleOverrideForHost,
   resolveSourceLanguageForHost,
   setBubbleVisibilityForHost,
   setSourceLanguageForHost,
@@ -33,6 +34,7 @@ import { TRANSLATE_ICON_PATH } from '../../src/shared/ui/icons';
 import { canHover } from '../../src/shared/ui/pointer';
 import { viewportSize } from '../../src/shared/ui/viewport';
 import type { BubbleViewState } from './bubbleState';
+import { showHideUndoToast } from './hideUndoToast';
 
 /**
  * The always-on floating translate bubble: draggable, edge-docked, with a
@@ -106,17 +108,27 @@ export function FloatingBubble(props: FloatingBubbleProps) {
   // stays pinned to a screen edge regardless of viewport size, device, or
   // orientation, instead of drifting off-edge on resize/rotation.
   let dockState: BubblePosition = normalizeBubblePosition(configStore.get('bubblePosition'));
+  /** The wrap's position in layout-viewport (`position: fixed`) coordinates. */
   let pos: Point = { x: 0, y: 0 };
 
+  /**
+   * Geometry is worked out inside the visible (visual) viewport, then shifted
+   * by its offset, so pinch-zoom can't push the ball off screen; the ball
+   * shrinks by the zoom so it stays the same size on screen.
+   */
+  type VisibleArea = ReturnType<typeof viewportSize>;
+  const ballSizeIn = (v: VisibleArea) => BALL_SIZE / Math.max(1, v.scale);
+
   function positionPanelNow(): void {
+    const v = viewportSize();
     const r = ball.getBoundingClientRect();
     const point = computePanelPosition({
-      ballRect: { left: r.left, top: r.top, width: r.width, height: r.height },
+      ballRect: { left: r.left - v.offsetLeft, top: r.top - v.offsetTop, width: r.width, height: r.height },
       panelSize: { width: panel.offsetWidth, height: panel.offsetHeight },
-      viewport: viewportSize(),
+      viewport: v,
     });
-    panel.style.left = `${point.x}px`;
-    panel.style.top = `${point.y}px`;
+    panel.style.left = `${point.x + v.offsetLeft}px`;
+    panel.style.top = `${point.y + v.offsetTop}px`;
   }
 
   /** Open by any of its three routes: pinned (long-press/ArrowDown), hovered, or holding keyboard focus. */
@@ -124,11 +136,21 @@ export function FloatingBubble(props: FloatingBubbleProps) {
     return pinned() || (canHover() && wrap.matches(':hover')) || panel.matches(':focus-within');
   }
 
-  function applyState(): Point {
-    const point = resolveDockedPoint(dockState, viewportSize(), BALL_SIZE);
+  /** Places the wrap at `local` (a point in the visible area) and returns its fixed position. */
+  function placeWrap(local: Point, v: VisibleArea, size: number): Point {
+    const point = { x: local.x + v.offsetLeft, y: local.y + v.offsetTop };
     wrap.style.left = `${point.x}px`;
     wrap.style.top = `${point.y}px`;
-    wrap.classList.toggle('right', isRightEdge(point.x, viewportSize().width, BALL_SIZE));
+    wrap.style.width = `${size}px`;
+    wrap.style.height = `${size}px`;
+    wrap.classList.toggle('right', isRightEdge(local.x, v.width, size));
+    return point;
+  }
+
+  function applyState(): Point {
+    const v = viewportSize();
+    const size = ballSizeIn(v);
+    const point = placeWrap(resolveDockedPoint(dockState, v, size), v, size);
     // Measuring the panel forces layout, so only do it while it's showing;
     // every way of opening it re-measures right before it appears.
     if (isPanelOpen()) positionPanelNow();
@@ -136,10 +158,10 @@ export function FloatingBubble(props: FloatingBubbleProps) {
   }
 
   function previewAt(x: number, y: number): Point {
-    const point = clampDragPoint({ x, y }, viewportSize(), BALL_SIZE);
-    wrap.style.left = `${point.x}px`;
-    wrap.style.top = `${point.y}px`;
-    wrap.classList.toggle('right', isRightEdge(point.x, viewportSize().width, BALL_SIZE));
+    const v = viewportSize();
+    const size = ballSizeIn(v);
+    const local = clampDragPoint({ x: x - v.offsetLeft, y: y - v.offsetTop }, v, size);
+    const point = placeWrap(local, v, size);
     positionPanelNow();
     return point;
   }
@@ -172,12 +194,26 @@ export function FloatingBubble(props: FloatingBubbleProps) {
     }
   }
 
+  let nudgeTimer: ReturnType<typeof setTimeout> | null = null;
+  /** A short pulse, so a tap that can't act right now still visibly landed. */
+  function nudge(): void {
+    ball.classList.remove('nudge');
+    void ball.offsetWidth; // restarts the animation on a repeat tap
+    ball.classList.add('nudge');
+    if (nudgeTimer) clearTimeout(nudgeTimer);
+    nudgeTimer = setTimeout(() => ball.classList.remove('nudge'), 400);
+  }
+
   let actionBusy = false;
   function toggleTranslate(): void {
     // actionBusy (600ms) stops a double tap; props.state.busy covers a long
     // translation. The ball can't use `disabled` like .primary does, because
     // that would also block its drag handlers.
-    if (actionBusy || props.state.busy) return;
+    if (props.state.busy) {
+      nudge();
+      return;
+    }
+    if (actionBusy) return;
     actionBusy = true;
     setTimeout(() => {
       actionBusy = false;
@@ -210,6 +246,7 @@ export function FloatingBubble(props: FloatingBubbleProps) {
       // Right-click and other non-primary buttons are not a translate gesture;
       // touch and pen report button 0, so they still work.
       if (e.button !== 0) return;
+      undim();
       dragging = true;
       moved = false;
       longPressFired = false;
@@ -250,7 +287,8 @@ export function FloatingBubble(props: FloatingBubbleProps) {
       }
       if (moved) {
         const previousDockState = dockState;
-        dockState = positionFromDragPoint(pos, viewportSize(), BALL_SIZE);
+        const v = viewportSize();
+        dockState = positionFromDragPoint({ x: pos.x - v.offsetLeft, y: pos.y - v.offsetTop }, v, ballSizeIn(v));
         pos = applyState();
         configStore.set('bubblePosition', dockState).catch(() => {
           // Save failed: revert to the last persisted position rather than
@@ -285,11 +323,62 @@ export function FloatingBubble(props: FloatingBubbleProps) {
     ball.addEventListener('pointermove', onPointerMove);
     ball.addEventListener('pointerup', onPointerUp);
     ball.addEventListener('pointercancel', onPointerCancel);
+    // The ball's tap is handled on pointerup; its click must not reach the page.
+    const onBallClick = (e: MouseEvent) => e.stopPropagation();
+    ball.addEventListener('click', onBallClick);
+
+    // A tap outside closes a pinned panel. On reader sites that same tap would
+    // also turn the page, so the rest of that one gesture is kept from the page.
+    // Window capture runs before the page's own document and element listeners.
+    let swallowing = false;
+    let swallowTimer: ReturnType<typeof setTimeout> | null = null;
+    const stopSwallowing = () => {
+      swallowing = false;
+      if (swallowTimer) clearTimeout(swallowTimer);
+      swallowTimer = null;
+    };
+    const swallow = (e: Event) => {
+      if (!swallowing) return;
+      e.stopImmediatePropagation();
+      // touchstart isn't cancelled, so a gesture that turns into a scroll still scrolls.
+      if (e.cancelable && e.type !== 'touchstart') e.preventDefault();
+      if (e.type === 'click') {
+        stopSwallowing();
+      } else if (['pointerup', 'pointercancel', 'touchend', 'touchcancel'].includes(e.type)) {
+        // The click, if any, follows the gesture's end; a scroll produces none.
+        if (swallowTimer) clearTimeout(swallowTimer);
+        swallowTimer = setTimeout(stopSwallowing, 700);
+      }
+    };
+    const SWALLOWED = ['pointerup', 'pointercancel', 'mousedown', 'mouseup', 'click', 'touchend', 'touchcancel'];
+    for (const type of SWALLOWED) window.addEventListener(type, swallow, true);
+    window.addEventListener('touchstart', swallow, { capture: true, passive: true });
 
     const onDocPointerDown = (e: PointerEvent) => {
-      if (pinned() && !e.composedPath().includes(props.shadowHost)) setPinned(false);
+      if (swallowing) stopSwallowing();
+      if (!pinned() || e.composedPath().includes(props.shadowHost)) return;
+      setPinned(false);
+      swallowing = true;
+      e.stopImmediatePropagation();
     };
-    document.addEventListener('pointerdown', onDocPointerDown, true);
+    window.addEventListener('pointerdown', onDocPointerDown, true);
+
+    // Faded, not docked half off-screen: the ball keeps its full touch target
+    // and drag geometry, and stops hiding the line being read. A touch brings it back.
+    // Scrolling is read from the user's gesture, not `scroll`, which also fires
+    // when translated text reflows the page.
+    let dimmed = false;
+    const onPageScroll = (e: Event) => {
+      if (dimmed || e.composedPath().includes(props.shadowHost) || isPanelOpen()) return;
+      dimmed = true;
+      wrap.classList.add('dim');
+    };
+    function undim(): void {
+      dimmed = false;
+      wrap.classList.remove('dim');
+    }
+    const SCROLL_GESTURES = ['touchmove', 'wheel'];
+    for (const type of SCROLL_GESTURES) document.addEventListener(type, onPageScroll, { capture: true, passive: true });
 
     const onKeydown = (e: KeyboardEvent) => {
       if (!e.isTrusted) return;
@@ -360,7 +449,13 @@ export function FloatingBubble(props: FloatingBubbleProps) {
       ball.removeEventListener('pointermove', onPointerMove);
       ball.removeEventListener('pointerup', onPointerUp);
       ball.removeEventListener('pointercancel', onPointerCancel);
-      document.removeEventListener('pointerdown', onDocPointerDown, true);
+      ball.removeEventListener('click', onBallClick);
+      for (const type of SWALLOWED) window.removeEventListener(type, swallow, true);
+      window.removeEventListener('touchstart', swallow, true);
+      window.removeEventListener('pointerdown', onDocPointerDown, true);
+      if (swallowTimer) clearTimeout(swallowTimer);
+      if (nudgeTimer) clearTimeout(nudgeTimer);
+      for (const type of SCROLL_GESTURES) document.removeEventListener(type, onPageScroll, true);
       ball.removeEventListener('keydown', onKeydown);
       wrap.removeEventListener('keydown', onWrapKeydown);
       wrap.removeEventListener('focusout', onWrapFocusOut);
@@ -411,11 +506,25 @@ export function FloatingBubble(props: FloatingBubbleProps) {
   function onHideClick(e: MouseEvent): void {
     if (!e.isTrusted) return;
     e.stopPropagation();
+    const hostname = props.hostname;
+    const before = configStore.get('bubbleByHost');
+    const previous = Object.hasOwn(before, hostname) ? before[hostname] : undefined;
     // onClose() hides the bubble now regardless; a failed persist only means
     // it can reappear on the next page load, so there is nothing to roll back.
     configStore
-      .set('bubbleByHost', setBubbleVisibilityForHost(configStore.get('bubbleByHost'), props.hostname, false))
+      .set('bubbleByHost', setBubbleVisibilityForHost(before, hostname, false))
       .catch((e2) => console.warn('[prism] failed to save bubble-hidden preference', e2));
+    // Undo puts back only this site's entry, keeping changes made meanwhile to others.
+    showHideUndoToast(() => {
+      const current = configStore.get('bubbleByHost');
+      const restored =
+        previous === undefined
+          ? clearBubbleOverrideForHost(current, hostname)
+          : setBubbleVisibilityForHost(current, hostname, previous);
+      configStore
+        .set('bubbleByHost', restored)
+        .catch((e2) => console.warn('[prism] failed to restore the bubble on this site', e2));
+    });
     props.onClose();
   }
 
