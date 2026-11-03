@@ -2,7 +2,7 @@
 
 _2026-11-01 · from Prism 0.3.0-beta.70 (commit fed8806) · cut down for personal use the same day_
 
-**Status: Release 1 shipped as 0.3.0-beta.71; N-1 to N-3 shipped as 0.3.0-beta.72; the sangtacviet fixes, the untranslated warning and the LLM removal shipped as 0.3.0-beta.73. Next: [The plan from here](#the-plan-from-here-2026-11-02).** The rest of the plan was cut down after Release 1. Prism is for personal use only. There are no other users and no store audience, and no new translation providers are planned. So the original plan's store, launch, branch-protection, i18n, new-provider and LLM-hardening work is dropped (see [Dropped](#dropped)).
+**Status: Release 1 shipped as 0.3.0-beta.71; N-1 to N-3 shipped as 0.3.0-beta.72; the sangtacviet fixes, the untranslated warning and the LLM removal shipped as 0.3.0-beta.73. 0.3.1 shipped 2026-11-02. Next: [The current programme](#the-current-programme-from-2026-11-03).** The rest of the plan was cut down after Release 1. Prism is for personal use only. There are no other users and no store audience, and no new translation providers are planned. So the original plan's store, launch, branch-protection, i18n, new-provider and LLM-hardening work is dropped (see [Dropped](#dropped)).
 
 The plan came from three reports:
 - [prism-self-audit.md](prism-self-audit.md): the line-by-line read and history, with 13 defects checked by hand
@@ -21,6 +21,42 @@ The plan came from three reports:
 Sizes: S is under an hour, M is half a day, L is several days.
 
 ---
+
+## The current programme (from 2026-11-03)
+
+_From [senior-engineer-audit.md](senior-engineer-audit.md). The owner asked for every audit item to be scheduled, safest first. **This replaces "Not part of the plan" below.** Each release is its own PR and beta, gets checked on the iPhone, and goes stable before the next one starts. If a release breaks reading, go back to the last good release on GitHub Releases and fix that first._
+
+| Release | Content | Status |
+|---|---|---|
+| **2 (0.3.2)** | The reading bugs and release safety, below | **In progress** |
+| 3 (0.3.3) | Diary comments cut to short "why" notes (proven by identical builds); copied rules made into shared helpers | Next |
+| 4 (0.3.4) | Release, CI and tooling hardening (tested release script, AMO duplicate handling, guard scripts, Safari/Xcode) | |
+| 5 (0.3.5) | Structural refactors behind locked-down tests (split `createPageTranslator`, structured errors, one frame model, cache accounting) | |
+| 6 (0.3.6) | UI and iPhone redesign (popup, bubble, selection popup, Settings) | |
+| 7 (0.3.7) | Every remaining audit finding, each fixed or closed with a reason | |
+
+The detail for every release is in [release-programme.md](release-programme.md).
+
+### Release 2 (0.3.2)
+
+**Reading bugs**
+- [x] Doubled brackets: `（本章完）` came out `（(End of this chapter)` (`boundaryText.ts`). Confirmed on a real page: 18 lines of the saved sangtacviet search page were fixed.
+- [ ] ~~Short Vietnamese lines echoed back unchanged count as untranslated~~ — **moved to Release 5.** The "four or more words" rule broke two saved real pages: sangtacviet's genre label "Kỳ Môn Bí Thuật" is four words Google rightly leaves alone, and pixiv's English "iPad drawing app Pastela" was detected as Tagalog. It needs the realistic Google fake and a saved chapter first.
+- [x] A word-per-element chapter is sent whole in one tick instead of cut every 300 words (`translateLoop.ts`).
+- [x] No false "N% came back untranslated" on word-per-element chapters (`translateLoop.ts`).
+- [x] A tap on the bubble while its panel is open closes the panel instead of switching the page back (`FloatingBubble.tsx`).
+
+**iPhone and misleading settings**
+- [x] 16px picker text on touch screens, so iOS doesn't zoom.
+- [x] Picking a provider that still needs its key no longer switches to it; Settings opens instead (bubble and popup).
+- [x] "Source language" is now labeled as the selected-text setting it is; the paragraph switch says it carries sangtacviet's word joining.
+
+**Release safety**
+- [x] One shared manifest-version rule (`src/shared/manifestVersion.ts`): stable releases now sort above their own betas.
+- [x] Daily live check of free Google (`npm run test:live`, `.github/workflows/google-canary.yml`).
+- [x] Session rules at the top of `CLAUDE.md`.
+
+**Release:** 0.3.2-beta.0, then the owner's iPhone check, then 0.3.2.
 
 ## The plan from here (2026-11-02)
 

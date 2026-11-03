@@ -347,7 +347,7 @@ function App() {
               </select>
             </label>
             <label class="field">
-              <span>Source language</span>
+              <span>Source language for selected text</span>
               <select
                 value={settings.sourceLanguage}
                 onChange={(e) => void setField('sourceLanguage', e.currentTarget.value)}
@@ -355,6 +355,10 @@ function App() {
                 <option value="auto">Detect automatically</option>
                 <For each={COMMON_LANGUAGES}>{(l) => <option value={l.code}>{l.name}</option>}</For>
               </select>
+              <small class="hint">
+                Page translation detects the language by itself. If it guesses wrong on a site, set it with the bubble's
+                From picker.
+              </small>
             </label>
             <StringListEditor
               label="Preferred target languages"
@@ -539,8 +543,9 @@ function App() {
                 onChange={(e) => void setField('groupParagraphs', e.currentTarget.checked)}
               />
               <span>
-                Translate each paragraph as a whole, for better sentence context (turn this off if a page comes out with
-                words moved between links or styled text, or chips and tags run together)
+                Translate each paragraph as a whole, for better sentence context. Leave this on for sites that wrap
+                every word separately, like sangtacviet: turning it off translates those word by word. Turn it off only
+                if a page comes out with words moved between links or styled text, or chips and tags run together.
               </span>
             </label>
           </section>

@@ -14,6 +14,21 @@ extension and its health.
 The original 10-session Gen 3 build plan lived outside this repo and is
 finished; its history is in the `/current-status` skill.
 
+## Rules for every session
+
+1. **Work only from the current release in `docs/reports/fix-plan.md`.**
+   Nothing outside it unless the owner reports a bug.
+2. **A failing test before every fix.** Show it failing, then passing. When
+   the bug is page-specific, make it a replay case (`tests/replay/`).
+3. **No history in comments.** A comment says why the code is the way it is
+   now, in 1–3 lines. Incidents, beta numbers and "found via audit" go in
+   the changeset, never in the code.
+4. **Through a pull request, never straight to `main`.** One release per
+   batch, checked on a real page first; the changelog entry's
+   `Checked on: <page>, <browser>, <date>` line records where.
+5. **The owner can't read code.** Say in plain words what changed and how to
+   check it on the iPhone.
+
 ## Why this repo exists (short version)
 
 _Moved to `.claude/skills/why-this-repo-exists-short-version/SKILL.md` — load via `/why-this-repo-exists-short-version`._

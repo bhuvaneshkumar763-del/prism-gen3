@@ -555,6 +555,12 @@ describe('FloatingBubble', () => {
     });
   });
 
+  describe('touch pickers', () => {
+    it('uses 16px picker text on touch screens, so iOS does not zoom the page when a picker is tapped', () => {
+      expect(BUBBLE_STYLES).toMatch(/@media \(hover: none\)\s*\{\s*\.sel \{\s*font-size: 16px;/);
+    });
+  });
+
   describe('provider setup — UI audit', () => {
     beforeEach(async () => {
       await configStore.set('googleCloudTranslateApiKey', '');
@@ -585,6 +591,17 @@ describe('FloatingBubble', () => {
       select.value = 'googleCloudTranslate';
       select.dispatchEvent(trusted(new Event('change', { bubbles: true })));
       expect(onTranslate).not.toHaveBeenCalled();
+    });
+
+    it('does not switch to an unconfigured provider — every page would fail until its key was entered', async () => {
+      const { el } = mount();
+      const select = serviceSelect(el);
+      select.value = 'googleCloudTranslate';
+      select.dispatchEvent(trusted(new Event('change', { bubbles: true })));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(configStore.get('pageTranslatorProvider')).toBe('google');
+      expect(select.value).toBe('google');
     });
 
     it("handles a failure to open Settings instead of leaving an unhandled rejection — real bug, caught by CI: the message was fired with `void`, so when nothing answered (here, no background; in real use a restarting service worker or an extension context invalidated by an update) the rejection went unhandled, which on a real page is an 'Uncaught (in promise)' error in the site's own console", async () => {
@@ -679,6 +696,39 @@ describe('FloatingBubble', () => {
 
       expect(panel.classList.contains('pinned')).toBe(true);
       expect(onTranslate).not.toHaveBeenCalled();
+    });
+
+    it('a tap on the ball while its panel is pinned open closes the panel instead of toggling translation', () => {
+      vi.useFakeTimers();
+      const onTranslate = vi.fn();
+      const { el } = mount({ onTranslate });
+      const ball = el.querySelector('.ball') as HTMLButtonElement;
+      const panel = el.querySelector('.panel') as HTMLElement;
+      const press = (type: string) =>
+        ball.dispatchEvent(
+          trusted(
+            new PointerEvent(type, {
+              bubbles: true,
+              composed: true,
+              pointerId: 1,
+              button: 0,
+              clientX: 10,
+              clientY: 10,
+            }),
+          ),
+        );
+
+      press('pointerdown');
+      vi.advanceTimersByTime(LONG_PRESS_MS + 1);
+      press('pointerup');
+      expect(panel.classList.contains('pinned')).toBe(true);
+
+      press('pointerdown');
+      press('pointerup');
+
+      expect(panel.classList.contains('pinned')).toBe(false);
+      expect(onTranslate).not.toHaveBeenCalled();
+      vi.useRealTimers();
     });
 
     it('right-click does not toggle translation', () => {

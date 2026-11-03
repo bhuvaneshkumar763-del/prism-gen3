@@ -321,6 +321,11 @@ function wordElementOf(node: Text, memo: Map<Element, boolean>): Element | null 
   return isWordContainer(el.parentElement, memo) ? el : null;
 }
 
+/** True when `node` is one word of word-per-element markup (a chapter that wraps every word in its own element). */
+export function isWordElementText(node: Text): boolean {
+  return wordElementOf(node, new Map()) !== null;
+}
+
 /** True if `b` directly follows `a` with only letterless text (spaces, punctuation) between them — a `<br>` or any other element ends the paragraph. */
 function continuesWordRun(a: Element, b: Element): boolean {
   if (a.parentElement !== b.parentElement) return false;

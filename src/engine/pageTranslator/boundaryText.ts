@@ -1,9 +1,30 @@
 /**
- * Language-specific opening marks. The source's leading run is only carried
- * up to the first of these, so a source `¿` or `«` never gets forced onto a
- * translation whose own language puts (or omits) that mark differently.
+ * Opening marks. The source's leading run is only carried up to the first of
+ * these, so a source `¿` or `（` never gets forced onto a translation that
+ * writes (or omits) its own form of that mark.
  */
-const NOT_CARRIED = new Set(['¿', '¡', '«', '‹', '「', '『', '„', '“', '‘', '〈', '《']);
+const NOT_CARRIED = new Set([
+  '¿',
+  '¡',
+  '«',
+  '‹',
+  '「',
+  '『',
+  '„',
+  '“',
+  '‘',
+  '〈',
+  '《',
+  '（',
+  '【',
+  '〔',
+  '〖',
+  '［',
+  '｛',
+  '(',
+  '[',
+  '{',
+]);
 
 /** Marks that close the previous sentence or clause, in any script. */
 const LEADING_CLOSING_MARK = /^[.,;:!?)\]}»」』。，、！？；：…]/u;

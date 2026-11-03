@@ -297,7 +297,9 @@ export function FloatingBubble(props: FloatingBubbleProps) {
         });
       } else if (!longPressFired) {
         // A long-press already opened the panel; releasing it must not also translate.
-        toggleTranslate();
+        // With the panel pinned open, a tap on the ball closes it.
+        if (pinned()) setPinned(false);
+        else toggleTranslate();
       }
     };
     /**
@@ -328,7 +330,7 @@ export function FloatingBubble(props: FloatingBubbleProps) {
     ball.addEventListener('pointercancel', onPointerCancel);
 
     const onDocPointerDown = (e: PointerEvent) => {
-      if (pinned() && e.target !== props.shadowHost) setPinned(false);
+      if (pinned() && !e.composedPath().includes(props.shadowHost)) setPinned(false);
     };
     document.addEventListener('pointerdown', onDocPointerDown, true);
 
@@ -521,19 +523,21 @@ export function FloatingBubble(props: FloatingBubbleProps) {
   function onServiceChange(e: Event): void {
     if (!e.isTrusted) return;
     e.stopPropagation();
-    const id = (e.currentTarget as HTMLSelectElement).value as ProviderId;
+    const select = e.currentTarget as HTMLSelectElement;
+    const id = select.value as ProviderId;
     const previous = service();
+    // A provider that still needs setup is not switched to (every page would
+    // fail until its key is entered); Settings opens where it is set up.
+    if (providerGaps(id)) {
+      select.value = previous;
+      openSettings('page');
+      return;
+    }
     configStore.set('pageTranslatorProvider', id).catch((e2) => {
       console.warn('[prism] failed to save translation service', e2);
       setServiceSignal(previous);
     });
     setServiceSignal(id);
-    // A provider that still needs setup opens Settings at its fields instead
-    // of retranslating straight into a failure — see missingProviderSetup.
-    if (providerGaps(id)) {
-      openSettings('page');
-      return;
-    }
     props.onTranslate(targetLanguage());
   }
 

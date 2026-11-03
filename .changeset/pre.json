@@ -1,0 +1,8 @@
+{
+  "mode": "pre",
+  "tag": "beta",
+  "initialVersions": {
+    "prism-gen3": "0.3.1"
+  },
+  "changesets": ["release-2-audit-batch"]
+}
