@@ -109,8 +109,13 @@ final class PrismSimChecks: XCTestCase {
         add(attachment)
     }
 
+    /// Settings rows' stable identifiers, where the label alone is ambiguous or may change.
+    static let rowIdentifiers = ["Apps": "com.apple.settings.apps"]
+
     func visibleRow(_ title: String, in app: XCUIApplication) -> XCUIElement? {
-        for query in [app.cells[title], app.staticTexts[title], app.buttons[title]] {
+        var queries = [app.cells[title], app.staticTexts[title], app.buttons[title]]
+        if let id = Self.rowIdentifiers[title] { queries.insert(app.buttons[id], at: 0) }
+        for query in queries {
             let element = query.firstMatch
             if element.exists && element.isHittable { return element }
         }
@@ -167,9 +172,9 @@ final class PrismSimChecks: XCTestCase {
         if visibleRow("Prism", in: settings) == nil {
             settings.terminate()
             settings.launch()
-            // iOS 18 and later list Safari under Apps; earlier versions at the top level.
-            if settings.staticTexts["Apps"].waitForExistence(timeout: 5) {
-                tapRow("Apps", in: settings)
+            // iOS 18 and later list Safari under Apps, below the first screen; earlier
+            // versions list it at the top level.
+            if tapRow("Apps", in: settings, required: false) {
                 shot("settings-apps")
             }
             tapRow("Safari", in: settings)
