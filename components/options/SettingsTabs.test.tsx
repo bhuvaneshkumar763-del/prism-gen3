@@ -71,7 +71,7 @@ describe('PageTranslationTab', () => {
   });
 });
 
-describe('PageTranslationTab', () => {
+describe('PageTranslationTab source-language list', () => {
   it('shows per-site source-language overrides by language name', () => {
     const { el } = mountTab(PageTranslationTab, { sourceLanguageByHost: { 'example.com': 'zh-CN' } });
     expect(el.querySelector('.siteTable')?.textContent).toContain('Chinese (Simplified)');

@@ -181,6 +181,7 @@ try {
     try {
       await page.goto(`chrome-extension://${extId}/${entry}`, { waitUntil: 'load', timeout: 10_000 });
       await page.waitForTimeout(300);
+      // biome-ignore lint/performance/useDomNodeTextContent: rendered text is the point; a page that renders blank fails.
       const bodyText = await page.locator('body').innerText();
       if (!bodyText.trim()) pageErrors.push('body rendered empty');
       if (check) {
