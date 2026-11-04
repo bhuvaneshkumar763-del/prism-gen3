@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { baseLanguageTag, COMMON_LANGUAGES, languageName, translationDirection } from './languages';
+import { baseLanguageTag, COMMON_LANGUAGES, languageName, sameLanguage, translationDirection } from './languages';
 
 describe('languageName', () => {
   it('returns the display name for a known code', () => {
@@ -69,5 +69,27 @@ describe('translationDirection', () => {
   it('says nothing for a page already in the target language — "English → English" is noise', () => {
     expect(translationDirection('en', 'en')).toBeNull();
     expect(translationDirection('en-GB', 'en')).toBeNull();
+  });
+
+  it('names a Simplified-to-Traditional Chinese translation instead of calling it the same language', () => {
+    expect(translationDirection('zh-CN', 'zh-TW')).not.toBeNull();
+  });
+});
+
+describe('sameLanguage', () => {
+  it('matches regional variants and legacy codes of one language', () => {
+    expect(sameLanguage('pt-BR', 'pt')).toBe(true);
+    expect(sameLanguage('iw', 'he-IL')).toBe(true);
+    expect(sameLanguage('en', 'fr')).toBe(false);
+  });
+  it('keeps Simplified and Traditional Chinese apart, whichever way the script is written', () => {
+    expect(sameLanguage('zh-CN', 'zh-TW')).toBe(false);
+    expect(sameLanguage('zh-Hans', 'zh-Hant-TW')).toBe(false);
+    expect(sameLanguage('zh-CN', 'zh-Hans')).toBe(true);
+    expect(sameLanguage('zh-TW', 'zh-HK')).toBe(true);
+  });
+  it('lets a plain zh match either script, since it names no script', () => {
+    expect(sameLanguage('zh', 'zh-CN')).toBe(true);
+    expect(sameLanguage('zh-TW', 'zh')).toBe(true);
   });
 });

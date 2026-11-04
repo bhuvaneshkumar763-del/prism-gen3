@@ -5,6 +5,8 @@
  * patch, and every UI surface goes through it.
  */
 
+import { languageKey, sameLanguage } from '../languages';
+
 export interface ListsSnapshot {
   alwaysTranslateSites: string[];
   neverTranslateSites: string[];
@@ -14,12 +16,18 @@ export interface ListsSnapshot {
 
 export type ListsPatch = Partial<ListsSnapshot>;
 
-function withAdded(list: string[], value: string): string[] {
-  return list.includes(value) ? list : [...list, value];
+/** Adds `lang` unless the list already holds that language under any regional form ('pt' covers 'pt-BR'). */
+function withAddedLang(list: string[], lang: string): string[] {
+  const key = languageKey(lang);
+  return list.some((entry) => languageKey(entry) === key) ? list : [...list, lang];
 }
 
-function withRemoved(list: string[], value: string): string[] {
-  return list.includes(value) ? list.filter((v) => v !== value) : list;
+/**
+ * Removes every entry the auto-translate decision would match against a page
+ * in `lang`, so a leftover 'zh' can't outvote a toggle made on a 'zh-CN' page.
+ */
+function withRemovedLang(list: string[], lang: string): string[] {
+  return list.some((entry) => sameLanguage(entry, lang)) ? list.filter((entry) => !sameLanguage(entry, lang)) : list;
 }
 
 /** Adds `hostname` unless the list already holds the same site, so `www.x.com` never duplicates `x.com`. */
@@ -108,8 +116,8 @@ export function removeSiteFromNeverTranslate(snapshot: ListsSnapshot, hostname: 
 
 export function addLangToAlwaysTranslate(snapshot: ListsSnapshot, lang: string, hostname?: string): ListsPatch {
   const patch: ListsPatch = {
-    alwaysTranslateLangs: withAdded(snapshot.alwaysTranslateLangs, lang),
-    neverTranslateLangs: withRemoved(snapshot.neverTranslateLangs, lang),
+    alwaysTranslateLangs: withAddedLang(snapshot.alwaysTranslateLangs, lang),
+    neverTranslateLangs: withRemovedLang(snapshot.neverTranslateLangs, lang),
   };
   if (hostname) patch.neverTranslateSites = withRemovedSite(snapshot.neverTranslateSites, hostname);
   return patch;
@@ -117,19 +125,19 @@ export function addLangToAlwaysTranslate(snapshot: ListsSnapshot, lang: string, 
 
 export function addLangToNeverTranslate(snapshot: ListsSnapshot, lang: string, hostname?: string): ListsPatch {
   const patch: ListsPatch = {
-    neverTranslateLangs: withAdded(snapshot.neverTranslateLangs, lang),
-    alwaysTranslateLangs: withRemoved(snapshot.alwaysTranslateLangs, lang),
+    neverTranslateLangs: withAddedLang(snapshot.neverTranslateLangs, lang),
+    alwaysTranslateLangs: withRemovedLang(snapshot.alwaysTranslateLangs, lang),
   };
   if (hostname) patch.alwaysTranslateSites = withRemovedSite(snapshot.alwaysTranslateSites, hostname);
   return patch;
 }
 
 export function removeLangFromAlwaysTranslate(snapshot: ListsSnapshot, lang: string): ListsPatch {
-  return { alwaysTranslateLangs: withRemoved(snapshot.alwaysTranslateLangs, lang) };
+  return { alwaysTranslateLangs: withRemovedLang(snapshot.alwaysTranslateLangs, lang) };
 }
 
 export function removeLangFromNeverTranslate(snapshot: ListsSnapshot, lang: string): ListsPatch {
-  return { neverTranslateLangs: withRemoved(snapshot.neverTranslateLangs, lang) };
+  return { neverTranslateLangs: withRemovedLang(snapshot.neverTranslateLangs, lang) };
 }
 
 /** Prepends `code` to a recency-ordered list, de-duplicating and capping to `max` entries — the popup's quick-language pills. */

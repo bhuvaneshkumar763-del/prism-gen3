@@ -5,7 +5,7 @@ import { validatePartialConfig } from './validate';
 
 /**
  * Settings backup serialization for the options page's Export/Import: the
- * pure validation/formatting layer over `configStore.export()`/`import()`.
+ * pure validation/formatting layer in front of `configStore.import()`.
  */
 
 export const BACKUP_FORMAT_VERSION = 1;
@@ -23,7 +23,7 @@ export function serializeBackup(config: Config, timestamp: number): string {
 
 /**
  * Accepts this module's `{version, timestamp, config}` shape or a bare config
- * object (what `configStore.export()` produces). Returns an error message
+ * object (an older export's shape). Returns an error message
  * instead of throwing, so the options page can show what went wrong.
  */
 export function parseBackup(json: string): Result<Partial<Config>, string> {
@@ -36,6 +36,13 @@ export function parseBackup(json: string): Result<Partial<Config>, string> {
 
   const isWrapped = parsed !== null && typeof parsed === 'object' && 'config' in (parsed as Record<string, unknown>);
   const configCandidate = isWrapped ? (parsed as { config: unknown }).config : parsed;
+
+  // A newer format may mean something this version would misread, so it's
+  // refused rather than half-imported.
+  const formatVersion = isWrapped ? (parsed as { version?: unknown }).version : undefined;
+  if (typeof formatVersion === 'number' && formatVersion > BACKUP_FORMAT_VERSION) {
+    return err('That settings file was made by a newer version of Prism. Update Prism, then import it again.');
+  }
 
   // Backups carry no schema version, so every migration runs; each one
   // leaves already-current settings unchanged.

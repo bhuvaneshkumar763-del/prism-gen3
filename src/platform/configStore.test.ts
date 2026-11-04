@@ -116,16 +116,6 @@ describe('configStore', () => {
     expect(seen).toEqual([]);
   });
 
-  it('export() serializes the current state as JSON', async () => {
-    const store = await freshStore();
-    await store.onReady();
-    await store.set('targetLanguage', 'pt');
-
-    const json = await store.export();
-    const parsed = JSON.parse(json);
-    expect(parsed.targetLanguage).toBe('pt');
-  });
-
   it('import() validates against the schema and persists every field', async () => {
     const store = await freshStore();
     await store.onReady();
@@ -220,17 +210,90 @@ describe('configStore', () => {
   });
 });
 
-describe('configStore — migration (CONFIG_SCHEMA_VERSION 5)', () => {
+describe('configStore — startup race and failed writes', () => {
+  /** A backend whose getAll() waits for `releaseGetAll`, so a test can land a live change mid-startup. */
+  function controllableBackend(stored: Record<string, unknown>) {
+    let changeListener: ((changes: Record<string, { newValue?: unknown }>) => void) | undefined;
+    let releaseGetAll: () => void = () => {};
+    const getAllGate = new Promise<void>((resolve) => {
+      releaseGetAll = resolve;
+    });
+    let failWrites = false;
+    const backend = {
+      async getAll() {
+        const snapshot = { ...stored };
+        await getAllGate;
+        return snapshot;
+      },
+      async set(entries: Record<string, unknown>) {
+        if (failWrites) throw new Error('simulated: storage write failed');
+        Object.assign(stored, entries);
+      },
+      async remove() {},
+      onChanged(cb: (changes: Record<string, { newValue?: unknown }>) => void) {
+        changeListener = cb;
+        return () => {};
+      },
+    };
+    return {
+      backend,
+      releaseGetAll: () => releaseGetAll(),
+      emitChange: (key: string, newValue: unknown) => changeListener?.({ [key]: { newValue } }),
+      failWrites: () => {
+        failWrites = true;
+      },
+    };
+  }
+
+  it('keeps a change from another tab that lands while startup is still reading storage', async () => {
+    const { createConfigStore } = await import('./configStore');
+    const ctl = controllableBackend({ targetLanguage: 'fr', __configSchemaVersion: 99 });
+    const store = createConfigStore(ctl.backend);
+
+    const ready = store.onReady();
+    ctl.emitChange('targetLanguage', 'de');
+    ctl.releaseGetAll();
+    await ready;
+
+    expect(store.get('targetLanguage')).toBe('de');
+  });
+
+  it('set() puts the old value back when the storage write fails', async () => {
+    const { createConfigStore } = await import('./configStore');
+    const ctl = controllableBackend({ targetLanguage: 'fr', __configSchemaVersion: 99 });
+    ctl.releaseGetAll();
+    const store = createConfigStore(ctl.backend);
+    await store.onReady();
+    ctl.failWrites();
+
+    await expect(store.set('targetLanguage', 'ja')).rejects.toThrow('simulated');
+    expect(store.get('targetLanguage')).toBe('fr');
+  });
+
+  it('setMany() puts every old value back when the storage write fails', async () => {
+    const { createConfigStore } = await import('./configStore');
+    const ctl = controllableBackend({
+      alwaysTranslateLangs: ['ja'],
+      neverTranslateLangs: [],
+      __configSchemaVersion: 99,
+    });
+    ctl.releaseGetAll();
+    const store = createConfigStore(ctl.backend);
+    await store.onReady();
+    ctl.failWrites();
+
+    await expect(store.setMany({ alwaysTranslateLangs: [], neverTranslateLangs: ['ja'] })).rejects.toThrow('simulated');
+    expect(store.get('alwaysTranslateLangs')).toEqual(['ja']);
+    expect(store.get('neverTranslateLangs')).toEqual([]);
+  });
+});
+
+describe('configStore — migration (CONFIG_SCHEMA_VERSION 6)', () => {
   beforeEach(() => {
     fakeBrowser.reset();
   });
 
-  it('a fresh (version 0) profile with Session 2s ad hoc keys round-trips through both migrations, ending back at the same field names', async () => {
-    // `libreTranslateBaseUrl`/`libreTranslateApiKey` are no longer part of
-    // the schema (the provider itself was removed in version 4 above), so
-    // this checks the raw storage entries the version 1/2 migrations
-    // actually produce rather than `store.get()`, which can no longer
-    // name a field that doesn't exist.
+  it('a fresh (version 0) profile with Session 2s ad hoc LibreTranslate keys ends with them deleted from storage', async () => {
     await fakeBrowser.storage.local.set({
       libreTranslateBaseUrl: 'https://my-instance.example',
       libreTranslateApiKey: 'old-key',
@@ -240,12 +303,12 @@ describe('configStore — migration (CONFIG_SCHEMA_VERSION 5)', () => {
     await store.onReady();
 
     const raw = await fakeBrowser.storage.local.get(null);
-    expect(raw.libreTranslateBaseUrl).toBe('https://my-instance.example');
-    expect(raw.libreTranslateApiKey).toBe('old-key');
-    expect(raw.__configSchemaVersion).toBe(5);
+    expect(Object.hasOwn(raw, 'libreTranslateBaseUrl')).toBe(false);
+    expect(Object.hasOwn(raw, 'libreTranslateApiKey')).toBe(false);
+    expect(raw.__configSchemaVersion).toBe(6);
   });
 
-  it('a profile stuck at version 1 (generic providerBaseUrl/providerApiKey) migrates to the provider-specific names', async () => {
+  it('a profile stuck at version 1 (generic providerBaseUrl/providerApiKey) ends with none of those keys left', async () => {
     await fakeBrowser.storage.local.set({
       providerBaseUrl: 'https://v1-instance.example',
       providerApiKey: 'v1-key',
@@ -256,11 +319,11 @@ describe('configStore — migration (CONFIG_SCHEMA_VERSION 5)', () => {
     await store.onReady();
 
     const raw = await fakeBrowser.storage.local.get(null);
-    expect(raw.libreTranslateBaseUrl).toBe('https://v1-instance.example');
-    expect(raw.libreTranslateApiKey).toBe('v1-key');
+    expect(Object.hasOwn(raw, 'libreTranslateBaseUrl')).toBe(false);
+    expect(Object.hasOwn(raw, 'libreTranslateApiKey')).toBe(false);
     expect(Object.hasOwn(raw, 'providerBaseUrl')).toBe(false);
     expect(Object.hasOwn(raw, 'providerApiKey')).toBe(false);
-    expect(raw.__configSchemaVersion).toBe(5);
+    expect(raw.__configSchemaVersion).toBe(6);
   });
 
   it('a profile on the removed LLM provider moves to google, and its stored fields (API key included) are deleted', async () => {
@@ -280,18 +343,36 @@ describe('configStore — migration (CONFIG_SCHEMA_VERSION 5)', () => {
     expect(Object.hasOwn(raw, 'llmApiKey')).toBe(false);
     expect(Object.hasOwn(raw, 'llmBaseUrl')).toBe(false);
     expect(Object.hasOwn(raw, 'llmModel')).toBe(false);
-    expect(raw.__configSchemaVersion).toBe(5);
+    expect(raw.__configSchemaVersion).toBe(6);
+  });
+
+  it('a profile at version 5 has its leftover LibreTranslate API key and URL deleted from storage', async () => {
+    await fakeBrowser.storage.local.set({
+      libreTranslateBaseUrl: 'https://my-instance.example',
+      libreTranslateApiKey: 'old-key',
+      targetLanguage: 'fr',
+      __configSchemaVersion: 5,
+    });
+
+    const store = await freshStore();
+    await store.onReady();
+
+    const raw = await fakeBrowser.storage.local.get(null);
+    expect(Object.hasOwn(raw, 'libreTranslateApiKey')).toBe(false);
+    expect(Object.hasOwn(raw, 'libreTranslateBaseUrl')).toBe(false);
+    expect(store.get('targetLanguage')).toBe('fr');
   });
 
   it('is idempotent on a second load', async () => {
-    await fakeBrowser.storage.local.set({ libreTranslateBaseUrl: 'https://x.example' });
+    await fakeBrowser.storage.local.set({ libreTranslateBaseUrl: 'https://x.example', targetLanguage: 'fr' });
     const first = await freshStore();
     await first.onReady();
-    expect((await fakeBrowser.storage.local.get(null)).__configSchemaVersion).toBe(5);
+    expect((await fakeBrowser.storage.local.get(null)).__configSchemaVersion).toBe(6);
 
     const second = await freshStore();
     await expect(second.onReady()).resolves.toBeUndefined();
-    expect((await fakeBrowser.storage.local.get(null)).libreTranslateBaseUrl).toBe('https://x.example');
+    expect(second.get('targetLanguage')).toBe('fr');
+    expect((await fakeBrowser.storage.local.get(null)).__configSchemaVersion).toBe(6);
   });
 });
 

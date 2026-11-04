@@ -5,7 +5,7 @@ import { localStorageBackend } from './storage/localBackend';
 import type { StorageBackend } from './storage/types';
 
 /**
- * The config store: `get`/`set`/`onReady`/`onChanged`/`export`/`import` over an
+ * The config store: `get`/`set`/`onReady`/`onChanged`/`import` over an
  * injected `StorageBackend` (see docs/decisions/0003-settings-sync-deferred.md
  * for why that seam exists).
  */
@@ -17,6 +17,8 @@ export function createConfigStore(backend: StorageBackend = localStorageBackend)
   const listeners = new Set<(name: ConfigKey, value: unknown) => void>();
 
   let readyPromise: Promise<void> | null = null;
+  /** Keys a live change updated while `initConfig()` was reading; its snapshot may be older than them. */
+  const changedDuringInit = new Set<ConfigKey>();
 
   /**
    * Migrates stored config if it's behind the current schema version and
@@ -49,9 +51,10 @@ export function createConfigStore(backend: StorageBackend = localStorageBackend)
    * default stays. Never throws on bad values, so startup can't fail on them.
    */
   async function initConfig(): Promise<void> {
+    changedDuringInit.clear();
     const raw = await migrateIfNeeded();
     for (const key of Object.keys(defaultConfig) as ConfigKey[]) {
-      if (!Object.hasOwn(raw, key)) continue;
+      if (!Object.hasOwn(raw, key) || changedDuringInit.has(key)) continue;
       const result = configValidators[key](raw[key]);
       if (result.ok) {
         (state as Record<ConfigKey, unknown>)[key] = result.value;
@@ -80,11 +83,31 @@ export function createConfigStore(backend: StorageBackend = localStorageBackend)
         continue;
       }
       (state as Record<ConfigKey, unknown>)[configKey] = result.value;
+      changedDuringInit.add(configKey);
       listeners.forEach((cb) => {
         cb(configKey, result.value);
       });
     }
   });
+
+  /**
+   * Updates state before the write so a get() right after sees it, and puts
+   * the old values back if the write fails, unless a live change has since
+   * replaced them.
+   */
+  async function writeThrough(entries: Partial<Config>): Promise<void> {
+    const keys = Object.keys(entries) as ConfigKey[];
+    const previous = keys.map((key) => [key, state[key]] as const);
+    for (const key of keys) (state as Record<ConfigKey, unknown>)[key] = entries[key];
+    try {
+      await backend.set(entries);
+    } catch (e) {
+      for (const [key, value] of previous) {
+        if (state[key] === entries[key]) (state as Record<ConfigKey, unknown>)[key] = value;
+      }
+      throw e;
+    }
+  }
 
   /** Shared by `import()` and `restoreToDefault()`; not called via `this` so neither depends on how the returned object is invoked. */
   async function applyValidatedConfig(json: string): Promise<void> {
@@ -120,8 +143,7 @@ export function createConfigStore(backend: StorageBackend = localStorageBackend)
       return state[key];
     },
     async set<K extends ConfigKey>(key: K, value: Config[K]): Promise<void> {
-      state[key] = value;
-      await backend.set({ [key]: value });
+      await writeThrough({ [key]: value } as Partial<Config>);
       // Listeners aren't notified here: backend.onChanged also fires for
       // same-context writes (see localBackend).
     },
@@ -131,18 +153,13 @@ export function createConfigStore(backend: StorageBackend = localStorageBackend)
      * left half-applied by a mid-sequence failure.
      */
     async setMany(entries: Partial<Config>): Promise<void> {
-      const keys = Object.keys(entries) as ConfigKey[];
-      if (keys.length === 0) return;
-      for (const key of keys) (state as Record<ConfigKey, unknown>)[key] = entries[key];
-      await backend.set(entries);
+      if (Object.keys(entries).length === 0) return;
+      await writeThrough(entries);
     },
     /** Returns an unsubscribe function. */
     onChanged(callback: (name: ConfigKey, value: unknown) => void): () => void {
       listeners.add(callback);
       return () => listeners.delete(callback);
-    },
-    async export(): Promise<string> {
-      return JSON.stringify(state, null, 2);
     },
     async import(json: string): Promise<void> {
       await applyValidatedConfig(json);

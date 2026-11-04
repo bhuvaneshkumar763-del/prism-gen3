@@ -40,7 +40,14 @@ describe('parseBackup', () => {
     if (result.ok) expect(result.value.targetLanguage).toBe('ja');
   });
 
-  it("accepts a bare config object (configStore.export()'s own shape)", () => {
+  it('refuses a backup written by a newer Prism, whose format this version cannot read', () => {
+    const json = JSON.stringify({ version: BACKUP_FORMAT_VERSION + 1, timestamp: 1, config: { targetLanguage: 'fr' } });
+    const result = parseBackup(json);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/newer version of Prism/);
+  });
+
+  it('accepts a bare config object (an older export shape)', () => {
     const json = JSON.stringify({ ...defaultConfig, targetLanguage: 'fr' });
     const result = parseBackup(json);
     expect(result.ok).toBe(true);
