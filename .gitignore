@@ -33,3 +33,7 @@ coverage
 xcuserdata/
 DerivedData/
 *.xcuserstate
+
+# iPhone Simulator check (generated in CI)
+tests/ios-sim/results.json
+tests/ios-sim/*.xcodeproj
