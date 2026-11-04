@@ -52,6 +52,13 @@ final class PrismSimChecks: XCTestCase {
         return last
     }
 
+    /// A switch's value comes back as "1"/"0" or as a number, depending on the iOS version.
+    func isOn(_ toggle: XCUIElement) -> Bool {
+        if let text = toggle.value as? String { return text == "1" }
+        if let number = toggle.value as? NSNumber { return number.boolValue }
+        return false
+    }
+
     func flag(_ report: [String: Any]?, _ key: String) -> Bool {
         (report?[key] as? Bool) ?? false
     }
@@ -61,7 +68,20 @@ final class PrismSimChecks: XCTestCase {
         let visit = "?run=\(UUID().uuidString.prefix(8))"
         XCUIDevice.shared.system.open(URL(string: Self.base + path + visit)!)
         XCTAssertTrue(safari.wait(for: .runningForeground, timeout: 30), "Safari didn't open")
-        let ready = waitFor(page, visit: visit, timeout: 45) { self.flag($0, "bubblePresent") }
+        var ready = waitFor(page, visit: visit, timeout: 12) { self.flag($0, "bubblePresent") }
+        if !flag(ready, "bubblePresent") {
+            // Safari may ask before letting the extension read this site.
+            shot("\(page)-before-permission")
+            let allow = safari.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Always Allow' OR label == 'Allow'")).firstMatch
+            if allow.waitForExistence(timeout: 3) {
+                allow.tap()
+                let everywhere = safari.buttons.matching(NSPredicate(format: "label CONTAINS 'Every Website'")).firstMatch
+                if everywhere.waitForExistence(timeout: 3) { everywhere.tap() }
+            } else {
+                dumpTree("\(page)-no-bubble", of: safari)
+            }
+            ready = waitFor(page, visit: visit, timeout: 35) { self.flag($0, "bubblePresent") }
+        }
         shot("\(page)-loaded")
         XCTAssertTrue(flag(ready, "bubblePresent"), "Prism's bubble never appeared on \(page): is the extension on?")
         return visit
@@ -185,14 +205,20 @@ final class PrismSimChecks: XCTestCase {
         guard tapRow("Prism", in: settings) else { return }
         shot("settings-prism")
 
-        let toggle = settings.switches.firstMatch
+        let named = settings.switches["Allow Extension"]
+        let toggle = named.exists ? named : settings.switches.firstMatch
         guard toggle.waitForExistence(timeout: 5) else {
             dumpTree("prism-page", of: settings)
             XCTFail("No switch on Prism's extension page")
             return
         }
-        if (toggle.value as? String) == "0" { toggle.tap() }
-        Thread.sleep(forTimeInterval: 1)
+        if !isOn(toggle) {
+            // The row-wide switch's centre is its label; the toggle sits at the right edge.
+            toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap()
+            let deadline = Date().addingTimeInterval(5)
+            while !isOn(toggle) && Date() < deadline { Thread.sleep(forTimeInterval: 0.5) }
+        }
+        shot("settings-prism-toggled")
 
         for title in ["Other Websites", "All Websites"] where tapRow(title, in: settings, required: false) {
             tapRow("Allow", in: settings)
@@ -202,7 +228,7 @@ final class PrismSimChecks: XCTestCase {
         }
         shot("settings-prism-on")
         dumpTree("prism-page-final", of: settings)
-        let on = (settings.switches.firstMatch.value as? String) == "1"
+        let on = isOn(toggle)
         XCTAssertTrue(on, "Prism's extension switch is off")
         Self.extensionOn = on
     }
