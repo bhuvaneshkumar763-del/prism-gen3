@@ -1,6 +1,6 @@
 {
   "name": "prism-gen3",
-  "description": "Prism — AI Page Translator (Gen 3, ground-up rewrite)",
+  "description": "Prism \u2014 AI Page Translator (Gen 3, ground-up rewrite)",
   "private": true,
   "version": "0.3.2-beta.4",
   "type": "module",
@@ -37,7 +37,7 @@
   "devDependencies": {
     "@biomejs/biome": "2.6.4",
     "@changesets/cli": "^2.31.1",
-    "@vitest/coverage-v8": "^4.1.10",
+    "@vitest/coverage-v8": "^5.0.5",
     "@webext-core/fake-browser": "^2.0.1",
     "@wxt-dev/module-solid": "^1.1.4",
     "fake-indexeddb": "^6.2.7",
@@ -46,7 +46,7 @@
     "typescript": "^5.9.3",
     "vite": "^8.3.5",
     "vite-plugin-solid": "^2.11.15",
-    "vitest": "^4.1.10",
+    "vitest": "^5.0.5",
     "web-ext": "10.8.0",
     "wxt": "^0.21.5"
   }
