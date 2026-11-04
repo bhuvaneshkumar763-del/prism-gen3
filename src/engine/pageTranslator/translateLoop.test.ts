@@ -1608,18 +1608,9 @@ describe('viewport-priority reordering — dirty-flag gating', () => {
   });
 
   it('re-measures after a scroll invalidates the previous ordering', async () => {
-    // Real wall-clock time (multiple ~150ms batches) comfortably exceeds
-    // vitest's default 5000ms test timeout — bumped below.
-    // 1500 nodes at MAX_PIECES_PER_TICK=300 needs 5 batches to drain. Each
-    // mock batch has a real, deliberately generous delay so the drain
-    // naturally spans real wall-clock time well past resweep's 400ms
-    // scroll debounce, instead of finishing near-instantly now that ticks
-    // no longer have a fixed inter-batch pause (see translateLoop.ts's
-    // nextDelay comment) — real timers throttled by a realistic per-batch
-    // cost, not a race against fake-timer cascading semantics. Scroll is
-    // dispatched immediately after the first reorder (not after an
-    // additional wait) so the debounce's 400ms target lands mid-drain with
-    // comfortable margin, rather than right at the finish line.
+    // 1500 nodes at MAX_PIECES_PER_TICK=300 needs 5 batches of 150ms each, so
+    // resweep's 400ms scroll debounce lands mid-drain. Fake timers keep that
+    // ordering exact however slow the machine is.
     for (let i = 0; i < 1500; i++) {
       const p = document.createElement('p');
       p.textContent = `hello ${i}`;
@@ -1640,19 +1631,25 @@ describe('viewport-priority reordering — dirty-flag gating', () => {
       getBatchingHint: () => undefined,
     });
 
-    await pageTranslator.translatePage('es');
-    await waitFor(() => rectSpy.mock.calls.length > 0, 3000); // tick 1's reorder measured something
-    const callsAfterTick1 = rectSpy.mock.calls.length;
+    vi.useFakeTimers();
+    try {
+      await pageTranslator.translatePage('es');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(rectSpy.mock.calls.length).toBeGreaterThan(0); // tick 1's reorder measured something
+      const callsAfterTick1 = rectSpy.mock.calls.length;
 
-    // Scroll — resweep.ts's own debounced listener (400ms) marks the
-    // ordering dirty again via onViewportChanged, landing mid-drain (see
-    // the timing comment above) so there's a real eligible tick left for
-    // the dirty flag to take effect on.
-    window.dispatchEvent(new Event('scroll'));
-    await waitFor(() => rectSpy.mock.calls.length > callsAfterTick1, 5000);
-
-    pageTranslator.restorePage();
-  }, 10000);
+      // Scroll — resweep.ts's own debounced listener (400ms) marks the
+      // ordering dirty again via onViewportChanged, while batches remain.
+      window.dispatchEvent(new Event('scroll'));
+      await vi.advanceTimersByTimeAsync(400);
+      expect(rectSpy.mock.calls.length).toBe(callsAfterTick1);
+      await vi.advanceTimersByTimeAsync(300);
+      expect(rectSpy.mock.calls.length).toBeGreaterThan(callsAfterTick1);
+    } finally {
+      pageTranslator.restorePage();
+      vi.useRealTimers();
+    }
+  });
 
   it('reorders by viewport even on a typical, small page — perceived-speed fix: this used to be gated behind queue.length > MAX_PIECES_PER_TICK (300), so on any page with fewer pieces than that (the common case) reordering never ran at all', async () => {
     // 10 paragraphs total, well under the old 300-piece gate — a page this
@@ -1966,18 +1963,25 @@ describe('incremental write-back (onPieceComplete)', () => {
       getBatchingHint: () => undefined,
     });
 
-    void pageTranslator.translatePage('es');
+    // Fake timers, so "after the fast piece, before the slow one" can't be
+    // overrun by a slow test machine.
+    vi.useFakeTimers();
+    try {
+      void pageTranslator.translatePage('es');
 
-    // Past the fast piece's 10ms but well short of the slow piece's
-    // 150ms — the fast node must already be written.
-    await new Promise((resolve) => setTimeout(resolve, 60));
-    expect(fastNode.data).toBe('FAST');
-    expect(slowNode.data).toBe('beta'); // not yet translated — the whole call hasn't resolved
+      // Past the fast piece's 10ms but well short of the slow piece's
+      // 150ms — the fast node must already be written.
+      await vi.advanceTimersByTimeAsync(60);
+      expect(fastNode.data).toBe('FAST');
+      expect(slowNode.data).toBe('beta'); // not yet translated — the whole call hasn't resolved
 
-    await waitFor(() => slowNode.data === 'SLOW');
-    expect(fastNode.data).toBe('FAST');
-
-    pageTranslator.restorePage();
+      await vi.advanceTimersByTimeAsync(100);
+      expect(slowNode.data).toBe('SLOW');
+      expect(fastNode.data).toBe('FAST');
+    } finally {
+      pageTranslator.restorePage();
+      vi.useRealTimers();
+    }
   });
 });
 

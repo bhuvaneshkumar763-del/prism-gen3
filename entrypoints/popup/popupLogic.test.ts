@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { addLangToAlwaysTranslate, removeLangFromAlwaysTranslate } from '../../src/shared/config/listMutations';
-import { alwaysFromTogglePatch, offersAlwaysTranslateFrom, primaryButtonMode } from './popupLogic';
+import {
+  alwaysFromTogglePatch,
+  alwaysTranslatesFrom,
+  offersAlwaysTranslateFrom,
+  primaryButtonMode,
+} from './popupLogic';
 
 const empty = { alwaysTranslateSites: [], neverTranslateSites: [], alwaysTranslateLangs: [], neverTranslateLangs: [] };
 
@@ -27,6 +32,20 @@ describe('offersAlwaysTranslateFrom', () => {
   it('hides it for an unknown language and shows it for a different one', () => {
     expect(offersAlwaysTranslateFrom('und', 'en')).toBe(false);
     expect(offersAlwaysTranslateFrom('ja', 'en')).toBe(true);
+  });
+  it('shows it between Simplified and Traditional Chinese, which are translated', () => {
+    expect(offersAlwaysTranslateFrom('zh-CN', 'zh-TW')).toBe(true);
+  });
+});
+
+describe('alwaysTranslatesFrom', () => {
+  it('a regional page matches a base-language entry, and the reverse', () => {
+    expect(alwaysTranslatesFrom(['pt'], 'pt-BR')).toBe(true);
+    expect(alwaysTranslatesFrom(['pt-BR'], 'pt')).toBe(true);
+  });
+  it('keeps Chinese scripts apart, so the toggle reads what turning it off would remove', () => {
+    expect(alwaysTranslatesFrom(['zh-TW'], 'zh-CN')).toBe(false);
+    expect(alwaysTranslatesFrom(['zh'], 'zh-CN')).toBe(true);
   });
 });
 

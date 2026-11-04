@@ -9,7 +9,7 @@ import { getActiveTab, getActiveTabId } from '../../src/platform/messaging/tabTa
 import { addRecentTargetLanguage, type ListsPatch } from '../../src/shared/config/listMutations';
 import { missingProviderSetup } from '../../src/shared/config/providerSetup';
 import { resolveBubbleVisibility, setBubbleVisibilityForHost } from '../../src/shared/config/siteOverrides';
-import { baseLanguageTag, COMMON_LANGUAGES, languageName } from '../../src/shared/languages';
+import { COMMON_LANGUAGES, languageName } from '../../src/shared/languages';
 import { loadPageStatus } from '../../src/shared/pageStatus';
 import {
   describePopupError,
@@ -26,7 +26,13 @@ import { translateShortcut } from '../../src/shared/shortcut';
 import { CANT_TRANSLATE_MESSAGE, describeUnsupportedPage } from '../../src/shared/unsupportedPage';
 import { withTimeout } from '../../src/shared/withTimeout';
 import './App.css';
-import { alwaysFromTogglePatch, offersAlwaysTranslateFrom, type PopupAction, primaryButtonMode } from './popupLogic';
+import {
+  alwaysFromTogglePatch,
+  alwaysTranslatesFrom,
+  offersAlwaysTranslateFrom,
+  type PopupAction,
+  primaryButtonMode,
+} from './popupLogic';
 
 /**
  * Bounds every content-script message: a tab that never replies (navigated
@@ -85,9 +91,7 @@ function App() {
   // The shared helper, not `.includes()`, so `www.`/apex hosts match the way
   // auto-translate matches them.
   const siteRule = createMemo(() => siteRuleFor(config, hostname()));
-  const alwaysLangOn = createMemo(() =>
-    config.alwaysTranslateLangs.some((l) => baseLanguageTag(l) === baseLanguageTag(originalLanguage())),
-  );
+  const alwaysLangOn = createMemo(() => alwaysTranslatesFrom(config.alwaysTranslateLangs, originalLanguage()));
   const bubbleOnForSite = createMemo(() =>
     resolveBubbleVisibility({
       hostname: hostname(),

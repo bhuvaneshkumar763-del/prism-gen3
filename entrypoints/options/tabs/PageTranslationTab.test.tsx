@@ -75,8 +75,9 @@ describe('PageTranslationTab', () => {
 
   it('lists the source languages picked in the bubble, with a way to remove them', () => {
     const setField = vi.fn(async () => {});
-    const el = mount({ sourceLanguageByHost: { 'example.com': 'ja' } }, setField);
-    expect(el.textContent).toContain('example.com');
+    const el = mount({ sourceLanguageByHost: { 'example.com': 'zh-CN' } }, setField);
+    expect(el.querySelector('.siteTable')?.textContent).toContain('example.com');
+    expect(el.querySelector('.siteTable')?.textContent).toContain('Chinese (Simplified)');
     const remove = el.querySelector('button[aria-label="Remove override for example.com"]') as HTMLButtonElement;
     remove.click();
     expect(setField).toHaveBeenCalledWith('sourceLanguageByHost', {});

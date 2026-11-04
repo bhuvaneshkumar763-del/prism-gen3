@@ -46,7 +46,7 @@ export function createAttributeTranslator(options: AttributeTranslatorOptions) {
   let currentTargetLanguage = '';
   let observer: MutationObserver | null = null;
   // Bumped by start()/restore(); async work that resumes under a stale
-  // generation must not write back or install the observer.
+  // generation must not write back.
   let generation = 0;
   // One translate in flight at a time; mutations arriving meanwhile coalesce
   // here, so an infinite-scroll feed can't fire a request per mutation batch.

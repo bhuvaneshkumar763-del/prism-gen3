@@ -5,7 +5,7 @@ import {
   type ListsSnapshot,
   removeLangFromAlwaysTranslate,
 } from '../../src/shared/config/listMutations';
-import { baseLanguageTag } from '../../src/shared/languages';
+import { sameLanguage } from '../../src/shared/languages';
 
 export type PopupStatus = 'idle' | 'busy' | 'error';
 export type PopupAction = 'translate' | 'restore';
@@ -25,9 +25,14 @@ export function primaryButtonMode(
   return pageState === 'translated' ? 'restore' : 'translate';
 }
 
-/** Matches the auto-translate decision, which never translates a page already in the target's base language. */
+/** Hidden when the page is already in the target language, where auto-translate never fires. */
 export function offersAlwaysTranslateFrom(originalLanguage: string, targetLanguage: string): boolean {
-  return originalLanguage !== 'und' && baseLanguageTag(originalLanguage) !== baseLanguageTag(targetLanguage);
+  return originalLanguage !== 'und' && !sameLanguage(originalLanguage, targetLanguage);
+}
+
+/** Whether the always list covers the page's language, by the rule the list helpers and auto-translate share. */
+export function alwaysTranslatesFrom(alwaysTranslateLangs: readonly string[], originalLanguage: string): boolean {
+  return alwaysTranslateLangs.some((l) => sameLanguage(l, originalLanguage));
 }
 
 /** The "Always translate from X" toggle's list change, through the same helpers Settings uses. */

@@ -4,7 +4,9 @@ import { createRestoreMap } from './restoreMap';
 
 function entries(map: ReturnType<typeof createRestoreMap<Text, string>>): Array<[string, string]> {
   const out: Array<[string, string]> = [];
-  map.forEach((value, node) => out.push([node.data, value]));
+  map.forEach((value, node) => {
+    out.push([node.data, value]);
+  });
   return out;
 }
 

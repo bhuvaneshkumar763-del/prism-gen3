@@ -582,8 +582,9 @@ describe('createAttributeTranslator: nodes off the page, late additions, changed
   it("re-sends only the changed element's own attributes, not every attribute in its subtree", async () => {
     document.body.innerHTML = '<div id="box" title="Box"><input id="a" placeholder="Search"></div>';
     translateBatch.mockImplementationOnce(async (request) =>
-      request.pieces.map((piece): PieceOutcome =>
-        piece[0] === 'Search' ? err({ kind: 'network', message: 'x' }) : ok([piece[0]?.toUpperCase() ?? '']),
+      request.pieces.map(
+        (piece): PieceOutcome =>
+          piece[0] === 'Search' ? err({ kind: 'network', message: 'x' }) : ok([piece[0]?.toUpperCase() ?? '']),
       ),
     );
     const t = newTranslator();
