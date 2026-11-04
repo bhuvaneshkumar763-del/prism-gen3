@@ -52,4 +52,29 @@ describe('showFrameStatus', () => {
     showFrameStatus(document, 'translate');
     expect(document.documentElement.dataset.prismFrame).toBe('translate');
   });
+
+  it('keeps the recent steps in order, so a later step does not hide an earlier failure', () => {
+    document.head.innerHTML = '<meta name="prism-diagnostics">';
+    for (const step of ['restore', 'translate', 'translated:original:network', 'restore']) {
+      showFrameStatus(document, step);
+    }
+    expect(document.documentElement.dataset.prismFrame).toBe(
+      'restore > translate > translated:original:network > restore',
+    );
+  });
+
+  it('keeps only the last eight steps', () => {
+    document.head.innerHTML = '<meta name="prism-diagnostics">';
+    for (let i = 1; i <= 10; i++) showFrameStatus(document, `s${i}`);
+    expect(document.documentElement.dataset.prismFrame?.split(' > ')).toEqual([
+      's3',
+      's4',
+      's5',
+      's6',
+      's7',
+      's8',
+      's9',
+      's10',
+    ]);
+  });
 });

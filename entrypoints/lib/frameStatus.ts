@@ -19,8 +19,11 @@ export function describeFollowError(e: unknown): string {
   return `error:${e instanceof Error ? e.message : String(e)}`;
 }
 
-/** Shown on the frame's own <html>, and only when the page asked for it. */
+const STATUS_STEPS_KEPT = 8;
+
+/** Shown on the frame's own <html>, and only when the page asked for it: the last few steps, oldest first. */
 export function showFrameStatus(doc: Document, status: string): void {
   if (!doc.querySelector('meta[name="prism-diagnostics"]')) return;
-  doc.documentElement.dataset.prismFrame = status;
+  const earlier = doc.documentElement.dataset.prismFrame?.split(' > ') ?? [];
+  doc.documentElement.dataset.prismFrame = [...earlier, status].slice(-STATUS_STEPS_KEPT).join(' > ');
 }
