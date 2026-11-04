@@ -166,6 +166,9 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
           const fromKeyboard = shadowRoot.activeElement?.classList.contains('trigger') ?? false;
           void handleTranslateClick();
           if (fromKeyboard) shadowRoot.querySelector<HTMLElement>('.panel .close')?.focus();
+          // iOS keeps its Copy / Look Up menu up while text is selected, over the
+          // result; the selection was already read, and the panel stays open.
+          else if (lastPointerType !== 'mouse') window.getSelection()?.removeAllRanges();
         },
         // For consistency, not defense: closing spends nothing, and the page
         // owns the document anyway.

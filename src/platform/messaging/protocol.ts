@@ -53,9 +53,12 @@ interface ProtocolMap {
    * translate/restore command (from any control, or the auto-translate decision)
    * so same-origin sub-frames follow it. Same-origin scoping is the caller's job.
    */
-  reportFrameLanguageDecision(data: FrameLanguageDecision): void;
-  /** A same-origin sub-frame → background: asks for the main frame's decision, if it's reported one yet. */
-  getFrameLanguageDecision(): FrameLanguageDecision | null;
+  reportFrameLanguageDecision(data: FrameLanguageDecision & { pageKey?: string }): void;
+  /**
+   * A same-origin sub-frame → background: asks for the main frame's decision, if
+   * it's reported one yet; by the page key the main frame posted, when it has it.
+   */
+  getFrameLanguageDecision(data?: { pageKey?: string }): FrameLanguageDecision | null;
   /**
    * Content script → background: detect the tab's language via the
    * background-only `browser.tabs.detectLanguage()`, which sees the real

@@ -98,6 +98,8 @@ export default defineContentScript({
     /** The last command published to sub-frames, re-published when a sub-frame finds no decision. */
     let lastPublished: PageCommand | null = null;
     let republishQueued = false;
+    /** Handed to sub-frames so they find this page's decision even when the browser names no tab for them (Safari). */
+    const pageKey = crypto.randomUUID();
 
     /** The one entry point for translate/restore in the top frame, whichever control sent it. */
     async function runPageCommand(command: PageCommand, control: PageControl): Promise<PageLanguageState> {
@@ -134,6 +136,7 @@ export default defineContentScript({
             targetLanguage,
             originalLanguage: pickedSource ?? originalLanguageTracker.get(),
             mainFrameOrigin: location.origin,
+            pageKey,
           });
           notifySubFrames(window);
         })
@@ -150,7 +153,7 @@ export default defineContentScript({
         const child = parent.frames[i];
         if (!child) continue;
         try {
-          child.postMessage({ [FRAME_SYNC_KEY]: true }, location.origin);
+          child.postMessage({ [FRAME_SYNC_KEY]: true, pageKey }, location.origin);
         } catch {
           // A frame that went away mid-walk.
         }
@@ -359,10 +362,12 @@ export default defineContentScript({
     } else {
       let followerState: FollowerState = { translated: false };
       let following: Promise<unknown> = Promise.resolve();
+      /** The top frame's page key, from its sync message; a forged one finds no decision. */
+      let pageKey: string | undefined;
 
       /** Applies the top frame's latest decision; false while there is none for this page load yet. */
       async function followOnce(): Promise<boolean> {
-        const decision = await sendMessage('getFrameLanguageDecision', undefined);
+        const decision = await sendMessage('getFrameLanguageDecision', pageKey ? { pageKey } : undefined);
         const step = followTopFrame(decision, window.top?.location.origin ?? '', followerState);
         if (step.action === 'translate') {
           followerState = {
@@ -387,6 +392,7 @@ export default defineContentScript({
 
       window.addEventListener('message', (event) => {
         if (event.data?.[FRAME_SYNC_KEY] !== true) return;
+        if (event.source === window.top && typeof event.data.pageKey === 'string') pageKey = event.data.pageKey;
         syncWithTopFrame().catch((e) => {
           console.warn('[prism] could not follow the page command', e);
         });
