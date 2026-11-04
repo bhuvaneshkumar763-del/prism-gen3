@@ -306,6 +306,15 @@ Severity for Open rows is the audit's own (Med, Low-Med, Low). "Design" and
 
 ---
 
+## Found by the re-grade (docs/reports/senior-engineer-regrade.md)
+
+| ID | Finding | Source | Status | Where | Note |
+|---|---|---|---|---|---|
+| RG-1 | A browser without `storage.session` breaks translation through the key listener | Re-grade | Closed | 2f38fc0 | Listener wrapped in try/catch; save skipped without `storage.session` |
+| RG-2 | A brief throttle abandons paragraphs in a mixed batch after 3 tries, with no message | Re-grade | Closed | af8e6a6 | Real failures in a mixed batch are requeued under the backoff |
+| RG-3 | Bubble From picker shows an earlier visit's pick that isn't in effect, and can't re-pick it | Re-grade | Closed | 207f847 | Picker starts at Auto on each page load |
+| RG-4 | `npm run compile` ran TypeScript 5.9, not 7 | Re-grade | Closed | 2f38fc0 | Script runs TypeScript 7 by path |
+
 ## Release 7 outcome
 
 Every Open row was settled in Release 7 (marked `R7` in the table): fixed
