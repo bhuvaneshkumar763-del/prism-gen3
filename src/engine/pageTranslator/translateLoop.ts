@@ -533,6 +533,10 @@ export function createPageTranslator(options: PageTranslatorOptions) {
         // depend on the translator supporting incremental delivery.
         if (rawTranslated) {
           writeSlot(slot, rawTranslated);
+        } else if (isGenuineFailure(outcome)) {
+          // An outage (rate limit, server, network), not an echo: retried like a
+          // failed batch, under the backoff, without spending the 3-try allowance.
+          requeueBatch(slot.nodes);
         } else {
           for (const node of slot.nodes) if (node.isConnected) noteMissingResult(node);
         }

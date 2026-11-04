@@ -2123,6 +2123,44 @@ describe("a partial (mixed-outcome) batch failure — real bug this closed: 'all
     pageTranslator.restorePage();
   });
 
+  it('keeps retrying a piece that failed for a real reason in a mixed batch, and translates it once the service recovers', async () => {
+    document.body.innerHTML = '<p id="a">alpha</p><p id="b">beta0</p>';
+    const aNode = (document.getElementById('a') as HTMLElement).firstChild as Text;
+    const bNode = (document.getElementById('b') as HTMLElement).firstChild as Text;
+    let aAttempts = 0;
+    const translateBatch = vi.fn(
+      async (request: { pieces: string[][] }): Promise<PieceOutcome[]> =>
+        request.pieces.map((piece): PieceOutcome => {
+          if ((piece[0] ?? '').startsWith('alpha') && ++aAttempts <= 5) {
+            return err({ kind: 'http', status: 429, message: 'rate limited' });
+          }
+          return ok(piece.map((s) => s.toUpperCase()));
+        }),
+    );
+    const pageTranslator = createPageTranslator({
+      translator: { translateBatch },
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+
+    vi.useFakeTimers();
+    try {
+      void pageTranslator.translatePage('es');
+      // A busy page: other text keeps arriving, so every retry of 'alpha' shares
+      // its batch with text that succeeds, as on a long chapter.
+      for (let i = 1; i <= 600; i++) {
+        bNode.data = `beta${i}`;
+        await vi.advanceTimersByTimeAsync(100);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(aAttempts).toBeGreaterThan(5);
+    expect(aNode.data).toBe('ALPHA');
+    pageTranslator.restorePage();
+  });
+
   it('does NOT surface an error for an all-suspicious mixed tick (a companion succeeding alongside a suspicious-but-not-broken piece) — the existing allFailedAreSuspicious reasoning still applies, this fix only changes the GENUINE-failure case', async () => {
     document.body.innerHTML = '<p id="a">alpha0</p><p id="b">beta0</p>';
     const aNode = (document.getElementById('a') as HTMLElement).firstChild as Text;
