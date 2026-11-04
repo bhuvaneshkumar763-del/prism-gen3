@@ -1191,6 +1191,34 @@ describe('createGoogleProvider', () => {
       ]);
     });
 
+    it('keeps translating when the key-change listener throws, as a missing storage area would', async () => {
+      vi.resetModules();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        vi.stubGlobal(
+          'fetch',
+          vi
+            .fn()
+            .mockResolvedValueOnce(authScrapeResponse())
+            .mockResolvedValueOnce(jsonResponse([['<a i=0>hola</a>'], ['en']])),
+        );
+        const { createGoogleProvider, onAuthKeyChange } = await import('./google');
+        onAuthKeyChange(() => {
+          throw new TypeError("Cannot read properties of undefined (reading 'set')");
+        });
+
+        const result = await createGoogleProvider().translateBatch({
+          sourceLanguage: 'en',
+          targetLanguage: 'es',
+          pieces: [['hello']],
+        });
+
+        expect(result).toEqual([{ ok: true, value: ['hola'] }]);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
     it("doesn't take a key from an error page, and says so in the log", async () => {
       vi.resetModules();
       const warn = vi.spyOn(console, 'error').mockImplementation(() => {});

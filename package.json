@@ -13,7 +13,7 @@
     "zip": "wxt zip",
     "zip:firefox": "wxt zip -b firefox",
     "safari:sync": "npm run build:safari && node scripts/sync-safari.mjs",
-    "compile": "tsc --noEmit",
+    "compile": "node node_modules/typescript/bin/tsc --noEmit",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "test": "vitest run",

@@ -115,10 +115,13 @@ const GOOGLE_AUTH_STORAGE_KEY = 'googleAuthKeySnapshot';
 
 /** Keeps the stored copy in step with every scrape and every rejected key, so a restart never restores a dead key. */
 function persistGoogleAuthKey(snapshot: AuthKeySnapshot | undefined): void {
+  // Some browsers have no storage.session; the key is then simply re-fetched after a restart.
+  const session = browser.storage.session;
+  if (!session) return;
   const write = snapshot
-    ? browser.storage.session.set({ [GOOGLE_AUTH_STORAGE_KEY]: snapshot })
-    : browser.storage.session.remove(GOOGLE_AUTH_STORAGE_KEY);
-  void write.catch((e) => {
+    ? session.set({ [GOOGLE_AUTH_STORAGE_KEY]: snapshot })
+    : session.remove(GOOGLE_AUTH_STORAGE_KEY);
+  void Promise.resolve(write).catch((e) => {
     console.warn('[prism] could not update the stored Google auth key', e);
   });
 }

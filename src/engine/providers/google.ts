@@ -57,6 +57,15 @@ export function onAuthKeyChange(listener: (snapshot: AuthKeySnapshot | undefined
   authKeyListener = listener;
 }
 
+/** Saving the key is best-effort: a listener that throws must never fail a translation. */
+function notifyAuthKeyChange(snapshot: AuthKeySnapshot | undefined): void {
+  try {
+    authKeyListener?.(snapshot);
+  } catch (e) {
+    console.warn('[google] auth key listener failed', e);
+  }
+}
+
 /**
  * Forces the next `findAuth` to re-scrape, for a rejected key or a suspicious
  * streak (the endpoint's usual failure mode for a bad key). Clearing
@@ -66,7 +75,7 @@ export function onAuthKeyChange(listener: (snapshot: AuthKeySnapshot | undefined
 function invalidateAuth(): void {
   translateAuth = null;
   lastRequestAuthTime = null;
-  authKeyListener?.(undefined);
+  notifyAuthKeyChange(undefined);
 }
 
 /**
@@ -176,7 +185,7 @@ async function findAuth(): Promise<void> {
       translateAuth = fallbackKey;
       authNotFound = true;
     }
-    authKeyListener?.(getAuthKeySnapshot());
+    notifyAuthKeyChange(getAuthKeySnapshot());
   })();
 
   try {
