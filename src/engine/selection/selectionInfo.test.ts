@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, expect, it } from 'vitest';
-import { getSelectionInfo, isValidSelectionText } from './selectionInfo';
+import { getSelectionInfo, isValidSelectionText, lastLineRect } from './selectionInfo';
 
 function fakeSelection(overrides: Partial<Selection> & { text: string; rect: Partial<DOMRect> }): Selection {
   const base = { width: 10, height: 10, top: 0, left: 0, ...overrides.rect };
@@ -129,5 +129,29 @@ describe('isValidSelectionText', () => {
 
   it('accepts text mixing letters with digits/punctuation', () => {
     expect(isValidSelectionText('Chapter 5')).toBe(true);
+  });
+});
+
+describe('lastLineRect', () => {
+  const rangeWith = (rects: Partial<DOMRect>[]) => ({ getClientRects: () => rects as DOMRect[] }) as unknown as Range;
+
+  it("is the box of the selection's last line, where its end handle sits", () => {
+    const range = rangeWith([
+      { top: 100, bottom: 120, left: 40, right: 380, width: 340, height: 20 },
+      { top: 120, bottom: 140, left: 16, right: 200, width: 184, height: 20 },
+    ]);
+    expect(lastLineRect([range])).toEqual({ top: 120, bottom: 140, left: 16, right: 200 });
+  });
+
+  it('skips empty boxes (a line break at the end of the selection)', () => {
+    const range = rangeWith([
+      { top: 100, bottom: 120, left: 40, right: 380, width: 340, height: 20 },
+      { top: 120, bottom: 120, left: 0, right: 0, width: 0, height: 0 },
+    ]);
+    expect(lastLineRect([range])).toEqual({ top: 100, bottom: 120, left: 40, right: 380 });
+  });
+
+  it('is null with nothing visible selected', () => {
+    expect(lastLineRect([rangeWith([])])).toBeNull();
   });
 });

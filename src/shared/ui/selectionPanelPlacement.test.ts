@@ -68,6 +68,22 @@ describe('placeSelectionTrigger', () => {
     expect(t.top).toBe(760 - 6 - SELECTION_TRIGGER_SIZE);
   });
 
+  // iOS 26 draws its Copy / Look Up menu above or below the selected line, so on
+  // touch screens the trigger stays on the line itself, after the selection's end.
+  it("on touch screens sits just after the selection's last line, where iOS's menu never goes", () => {
+    const lastLine = { top: 120, bottom: 140, left: 40, right: 200 };
+    const t = placeSelectionTrigger({ top: 100, bottom: 140, left: 40 }, VIEWPORT, { beside: lastLine });
+    expect(t.left).toBeGreaterThanOrEqual(lastLine.right + 6);
+    expect(t.top + SELECTION_TRIGGER_SIZE / 2).toBe((lastLine.top + lastLine.bottom) / 2);
+  });
+
+  it('on touch screens goes before the line when there is no room after it', () => {
+    const lastLine = { top: 120, bottom: 140, left: 300, right: 995 };
+    const t = placeSelectionTrigger({ top: 120, bottom: 140, left: 300 }, VIEWPORT, { beside: lastLine });
+    expect(t.left + SELECTION_TRIGGER_SIZE).toBeLessThanOrEqual(lastLine.left - 6);
+    expect(t.top + SELECTION_TRIGGER_SIZE / 2).toBe(130);
+  });
+
   it('stays on screen for a selection at the very bottom or right edge', () => {
     const t = placeSelectionTrigger({ top: 790, bottom: 799, left: 995 }, VIEWPORT);
     expect(t.top + SELECTION_TRIGGER_SIZE).toBeLessThanOrEqual(VIEWPORT.height - 8);

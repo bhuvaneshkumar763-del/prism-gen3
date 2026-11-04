@@ -48,6 +48,8 @@
       selectionTrigger: !!selection?.querySelector('.trigger'),
       selectionResult: selection?.querySelector('.result')?.textContent ?? null,
       sample: texts[texts.length - 1]?.slice(-80) ?? '',
+      frameAsks,
+      frameSyncs: Array.from(document.querySelectorAll('iframe'), (f) => f.contentWindow?.__prismSyncs ?? null),
     };
   }
 
@@ -60,6 +62,14 @@
     last = key;
     fetch('/report', { method: 'POST', body: key }).catch(() => {});
   }
+
+  // Prism's frames signal each other with window messages: the top frame tells
+  // sub-frames a decision is ready, and a sub-frame with none asks the top.
+  let frameAsks = 0;
+  window.addEventListener('message', (event) => {
+    if (event.data?.prismFrameAsk === true) frameAsks++;
+  });
+  window.__prismCheck = { frameAsks: () => frameAsks };
 
   setInterval(tick, 500);
   tick();

@@ -1,6 +1,11 @@
 import { createStore } from 'solid-js/store';
 import { render } from 'solid-js/web';
-import { getSelectionInfo, isValidSelectionText, rangesRect } from '../../src/engine/selection/selectionInfo';
+import {
+  getSelectionInfo,
+  isValidSelectionText,
+  lastLineRect,
+  rangesRect,
+} from '../../src/engine/selection/selectionInfo';
 import type { Translator } from '../../src/engine/translator';
 import { translateOne } from '../../src/engine/translator';
 import { baseLanguageTag } from '../../src/shared/languages';
@@ -333,7 +338,7 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
     anchorRanges = ranges;
     triggerFromKeyboard = fromKeyboard;
     const viewport = viewportSize();
-    const trigger = placeSelectionTrigger(info.rect, viewport, { preferBelow: lastPointerType !== 'mouse' });
+    const trigger = placeSelectionTrigger(info.rect, viewport, triggerOptions(ranges));
     setState({
       buttonVisible: true,
       buttonInView: true,
@@ -379,6 +384,12 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
     }, KEYUP_DEBOUNCE_MS);
   }
 
+  /** Touch screens keep the trigger on the selected line, clear of the system's text menu. */
+  function triggerOptions(ranges: readonly Range[] | null) {
+    const touch = lastPointerType !== 'mouse';
+    return { preferBelow: touch, beside: touch && ranges ? (lastLineRect(ranges) ?? undefined) : undefined };
+  }
+
   /**
    * Which kind of pointer last touched the page. Mouse selections end in
    * mouseup, so selectionchange is only acted on after a touch or pen; that
@@ -417,7 +428,7 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
       const rect = anchorRanges && rangesRect(anchorRanges);
       if (!rect) return; // its text was removed or replaced; stay where it was
       const viewport = viewportSize();
-      const trigger = placeSelectionTrigger(rect, viewport, { preferBelow: lastPointerType !== 'mouse' });
+      const trigger = placeSelectionTrigger(rect, viewport, triggerOptions(anchorRanges));
       setState({
         buttonInView: rect.bottom > 0 && rect.top < viewport.height,
         buttonTop: trigger.top,
