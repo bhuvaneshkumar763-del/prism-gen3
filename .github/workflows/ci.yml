@@ -12,9 +12,9 @@ jobs:
   build-and-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
@@ -25,36 +25,22 @@ jobs:
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
 
-      # Gen 3 plan, Session 9: finalized CI order — typecheck → lint →
-      # engine-purity → foot-gun guards → tests+coverage → build →
-      # bundle-size guardrail → E2E → zip artifact. Each step is a real
-      # gate (not advisory) except lint, which is exit-0-clean as of this
-      # session (2 pre-existing noNonNullAssertion warnings, 0 errors) —
-      # see CLAUDE.md's Testing section for why warnings don't block.
+      # Every step is a gate. Lint warnings don't fail it; errors do.
       - name: Typecheck
         run: npm run compile
 
       - name: Lint
         run: npm run lint
 
-      # Gen 3 plan, design principle #3: the engine/browser-API boundary is
-      # mechanically enforced, not just conventional — see
-      # scripts/check-engine-purity.mjs and src/engine/README.md.
+      # src/engine and src/shared must not use browser APIs (src/engine/README.md).
       - name: Engine-purity guard
         run: npm run guard:engine-purity
 
-      # Gen 3 plan, Session 8 hardening pass: the old repo shipped the
-      # identical "reads a plain configStore.get() value directly inside
-      # JSX, never re-renders" bug three separate times before a guard
-      # existed for it — see scripts/check-solid-reactivity.mjs.
+      # A configStore.get() read outside a reactive scope never re-renders.
       - name: Solid-reactivity guard
         run: npm run guard:solid-reactivity
 
-      # Gen 3 plan, design principle #2: coverage is a CI gate from
-      # Session 1, not backfilled after the fact. Scoped to src/engine/ and
-      # src/shared/ — see vitest.config.ts's coverage.include/thresholds.
-      # Extension-UI coverage under entrypoints/ is a deliberate, documented
-      # carve-out, not a silent gap.
+      # Coverage limits per folder are in vitest.config.ts.
       - name: Unit tests + coverage gate
         run: npm run test:coverage
 
@@ -69,22 +55,18 @@ jobs:
           git diff --exit-code --stat -- safari/ || { echo "::error::The Safari copy in safari/ is out of date. Run 'npm run safari:sync' and commit."; exit 1; }
           test -z "$(git status --porcelain -- safari/)" || { echo "::error::npm run safari:sync added files under safari/. Run it locally and commit them."; git status --porcelain -- safari/; exit 1; }
 
-      # Gen 3 plan, Session 9: catches accidental dependency bloat before
-      # it ships — see scripts/check-bundle-size.mjs for the threshold and
-      # why it was picked from a real measurement, not a round number.
+      # Both builds, total and largest file; limits in scripts/check-bundle-size.mjs.
+      - name: Build Firefox extension (for the size check)
+        run: npm run build:firefox
+
       - name: Bundle-size guardrail
         run: npm run guard:bundle-size
 
-      # Gen 3 plan, Session 9: the first committed E2E harness in this
-      # repo — see tests/e2e/run.mjs's header comment for what it checks
-      # and why it launches full Chrome with --headless=new rather than
-      # relying on Playwright's default chrome-headless-shell (which has
-      # zero extension support).
+      # Full Chrome with --headless=new: chrome-headless-shell can't load extensions.
       - name: E2E smoke test
         run: npm run test:e2e
 
-      # Fix plan N-1: saved pages translated again with Google's recorded
-      # answers, no network — see tests/replay/run.mjs.
+      # Saved pages translated with Google's recorded answers, no network.
       - name: Page replay tests
         run: npm run test:replay
 
@@ -92,7 +74,7 @@ jobs:
         run: npm run zip
 
       - name: Upload Chrome zip artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: prism-gen3-chrome
           path: .output/*-chrome.zip
@@ -100,9 +82,9 @@ jobs:
   build-firefox:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
@@ -117,7 +99,7 @@ jobs:
         run: npm run zip:firefox
 
       - name: Upload Firefox zip artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: prism-gen3-firefox
           path: .output/*-firefox.zip

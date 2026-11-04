@@ -21,11 +21,11 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
 
@@ -55,4 +55,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
           XPI: ${{ steps.fetch.outputs.xpi }}
-        run: gh release upload "v$VERSION" "$XPI" --clobber --repo "$GITHUB_REPOSITORY"
+        # The unsigned zip was only a stand-in; with it gone, the release has one Firefox file.
+        run: |
+          gh release upload "v$VERSION" "$XPI" --clobber --repo "$GITHUB_REPOSITORY"
+          gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' \
+            | { grep -- '-firefox\.zip$' || true; } \
+            | while read -r name; do gh release delete-asset "v$VERSION" "$name" --yes --repo "$GITHUB_REPOSITORY"; done
