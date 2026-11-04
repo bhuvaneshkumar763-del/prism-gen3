@@ -196,8 +196,8 @@ export function PageTranslationTab(props: SettingsTabProps) {
         <h2>Source language picked in the bubble</h2>
         <p class="hint">
           Picking a language in the bubble's "From" menu retranslates the current page from that language right now — a
-          one-off correction for when auto-detection got the whole page wrong, not a standing rule. A fresh page load goes
-          back to automatic detection.
+          one-off correction for when auto-detection got the whole page wrong, not a standing rule. A fresh page load
+          goes back to automatic detection.
         </p>
         <Show when={sourceLanguageHostEntries().length > 0} fallback={<p class="listEditorEmpty">None</p>}>
           <ul class="siteTable">

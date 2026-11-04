@@ -38,8 +38,8 @@ describe('PageTranslationTab', () => {
   }
 
   it('"Test translation" waits for an API key typed just before it to finish saving', async () => {
-    let finishSave: () => void = () => {};
-    const setField = vi.fn(() => new Promise<void>((resolve) => (finishSave = resolve)));
+    const pendingSaves: Array<() => void> = [];
+    const setField = vi.fn(() => new Promise<void>((resolve) => pendingSaves.push(resolve)));
     sendMessage.mockResolvedValue({ ok: true, value: 'Bonjour' });
     const el = mount({ pageTranslatorProvider: 'googleCloudTranslate' }, setField);
 
@@ -53,7 +53,7 @@ describe('PageTranslationTab', () => {
 
     expect(setField).toHaveBeenCalledWith('googleCloudTranslateApiKey', 'new-key');
     expect(sendMessage).not.toHaveBeenCalled();
-    finishSave();
+    for (const finish of pendingSaves) finish();
     await vi.waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(1));
   });
 

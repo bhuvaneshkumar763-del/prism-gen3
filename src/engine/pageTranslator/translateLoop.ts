@@ -7,6 +7,7 @@ import { createAttributeTranslator } from './attributeTranslator';
 import { collectTextNodes, isNoTranslateNode } from './collectTextNodes';
 import { createDedupeTracker } from './dedupe';
 import {
+  backOnline,
   backoffDelay,
   batchFailed,
   batchSucceeded,
@@ -112,10 +113,11 @@ export function createPageTranslator(options: PageTranslatorOptions) {
 
   /** The last content this engine processed for a tracked node; see `queueOrRequeueIfChanged`. */
   const lastSeenText = new WeakMap<Text, string>();
-  const requeueAt = new WeakMap<Text, number>();
-  const missingResultAttempts = new WeakMap<Text, number>();
-  /** One pending cooldown-retry timer per node in `noteMissingResult`. */
-  const cooldownRetryScheduled = new WeakSet<Text>();
+  /** Per-cycle retry state: reset by translatePage(), so a new language gets fresh retries. */
+  let requeueAt = new WeakMap<Text, number>();
+  let missingResultAttempts = new WeakMap<Text, number>();
+  /** The cycle a node's pending cooldown-retry timer belongs to; one timer per node per cycle. */
+  const cooldownRetryScheduled = new WeakMap<Text, number>();
 
   const stateListeners = new Set<(state: PageLanguageState) => void>();
   const errorListeners = new Set<(message: string | null, kind: ErrorKind) => void>();
@@ -123,9 +125,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
   const progressListeners = new Set<(done: number, total: number) => void>();
 
   const progress = createProgress((done, total) => {
-    progressListeners.forEach((cb) => {
-      cb(done, total);
-    });
+    notifyAll(progressListeners, done, total);
   });
   let errors: ErrorState = INITIAL_ERROR_STATE;
 
@@ -141,12 +141,21 @@ export function createPageTranslator(options: PageTranslatorOptions) {
    */
   let inFlightGeneration: number | null = null;
 
+  /** A throwing UI listener must not abort the loop mid-batch. */
+  function notifyAll<A extends unknown[]>(listeners: Set<(...args: A) => void>, ...args: A): void {
+    listeners.forEach((cb) => {
+      try {
+        cb(...args);
+      } catch (e) {
+        console.error('[prism] page translator listener failed', e);
+      }
+    });
+  }
+
   function setWorking(next: boolean): void {
     if (next === working) return;
     working = next;
-    workingListeners.forEach((cb) => {
-      cb(next);
-    });
+    notifyAll(workingListeners, next);
   }
 
   /**
@@ -164,9 +173,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     errors = next;
     const after = shownError(next);
     if (before?.message === after?.message && before?.kind === after?.kind) return;
-    errorListeners.forEach((cb) => {
-      cb(after?.message ?? null, after?.kind ?? null);
-    });
+    notifyAll(errorListeners, after?.message ?? null, after?.kind ?? null);
     recomputeWorking();
   }
 
@@ -226,6 +233,8 @@ export function createPageTranslator(options: PageTranslatorOptions) {
   function requeueBatch(batch: readonly Text[]): void {
     const requeued: Text[] = [];
     for (const node of batch) {
+      // A node the write-back already requeued (changed in flight) is queued once.
+      if (queuedSet.has(node)) continue;
       if (node.isConnected) requeued.push(node);
       else lastSeenText.delete(node);
     }
@@ -262,13 +271,13 @@ export function createPageTranslator(options: PageTranslatorOptions) {
     if (!text || !HAS_LETTER.test(text)) return;
     const last = requeueAt.get(node);
     if (last !== undefined && Date.now() - last < MISSING_RESULT_COOLDOWN_MS) {
-      if (!cooldownRetryScheduled.has(node)) {
-        cooldownRetryScheduled.add(node);
+      if (cooldownRetryScheduled.get(node) !== cycleGeneration) {
         // Generation-checked so the retry can't fire into a restored or newer cycle.
         const scheduledGeneration = cycleGeneration;
+        cooldownRetryScheduled.set(node, scheduledGeneration);
         setTimeout(
           () => {
-            cooldownRetryScheduled.delete(node);
+            if (cooldownRetryScheduled.get(node) === scheduledGeneration) cooldownRetryScheduled.delete(node);
             if (scheduledGeneration !== cycleGeneration) return;
             noteMissingResult(node);
           },
@@ -326,6 +335,8 @@ export function createPageTranslator(options: PageTranslatorOptions) {
       scheduler.backOff(OFFLINE_RECHECK_MS);
       return true;
     }
+    // Back online: "Offline" is no longer true, whatever this batch brings.
+    if (errors.error?.kind === 'offline') setErrors(backOnline(errors));
     if (hasWork && !(await translateNextBatch())) return false;
 
     const backoff = backoffDelay(errors);
@@ -402,18 +413,30 @@ export function createPageTranslator(options: PageTranslatorOptions) {
 
   /** Sends one batch and handles its results. Resolves `false` if the cycle moved on meanwhile. */
   async function translateNextBatch(): Promise<boolean> {
-    const batchingHint = options.getBatchingHint();
-    const batch = takeBatch(batchingHint);
-    // What is actually sent per group: one string per node, except a
-    // word-per-element run, which goes as one string (see grouping.ts's
-    // `slotsForGroup`). `outcome.value[i]` below indexes these slots.
-    const slotGroups = groupNodesForBatching(batch, batchingHint).map(slotsForGroup);
     const requestedUnderGeneration = cycleGeneration;
+    let batch: Text[] = [];
+    /** Nodes already written by `onPieceComplete`, so a failure doesn't re-send their translation. */
+    const written = new Set<Text>();
     inFlightGeneration = requestedUnderGeneration;
-    recomputeWorking();
-    const writeSlot = createSlotWriter(slotGroups, writerDeps);
 
+    // Everything after the splice is inside the `try`: a throw here (a grouping
+    // bug) must requeue the batch and back off, not drop it and spin at 0ms.
     try {
+      const batchingHint = options.getBatchingHint();
+      batch = takeBatch(batchingHint);
+      // What is actually sent per group: one string per node, except a
+      // word-per-element run, which goes as one string (see grouping.ts's
+      // `slotsForGroup`). `outcome.value[i]` below indexes these slots.
+      const slotGroups = groupNodesForBatching(batch, batchingHint).map(slotsForGroup);
+      recomputeWorking();
+      const writeSlot = createSlotWriter(slotGroups, {
+        ...writerDeps,
+        onTranslated(node: Text, sourceChars: number): void {
+          written.add(node);
+          writerDeps.onTranslated(node, sourceChars);
+        },
+      });
+
       const outcomes = await options.translator.translateBatch({
         sourceLanguage: sourceLanguageOverride ?? options.getSourceLanguage(),
         // Lets the provider prefer its own per-piece detection over a
@@ -448,7 +471,7 @@ export function createPageTranslator(options: PageTranslatorOptions) {
       console.error('[prism] translation batch failed', e);
       // No outcomes at all: the background didn't answer (restart, blip), or
       // not in time. Retry next tick.
-      requeueBatch(batch);
+      requeueBatch(batch.filter((node) => !written.has(node)));
       const message = e instanceof Error ? e.message : String(e);
       recordFailure({ kind: e instanceof TimeoutError ? 'timeout' : 'network', message });
     } finally {
@@ -584,16 +607,14 @@ export function createPageTranslator(options: PageTranslatorOptions) {
   });
 
   // Resume as soon as connectivity returns rather than wait out the backoff
-  // (up to 30s); the offline error clears itself on the next tick.
+  // (up to 30s); the next tick clears the offline error before it sends.
   connectivity.onChange((online) => {
     if (online && pageLanguageState === 'translated') scheduler.wakeNow();
   });
 
   function setState(next: PageLanguageState): void {
     pageLanguageState = next;
-    stateListeners.forEach((cb) => {
-      cb(next);
-    });
+    notifyAll(stateListeners, next);
   }
 
   async function translatePage(targetLanguage: string, sourceLanguage?: string): Promise<void> {
@@ -610,6 +631,8 @@ export function createPageTranslator(options: PageTranslatorOptions) {
 
     currentTargetLanguage = targetLanguage;
     cycleGeneration++;
+    requeueAt = new WeakMap();
+    missingResultAttempts = new WeakMap();
 
     const nodes = collectTextNodes(document.body, noTranslateOptions());
     ledger.reset(nodes);

@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, it } from 'vitest';
 import { fakeBrowser } from '@webext-core/fake-browser';
+import { beforeEach, describe, expect, it } from 'vitest';
 import type { FrameLanguageDecision } from '../../src/platform/messaging/protocol';
 import { createFrameDecisionStore, type SessionArea } from './frameDecisions';
 

@@ -26,14 +26,22 @@ export function createMutationWatcher(options: MutationWatcherOptions) {
     lastWritten.set(node, text);
   }
 
+  function coveredOrSkipped(node: Node, added: ReadonlySet<Node>): boolean {
+    let el = node.parentElement;
+    while (el) {
+      if (added.has(el) || options.isNoTranslateNode(el)) return true;
+      el = el.parentElement;
+    }
+    return false;
+  }
+
   const observer = new MutationObserver((mutations) => {
-    const newRoots: Node[] = [];
+    const added = new Set<Node>();
     const changedTextNodes = new Set<Text>();
 
     for (const mutation of mutations) {
       mutation.addedNodes.forEach((node) => {
-        if (!options.isNoTranslateNode(node) && !hasNoTranslateAncestor(node, options.isNoTranslateNode))
-          newRoots.push(node);
+        added.add(node);
       });
 
       if (mutation.type === 'characterData' && options.isTranslated()) {
@@ -52,8 +60,12 @@ export function createMutationWatcher(options: MutationWatcherOptions) {
       }
     }
 
-    newRoots.forEach((root) => {
-      options.onNewRoot(root);
+    // One ancestor walk per added node does both checks: a no-translate
+    // ancestor drops it, and so does another added node above it, whose own
+    // walk already covers it.
+    added.forEach((node) => {
+      if (options.isNoTranslateNode(node) || coveredOrSkipped(node, added)) return;
+      options.onNewRoot(node);
     });
     changedTextNodes.forEach((node) => {
       options.onChangedTextNode(node);

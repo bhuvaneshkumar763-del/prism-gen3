@@ -1,3 +1,5 @@
+import { UI_FONT_STACK } from '../shared/uiFont';
+
 /**
  * Inline CSS for the floating bubble's shadow root. Inlined because a shadow
  * root on a third-party page can't load the extension's stylesheets by path.
@@ -28,7 +30,7 @@
  */
 export const BUBBLE_STYLES = `
   * { box-sizing: border-box; margin: 0; padding: 0;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; }
+      font-family: ${UI_FONT_STACK}; }
 
   :host { all: initial !important; }
 

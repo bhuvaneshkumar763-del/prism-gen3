@@ -2,7 +2,6 @@ import { type AuthKeySnapshot, ensureAuthReady, hydrateAuthKey, onAuthKeyChange 
 import { createProvider } from '../src/engine/providers/registry';
 import { translationCache } from '../src/platform/cache/translationCache';
 import { configStore } from '../src/platform/configStore';
-import type { FrameLanguageDecision } from '../src/platform/messaging/protocol';
 import { onTrustedMessage, sendMessage } from '../src/platform/messaging/protocol';
 import { getActiveTabId } from '../src/platform/messaging/tabTarget';
 import {
@@ -12,6 +11,15 @@ import {
 } from '../src/platform/pieceTranslation';
 import { type OpenExtensionTab, planOpenSettings } from '../src/shared/settingsTab';
 import { TOGGLE_TRANSLATE_COMMAND } from '../src/shared/shortcut';
+import {
+  ensureContextMenus,
+  RESTORE_MENU_ID,
+  TRANSLATE_MENU_ID,
+  TRANSLATE_SELECTION_MENU_ID,
+} from './lib/contextMenus';
+import { createFailureBadge } from './lib/failureBadge';
+import { createFrameDecisionStore, type SessionArea } from './lib/frameDecisions';
+import { tabIdOrActive } from './lib/targetTab';
 
 /**
  * Service worker: translates for content scripts over the typed messaging
@@ -57,27 +65,19 @@ const resolveActiveProvider = createProviderResolver(configStore, createProvider
  * sub-frames. Cleared on navigation start and tab close; it also carries
  * `mainFrameOrigin` so a sub-frame that polls early rejects a stale entry.
  */
-const frameLanguageDecisions = new Map<number, FrameLanguageDecision>();
+const frameLanguageDecisions = createFrameDecisionStore(browser.storage.session as unknown as SessionArea | undefined);
 
-const TRANSLATE_MENU_ID = 'prism-translate-page';
-const RESTORE_MENU_ID = 'prism-show-original';
-/** Gives keyboard users (Shift+F10) and anyone who dismissed the floating button a way to translate a selection. */
-const TRANSLATE_SELECTION_MENU_ID = 'prism-translate-selection';
-
-async function translateActiveTab(): Promise<void> {
+async function translateTab(tabId: number): Promise<void> {
   await configStore.onReady();
-  const tabId = await getActiveTabId();
   await sendMessage('pageTranslate', { targetLanguage: configStore.get('targetLanguage') }, tabId);
 }
 
-async function restoreActiveTab(): Promise<void> {
-  const tabId = await getActiveTabId();
+async function restoreTab(tabId: number): Promise<void> {
   await sendMessage('pageRestore', undefined, tabId);
 }
 
-/** Toggles based on the active tab's current state — used by the keyboard command, where there's no separate "translate" vs "restore" affordance to pick from. */
-async function toggleActiveTab(): Promise<void> {
-  const tabId = await getActiveTabId();
+/** Toggles based on the tab's current state — used by the keyboard command, where there's no separate "translate" vs "restore" affordance to pick from. */
+async function toggleTab(tabId: number): Promise<void> {
   const state = await sendMessage('getPageState', undefined, tabId);
   if (state === 'translated') {
     await sendMessage('pageRestore', undefined, tabId);
@@ -94,13 +94,21 @@ async function toggleActiveTab(): Promise<void> {
  */
 const FAILURE_BADGE_MS = 3000;
 
-function showFailureBadge(e: unknown): void {
-  console.warn('[prism] page action failed', e);
-  void browser.action.setBadgeBackgroundColor({ color: '#d93025' });
-  void browser.action.setBadgeText({ text: '!' });
-  setTimeout(() => {
-    void browser.action.setBadgeText({ text: '' });
-  }, FAILURE_BADGE_MS);
+// `browserAction` is the MV2 name (Firefox, Orion).
+const showFailureBadgeOn = createFailureBadge(browser.action ?? browser.browserAction, FAILURE_BADGE_MS);
+
+/** Runs a menu or shortcut action on the tab it was for, or shows the failure badge there. */
+function runOnTab(tab: { id?: number } | undefined, action: (tabId: number) => Promise<void>): void {
+  let tabId: number | undefined;
+  tabIdOrActive(tab, getActiveTabId)
+    .then((id) => {
+      tabId = id;
+      return action(id);
+    })
+    .catch((e) => {
+      console.warn('[prism] page action failed', e);
+      showFailureBadgeOn(tabId);
+    });
 }
 
 const GOOGLE_AUTH_STORAGE_KEY = 'googleAuthKeySnapshot';
@@ -171,37 +179,22 @@ export default defineBackground(() => {
     }
   });
 
-  // Context-menu items outlive the worker, which re-runs this file on every
-  // wake, so they're created only on install/update. Reading lastError
-  // silences the duplicate-id error an update can still raise.
-  browser.runtime.onInstalled.addListener(() => {
-    browser.contextMenus.create({ id: TRANSLATE_MENU_ID, title: 'Translate this page', contexts: ['page'] }, () => {
-      void browser.runtime.lastError;
-    });
-    browser.contextMenus.create({ id: RESTORE_MENU_ID, title: 'Show original text', contexts: ['page'] }, () => {
-      void browser.runtime.lastError;
-    });
-    // %s is replaced by the browser with the selected text.
-    browser.contextMenus.create(
-      { id: TRANSLATE_SELECTION_MENU_ID, title: 'Translate “%s”', contexts: ['selection'] },
-      () => {
-        void browser.runtime.lastError;
-      },
-    );
+  ensureContextMenus(browser.contextMenus).catch((e) => {
+    console.warn('[prism] could not create the right-click menu items', e);
   });
   browser.contextMenus.onClicked.addListener((info, tab) => {
-    if (info.menuItemId === TRANSLATE_MENU_ID) translateActiveTab().catch(showFailureBadge);
-    if (info.menuItemId === RESTORE_MENU_ID) restoreActiveTab().catch(showFailureBadge);
+    if (info.menuItemId === TRANSLATE_MENU_ID) runOnTab(tab, translateTab);
+    if (info.menuItemId === RESTORE_MENU_ID) runOnTab(tab, restoreTab);
     if (info.menuItemId === TRANSLATE_SELECTION_MENU_ID) {
       const text = info.selectionText?.trim();
       if (text && tab?.id !== undefined) {
-        sendMessage('translateSelection', { text }, tab.id).catch(showFailureBadge);
+        runOnTab(tab, (tabId) => sendMessage('translateSelection', { text }, tabId));
       }
     }
   });
 
-  browser.commands.onCommand.addListener((command) => {
-    if (command === TOGGLE_TRANSLATE_COMMAND) toggleActiveTab().catch(showFailureBadge);
+  browser.commands.onCommand.addListener((command, tab) => {
+    if (command === TOGGLE_TRANSLATE_COMMAND) runOnTab(tab, toggleTab);
   });
 
   onTrustedMessage('openOptionsPage', (message) => {
@@ -209,26 +202,27 @@ export default defineBackground(() => {
   });
 
   browser.tabs.onRemoved.addListener((tabId) => {
-    frameLanguageDecisions.delete(tabId);
+    void frameLanguageDecisions.delete(tabId);
   });
 
   // Drop the tab's decision as soon as a top-level navigation starts (needs
   // only `changeInfo.status`, no extra permission). The `mainFrameOrigin`
   // check in content.ts covers the race this can't close.
   browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
-    if (changeInfo.status === 'loading') frameLanguageDecisions.delete(tabId);
+    if (changeInfo.status === 'loading') void frameLanguageDecisions.delete(tabId);
   });
 
-  onTrustedMessage('reportFrameLanguageDecision', (message) => {
+  // Answered once stored, so a worker restart right after can't lose it.
+  onTrustedMessage('reportFrameLanguageDecision', async (message) => {
     const tabId = message.sender.tab?.id;
     if (tabId === undefined) return;
-    frameLanguageDecisions.set(tabId, message.data);
+    await frameLanguageDecisions.set(tabId, message.data);
   });
 
   onTrustedMessage('getFrameLanguageDecision', (message) => {
     const tabId = message.sender.tab?.id;
     if (tabId === undefined) return null;
-    return frameLanguageDecisions.get(tabId) ?? null;
+    return frameLanguageDecisions.get(tabId);
   });
 
   onTrustedMessage('detectTabLanguage', async (message) => {

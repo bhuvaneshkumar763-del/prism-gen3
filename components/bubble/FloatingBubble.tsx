@@ -551,8 +551,9 @@ export function FloatingBubble(props: FloatingBubbleProps) {
   /**
    * One-off retranslate from `code`, to correct bad auto-detection. `code` is
    * saved to `sourceLanguageByHost` (what this picker shows on later visits,
-   * listed in Settings) but not sent on later requests: a forced source on text already in another
-   * language mistranslates it (Google: "History" with source=vi → "Association").
+   * listed in Settings) but not sent on later requests: a forced source on
+   * text already in another language mistranslates it (Google: "History"
+   * with source=vi → "Association").
    */
   function onSourceLanguageChange(e: Event): void {
     if (!e.isTrusted) return;
@@ -697,7 +698,12 @@ export function FloatingBubble(props: FloatingBubbleProps) {
           </div>
         </Show>
         <div class="body">
-          <button type="button" class="primary" disabled={(props.state.busy && !restorable()) || offline()} on:click={onPrimaryClick}>
+          <button
+            type="button"
+            class="primary"
+            disabled={(props.state.busy && !restorable()) || offline()}
+            on:click={onPrimaryClick}
+          >
             {primaryLabel()}
           </button>
           <Show when={props.state.errorMessage && !offline()}>

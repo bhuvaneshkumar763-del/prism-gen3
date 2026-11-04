@@ -30,7 +30,9 @@ function deepActiveElement(): Element | null {
 function copyWithCommand(text: string): boolean {
   const selection = window.getSelection();
   const savedRanges: Range[] = [];
-  for (let i = 0; i < (selection?.rangeCount ?? 0); i++) savedRanges.push(selection!.getRangeAt(i).cloneRange());
+  if (selection) {
+    for (let i = 0; i < selection.rangeCount; i++) savedRanges.push(selection.getRangeAt(i).cloneRange());
+  }
   const previousFocus = deepActiveElement();
 
   const onCopy = (e: Event) => {

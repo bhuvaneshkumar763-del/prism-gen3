@@ -351,8 +351,7 @@ export default defineContentScript({
         if (event.data?.[FRAME_ASK_KEY] !== true || event.origin !== location.origin) return;
         if (!lastPublished || republishQueued) return;
         republishQueued = true;
-        const command = lastPublished;
-        publishToSubFrames(command);
+        publishToSubFrames(lastPublished);
         void publishing.then(() => {
           republishQueued = false;
         });

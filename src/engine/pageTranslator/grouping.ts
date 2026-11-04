@@ -39,6 +39,24 @@ const BLOCK_TAGS = new Set([
   'FIGCAPTION',
   'DT',
   'DD',
+  // Page-section and list/table containers: text directly under two of them
+  // (a header and a footer) must not share one piece.
+  'HEADER',
+  'FOOTER',
+  'NAV',
+  'MAIN',
+  'ASIDE',
+  'UL',
+  'OL',
+  'DL',
+  'TABLE',
+  'CAPTION',
+  'FORM',
+  'FIELDSET',
+  'DETAILS',
+  'SUMMARY',
+  'FIGURE',
+  'ADDRESS',
 ]);
 
 /** ASCII and full-width (CJK) sentence-final punctuation, optionally followed by a closing quote/paren and/or trailing whitespace. */
@@ -47,13 +65,21 @@ const SENTENCE_END = /[.!?。!?][)"'’”]*\s*$/;
 /** How far a group may grow past `maxGroupChars` while waiting for a clean sentence boundary, rather than cutting mid-sentence. */
 const SENTENCE_OVERFLOW_FACTOR = 1.5;
 
-/** Nearest `BLOCK_TAGS` ancestor; shared with viewportPriority.ts so "block" means one thing. */
+/**
+ * Nearest `BLOCK_TAGS` ancestor; shared with viewportPriority.ts so "block"
+ * means one thing. A shadow root's host counts as a block, so two components'
+ * text never shares a piece.
+ */
 export function nearestBlockAncestor(node: Text): Element | null {
   let el = node.parentElement;
+  let last: Node = node;
   while (el && !BLOCK_TAGS.has(el.tagName)) {
+    last = el;
     el = el.parentElement;
   }
-  return el;
+  if (el) return el;
+  const root = last.parentNode;
+  return root && root.nodeType === Node.DOCUMENT_FRAGMENT_NODE ? ((root as ShadowRoot).host ?? null) : null;
 }
 
 /**

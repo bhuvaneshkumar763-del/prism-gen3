@@ -5,7 +5,7 @@
  */
 
 import { siteListIncludesHostname } from '../../shared/config/listMutations';
-import { baseLanguageTag } from '../../shared/languages';
+import { sameLanguage } from '../../shared/languages';
 
 const TRANSLATION_SERVICE_HOSTS = new Set([
   'translate.googleusercontent.com',
@@ -50,11 +50,12 @@ export function shouldAutoTranslateOnLoad(input: AutoTranslateDecisionInput): bo
   if (siteListIncludesHostname(input.alwaysTranslateSites, input.hostname)) return true;
 
   if (input.originalLanguage === 'und') return false;
-  // Compared by base tag so 'pt-BR' matches a plain 'pt' target or rule.
-  const originalBase = baseLanguageTag(input.originalLanguage);
-  if (originalBase === baseLanguageTag(input.targetLanguage)) return false;
-  if (input.neverTranslateLangs.some((code) => baseLanguageTag(code) === originalBase)) return false;
-  if (input.alwaysTranslateLangs.some((code) => baseLanguageTag(code) === originalBase)) return true;
+  // `sameLanguage`, so 'pt-BR' matches a plain 'pt' target or rule but
+  // Simplified and Traditional Chinese stay apart.
+  const original = input.originalLanguage;
+  if (sameLanguage(original, input.targetLanguage)) return false;
+  if (input.neverTranslateLangs.some((code) => sameLanguage(code, original))) return false;
+  if (input.alwaysTranslateLangs.some((code) => sameLanguage(code, original))) return true;
 
   return false;
 }

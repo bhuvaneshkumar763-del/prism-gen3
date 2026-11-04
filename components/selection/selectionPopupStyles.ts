@@ -1,3 +1,5 @@
+import { UI_FONT_STACK } from '../shared/uiFont';
+
 /*
  * Rationale lives here, in a JS comment the minifier strips — CSS comments
  * inside the string below ship verbatim in the content script on every page.
@@ -56,7 +58,7 @@ export const SELECTION_POPUP_STYLES = `
     border-radius: 8px;
     background: #1e1b4b;
     color: #fff;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+    font-family: ${UI_FONT_STACK};
     font-size: 13px;
     line-height: 1.4;
     box-shadow: 0 4px 16px rgba(15, 23, 42, 0.35);

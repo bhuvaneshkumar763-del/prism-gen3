@@ -139,6 +139,38 @@ describe('shouldAutoTranslateOnLoad', () => {
   });
 });
 
+describe('shouldAutoTranslateOnLoad: Simplified vs Traditional Chinese', () => {
+  it('translates a Simplified Chinese page to Traditional Chinese, not skipping it as the same language', () => {
+    expect(
+      shouldAutoTranslateOnLoad(
+        baseInput({ originalLanguage: 'zh-CN', targetLanguage: 'zh-TW', alwaysTranslateLangs: ['zh-CN'] }),
+      ),
+    ).toBe(true);
+  });
+
+  it('a Traditional Chinese never-rule does not block a Simplified Chinese page', () => {
+    expect(
+      shouldAutoTranslateOnLoad(
+        baseInput({ originalLanguage: 'zh-CN', neverTranslateLangs: ['zh-TW'], alwaysTranslateLangs: ['zh-CN'] }),
+      ),
+    ).toBe(true);
+  });
+
+  it('a Traditional Chinese always-rule does not auto-translate a Simplified Chinese page', () => {
+    expect(shouldAutoTranslateOnLoad(baseInput({ originalLanguage: 'zh-CN', alwaysTranslateLangs: ['zh-TW'] }))).toBe(
+      false,
+    );
+  });
+
+  it('still skips a Simplified Chinese page when the target is Simplified Chinese', () => {
+    expect(
+      shouldAutoTranslateOnLoad(
+        baseInput({ originalLanguage: 'zh-CN', targetLanguage: 'zh-CN', alwaysTranslateLangs: ['zh-CN'] }),
+      ),
+    ).toBe(false);
+  });
+});
+
 describe('isTranslationServiceHost', () => {
   it('recognizes each known third-party translation host', () => {
     expect(isTranslationServiceHost('translate.googleusercontent.com')).toBe(true);

@@ -84,8 +84,11 @@ export function createAttributeTranslator(options: AttributeTranslatorOptions) {
     perEl.set(attribute, value);
   }
 
-  /** Never rejects: callers `void` it, and start() must still install the observer. */
-  async function translateTargets(targets: AttributeTarget[]): Promise<void> {
+  /** Never rejects: callers `void` it. */
+  async function translateTargets(queued: AttributeTarget[]): Promise<void> {
+    // The first batch and an observer drain can overlap, so a queued target
+    // may already hold our translation by the time it's sent.
+    const targets = queued.filter((t) => !isOwnWrite(t.element, t.attribute));
     if (targets.length === 0) return;
     // A restore() during the await must win: writing back would re-translate
     // a restored page and record translated text in `originals`.
