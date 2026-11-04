@@ -74,6 +74,12 @@ jobs:
           done
           echo "::error::The test-page server didn't start"; cat server.log; exit 1
 
+      # Prism's own console warnings, from the simulator's system log.
+      - name: Record the simulator's log
+        run: |
+          nohup xcrun simctl spawn "$UDID" log stream --style compact --level debug \
+            --predicate 'eventMessage CONTAINS[c] "prism"' > sim.log 2>&1 &
+
       - name: Generate the UI-test project
         run: |
           brew install xcodegen
@@ -116,6 +122,7 @@ jobs:
           cp shots/00-prism-app.png out/ 2>/dev/null || true
           for f in out/*.png; do sips -Z 1000 "$f" > /dev/null; done
           cp results.json out/ 2>/dev/null || true
+          tail -c 400000 sim.log > out/sim.log 2>/dev/null || true
           grep -E "error:|Test Case|Executed" xcodebuild.log > out/failures.txt || true
           echo "$DEVICE · run $GITHUB_RUN_ID · ${GITHUB_SHA::7}" > out/README.txt
           cd out

@@ -19,14 +19,8 @@ import {
 } from '../src/platform/pageFrames';
 import { createRemoteTranslator } from '../src/platform/remoteTranslator';
 import { resolveBubbleVisibility } from '../src/shared/config/siteOverrides';
+import { FRAME_SYNC_KEY, pageKeyFromSync } from './lib/frameSync';
 import { pollForFrameDecision } from './lib/subFramePoll';
-
-/**
- * Posted by the top frame to its sub-frames after publishing a new frame
- * decision. It carries no command: a frame that gets it re-reads the decision
- * from the background, so a page posting it itself changes nothing.
- */
-const FRAME_SYNC_KEY = 'prismFrameSync';
 
 /**
  * Posted by a sub-frame to the top frame when the background has no decision
@@ -392,7 +386,9 @@ export default defineContentScript({
 
       window.addEventListener('message', (event) => {
         if (event.data?.[FRAME_SYNC_KEY] !== true) return;
-        if (event.source === window.top && typeof event.data.pageKey === 'string') pageKey = event.data.pageKey;
+        // A sync carries no command: the frame re-reads the decision from the
+        // background, so a page posting one itself changes nothing.
+        pageKey = pageKeyFromSync(event.data, event.origin, location.origin) ?? pageKey;
         syncWithTopFrame().catch((e) => {
           console.warn('[prism] could not follow the page command', e);
         });
