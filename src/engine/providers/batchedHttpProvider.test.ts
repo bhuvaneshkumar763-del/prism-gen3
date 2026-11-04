@@ -191,8 +191,9 @@ describe('createBatchedHttpProvider — batching budget', () => {
     // 200 tiny pieces: 5 content chars each = 1000 total, HALF the 2000
     // content budget — so the content budget alone would bundle all 200
     // into one request. Their wire size is 38 chars each (7600 total), so
-    // the 6000-char hard ceiling closes a batch at 158 pieces and this
-    // splits into 2. Drop the ceiling and this collapses back to 1.
+    // the 6000-char hard ceiling closes a batch at 157 pieces (5966 chars;
+    // the 158th would cross it) and this splits into 2. Drop the ceiling
+    // and this collapses back to 1.
     const pieces = Array.from({ length: 200 }, (_, i) => [`a${String(i).padStart(3, '0')}`, ' ']);
 
     await provider.translateBatch({ sourceLanguage: 'en', targetLanguage: 'es', pieces });
@@ -201,7 +202,7 @@ describe('createBatchedHttpProvider — batching budget', () => {
     const piecesPerCall = fetchMock.mock.calls.map(
       ([, init]) => (JSON.parse((init as RequestInit).body as string) as string[]).length,
     );
-    expect(piecesPerCall).toEqual([158, 42]);
+    expect(piecesPerCall).toEqual([157, 43]);
   });
 
   it('never delivers a shifted translation when a batch response has fewer entries than pieces sent', async () => {
@@ -1306,5 +1307,198 @@ describe('createBatchedHttpProvider — structured failure kinds', () => {
   it("reports a piece still missing after its retry as 'badResponse', not as a network failure", async () => {
     const { error } = await failWith(async () => jsonResponse({ texts: [] }));
     expect(error.kind).toBe('badResponse');
+  });
+});
+
+describe('createBatchedHttpProvider — source language on a suspicious retry', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function sourceRecordingProvider(respond: (call: number, texts: string[]) => string[]) {
+    const sourcesSent: string[] = [];
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(init.body as string) as { source: string; texts: string[] };
+      sourcesSent.push(body.source);
+      return jsonResponse({ texts: respond(sourcesSent.length, body.texts) });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = createBatchedHttpProvider({
+      name: 'retry-source',
+      baseUrl: 'https://example.com',
+      callbacks: {
+        ...plainCallbacks(),
+        getRequestBody: (source, _t, texts) => JSON.stringify({ source, texts }),
+      },
+    });
+    return { provider, sourcesSent };
+  }
+
+  it("keeps an explicit source on a suspicious retry instead of switching to 'auto'", async () => {
+    const { provider, sourcesSent } = sourceRecordingProvider((call, texts) =>
+      call === 1 ? ['', 'mundo'] : texts.map(() => 'hola'),
+    );
+
+    const results = await provider.translateBatch({
+      sourceLanguage: 'en',
+      sourceLanguageIsExplicit: true,
+      targetLanguage: 'es',
+      pieces: [['hello'], ['world']],
+    });
+
+    expect(sourcesSent).toEqual(['en', 'en']);
+    expect(results[0]).toEqual({ ok: true, value: ['hola'] });
+  });
+
+  it("doesn't resend an identical one-piece 'auto' request after a suspicious answer", async () => {
+    const { provider, sourcesSent } = sourceRecordingProvider(() => ['']);
+
+    const [outcome] = await provider.translateBatch({
+      sourceLanguage: 'auto',
+      targetLanguage: 'es',
+      pieces: [['hello']],
+    });
+
+    expect(sourcesSent).toEqual(['auto']);
+    expect(outcome).toMatchObject({ ok: false, error: { kind: 'suspicious' } });
+  });
+
+  it("still retries a suspicious piece from a bigger 'auto' batch on its own", async () => {
+    const { provider, sourcesSent } = sourceRecordingProvider((call, texts) =>
+      call === 1 ? ['', 'mundo'] : texts.map(() => 'hola'),
+    );
+
+    const results = await provider.translateBatch({
+      sourceLanguage: 'auto',
+      targetLanguage: 'es',
+      pieces: [['hello'], ['world']],
+    });
+
+    expect(sourcesSent).toEqual(['auto', 'auto']);
+    expect(results[0]).toEqual({ ok: true, value: ['hola'] });
+  });
+});
+
+describe('createBatchedHttpProvider — retry bookkeeping', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it("keeps a suspicious piece 'suspicious' when its retry runs out of time before it is sent", async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        calls++;
+        // The first answer arrives after the whole budget is spent, so the
+        // retry has no time left when it leaves the queue.
+        if (calls === 1) vi.setSystemTime(Date.now() + 31000);
+        return jsonResponse({ texts: [''] });
+      }),
+    );
+    const provider = createBatchedHttpProvider({
+      name: 'late-retry',
+      baseUrl: 'https://example.com',
+      callbacks: { ...plainCallbacks(), getRequestBody: () => '{}' },
+    });
+
+    const [outcome] = await provider.translateBatch({
+      sourceLanguage: 'en',
+      targetLanguage: 'es',
+      pieces: [['hello']],
+    });
+
+    expect(outcome).toMatchObject({ ok: false, error: { kind: 'suspicious' } });
+  });
+
+  it('counts each piece once in the suspicious window, even when reading its batch throws partway', async () => {
+    const onSuspiciousStreak = vi.fn();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init: RequestInit) => {
+        const texts = JSON.parse(init.body as string) as string[];
+        if (texts.length === 2) return jsonResponse({ texts: ['ok', 'THROW'] });
+        return jsonResponse({ texts: [''] });
+      }),
+    );
+    const callbacks = plainCallbacks();
+    const provider = createBatchedHttpProvider({
+      name: 'double-resolve',
+      baseUrl: 'https://example.com',
+      callbacks: {
+        ...callbacks,
+        getRequestBody: (_s, _t, texts) => JSON.stringify(texts),
+        splitPieceResponse: (raw: string) => {
+          if (raw === 'THROW') throw new Error('unreadable');
+          return callbacks.splitPieceResponse(raw);
+        },
+      },
+      onSuspiciousStreak,
+    });
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      // 27 suspicious samples, then a batch whose two pieces are 2 more:
+      // 29 in a 30-slot window, which must not count as a full window.
+      for (let i = 0; i < 27; i++) {
+        await provider.translateBatch({ sourceLanguage: 'en', targetLanguage: 'es', pieces: [[`p${i}`]] });
+      }
+      await provider.translateBatch({ sourceLanguage: 'en', targetLanguage: 'es', pieces: [['a'], ['b']] });
+    } finally {
+      errorLog.mockRestore();
+    }
+
+    expect(onSuspiciousStreak).not.toHaveBeenCalled();
+  });
+
+  it('closes a batch before a piece would push it past the wire ceiling', async () => {
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      const sent = JSON.parse(init.body as string) as string[];
+      return jsonResponse({ texts: sent.map(() => 'x') });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = createBatchedHttpProvider({
+      name: 'wire-precheck',
+      baseUrl: 'https://example.com',
+      maxBatchChars: 100000,
+      callbacks: { ...plainCallbacks(), getRequestBody: (_s, _t, texts) => JSON.stringify(texts) },
+    });
+
+    await provider.translateBatch({
+      sourceLanguage: 'en',
+      targetLanguage: 'es',
+      pieces: [['a'.repeat(4000)], ['b'.repeat(4000)]],
+    });
+
+    const wirePerCall = fetchMock.mock.calls.map(([, init]) =>
+      (JSON.parse((init as RequestInit).body as string) as string[]).reduce((sum, t) => sum + t.length, 0),
+    );
+    expect(wirePerCall).toEqual([4000, 4000]);
+  });
+
+  it('honors a Retry-After given as an HTTP date', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response('{}', { status: 429, headers: { 'retry-after': 'Thu, 01 Jan 2026 00:00:05 GMT' } }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ texts: ['ok'] }));
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = createBatchedHttpProvider({
+      name: 'retry-after-date',
+      baseUrl: 'https://example.com',
+      callbacks: { ...plainCallbacks(), getRequestBody: () => '{}' },
+    });
+
+    const resultPromise = provider.translateBatch({ sourceLanguage: 'en', targetLanguage: 'es', pieces: [['hello']] });
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(3000);
+
+    expect(await resultPromise).toEqual([{ ok: true, value: ['ok'] }]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

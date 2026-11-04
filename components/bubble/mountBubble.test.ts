@@ -54,16 +54,8 @@ describe('mountBubble', () => {
   });
 
   it('shows a busy label and disables the primary button while busy', () => {
-    // pageState:'translated' + busy:true is what an active RE-translate
-    // looks like (translatePage() sets state back to 'translated'
-    // synchronously before any real work happens, then real work is what
-    // `busy` now tracks — see translateLoop.ts's isWorking/onWorkingChange
-    // and FloatingBubble.tsx's translated() comment) — restorePage()
-    // itself is synchronous and never actually produces this combination
-    // in real use, so "Translating…" is the correct label here, not
-    // "Restoring…".
     const controller = mountBubble(options());
-    controller.update({ pageState: 'translated', busy: true });
+    controller.update({ pageState: 'original', busy: true });
 
     const shadow = bubbleShadowRoot();
     const primary = shadow.querySelector('.primary') as HTMLButtonElement;
@@ -156,6 +148,19 @@ describe('mountBubble', () => {
     );
 
     expect(onTranslate).toHaveBeenCalledTimes(1);
+    controller.unmount();
+  });
+
+  it("keys typed in the bubble's shadow root don't reach the page's keyboard shortcuts", () => {
+    const controller = mountBubble(options());
+    const pageKeys = vi.fn();
+    document.addEventListener('keydown', pageKeys);
+    const select = bubbleShadowRoot().querySelector('select') as HTMLSelectElement;
+
+    select.dispatchEvent(trusted(new KeyboardEvent('keydown', { key: 'k', bubbles: true, composed: true })));
+
+    document.removeEventListener('keydown', pageKeys);
+    expect(pageKeys).not.toHaveBeenCalled();
     controller.unmount();
   });
 });

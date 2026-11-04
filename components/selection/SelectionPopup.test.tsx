@@ -2,6 +2,7 @@
 import { render } from 'solid-js/web';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SelectionPopup } from './SelectionPopup';
+import { SELECTION_POPUP_STYLES } from './selectionPopupStyles';
 
 describe('SelectionPopup', () => {
   let container: HTMLDivElement | undefined;
@@ -84,5 +85,47 @@ describe('SelectionPopup', () => {
   it('hides the trigger while the panel is open', () => {
     const el = mount({ ...base, buttonVisible: true, panelOpen: true, translatedText: 'x' });
     expect(el.querySelector('.trigger')).toBeNull();
+  });
+
+  it('reads an error out once: its alert is not inside the status region', () => {
+    const el = mount({ ...base, panelOpen: true, errorMessage: 'The service is slow' });
+    expect(el.querySelector('[role="alert"]')?.textContent).toBe('The service is slow');
+    expect(el.querySelector('[role="status"] [role="alert"]')).toBeNull();
+  });
+
+  it('keeps the status region to the message, without the buttons', () => {
+    const el = mount({ ...base, panelOpen: true, translatedText: 'Hola' });
+    expect(el.querySelector('[role="status"]')?.textContent).toBe('Hola');
+    expect(el.querySelector('[role="status"] button')).toBeNull();
+  });
+
+  it('lets a right-to-left result read right to left', () => {
+    const el = mount({ ...base, panelOpen: true, translatedText: 'مرحبا بالعالم' });
+    expect(el.querySelector('.result')?.getAttribute('dir')).toBe('auto');
+  });
+
+  describe('styles', () => {
+    /** The declarations of the first rule for `selector`, within `css`. */
+    function rule(selector: string, css = SELECTION_POPUP_STYLES): string {
+      const escaped = selector.replace(/[.*+?^${}()|[\]\\:]/g, '\\$&');
+      return css.match(new RegExp(`(?:^|[\\s}])${escaped}\\s*\\{([^}]*)\\}`))?.[1] ?? '';
+    }
+    const coarse = () => SELECTION_POPUP_STYLES.match(/@media \(pointer: coarse\) \{([\s\S]*?)\n {2}\}/)?.[1] ?? '';
+
+    it('keeps the paragraphs of a result apart', () => {
+      expect(rule('.result')).toContain('white-space: pre-wrap');
+    });
+
+    it('gives the translate button a touch area of at least 44px', () => {
+      const hitArea = rule('.trigger::before');
+      expect(hitArea).toContain('width: 44px');
+      expect(hitArea).toContain('height: 44px');
+    });
+
+    it('makes Close and Copy at least 44px tall on a touch screen', () => {
+      expect(rule('.close', coarse())).toContain('width: 44px');
+      expect(rule('.close', coarse())).toContain('height: 44px');
+      expect(rule('.copy', coarse())).toContain('min-height: 44px');
+    });
   });
 });

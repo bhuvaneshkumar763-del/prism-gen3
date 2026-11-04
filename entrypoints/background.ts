@@ -1,9 +1,4 @@
-import {
-  type AuthKeySnapshot,
-  ensureAuthReady,
-  getAuthKeySnapshot,
-  hydrateAuthKey,
-} from '../src/engine/providers/google';
+import { type AuthKeySnapshot, ensureAuthReady, hydrateAuthKey, onAuthKeyChange } from '../src/engine/providers/google';
 import { createProvider } from '../src/engine/providers/registry';
 import { translationCache } from '../src/platform/cache/translationCache';
 import { configStore } from '../src/platform/configStore';
@@ -110,12 +105,24 @@ function showFailureBadge(e: unknown): void {
 
 const GOOGLE_AUTH_STORAGE_KEY = 'googleAuthKeySnapshot';
 
+/** Keeps the stored copy in step with every scrape and every rejected key, so a restart never restores a dead key. */
+function persistGoogleAuthKey(snapshot: AuthKeySnapshot | undefined): void {
+  const write = snapshot
+    ? browser.storage.session.set({ [GOOGLE_AUTH_STORAGE_KEY]: snapshot })
+    : browser.storage.session.remove(GOOGLE_AUTH_STORAGE_KEY);
+  void write.catch((e) => {
+    console.warn('[prism] could not update the stored Google auth key', e);
+  });
+}
+
 /**
  * Warms Google's auth key at startup, off the first translate's critical
  * path, and keeps it in `storage.session` (cleared on browser close) so it
  * survives MV3 worker restarts. Best-effort: `google.ts` still fetches lazily.
  */
 async function prefetchGoogleAuthKey(): Promise<void> {
+  // Before the provider check, so a later switch to Google is persisted too.
+  onAuthKeyChange(persistGoogleAuthKey);
   try {
     // Users on another provider shouldn't contact Google at all.
     await configStore.onReady();
@@ -129,9 +136,6 @@ async function prefetchGoogleAuthKey(): Promise<void> {
     }
 
     await ensureAuthReady();
-
-    const fresh = getAuthKeySnapshot();
-    if (fresh) await browser.storage.session.set({ [GOOGLE_AUTH_STORAGE_KEY]: fresh });
   } catch (e) {
     console.warn('[prism] speculative Google auth-key prefetch failed, continuing without it', e);
   }

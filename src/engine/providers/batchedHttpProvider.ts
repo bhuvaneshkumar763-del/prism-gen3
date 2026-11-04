@@ -33,7 +33,8 @@ export interface BatchedProviderCallbacks {
   parseResponse(response: unknown, pieceCount: number): Array<RawPieceResult | null> | null;
   splitPieceResponse(raw: string): string[];
   getRequestBody?(sourceLanguage: string, targetLanguage: string, pieceWireTexts: string[]): string | undefined;
-  getExtraHeaders?(): Array<{ name: string; value: string }>;
+  /** Read just before each send, so a credential refreshed meanwhile is used. */
+  getExtraHeaders?(): Array<{ name: string; value: string }> | Promise<Array<{ name: string; value: string }>>;
 }
 
 export interface BatchedProviderOptions {
@@ -96,6 +97,14 @@ function describeThrown(e: unknown): string {
 }
 
 const MAX_REJECTION_REASON_CHARS = 200;
+
+/** `Retry-After` in ms: either delay-seconds or an HTTP date (RFC 9110 allows both). */
+function parseRetryAfterMs(header: string | null): number | undefined {
+  if (!header) return undefined;
+  const seconds = Number(header.trim());
+  const ms = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(header) - Date.now();
+  return ms > 0 ? Math.min(6000, ms) : undefined;
+}
 
 /**
  * The service's own explanation of a rejection, from the response body —
@@ -261,6 +270,9 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
     pieceWireTexts: string[],
     timeoutMs: number,
   ): Promise<unknown> {
+    const headers = Object.fromEntries(
+      ((await options.callbacks.getExtraHeaders?.()) ?? []).map((h) => [h.name, h.value]),
+    );
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     let backstopTimeout: ReturnType<typeof setTimeout> | undefined;
@@ -280,7 +292,7 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
           try {
             response = await fetch(options.baseUrl, {
               method: 'POST',
-              headers: Object.fromEntries((options.callbacks.getExtraHeaders?.() ?? []).map((h) => [h.name, h.value])),
+              headers,
               body: options.callbacks.getRequestBody?.(sourceLanguage, targetLanguage, pieceWireTexts),
               signal: controller.signal,
             });
@@ -290,12 +302,11 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
 
           const { status } = response;
           if (status === 429 || status >= 500) {
-            const retryAfter = Number.parseFloat(response.headers.get('retry-after') ?? '');
             const error: TranslateError =
               status === 429
                 ? { kind: 'rateLimited', status, message: `${label} rate-limited (HTTP 429)` }
                 : { kind: 'http', status, message: `${label} server error (HTTP ${status})` };
-            throw new RequestFailure(error, true, retryAfter > 0 ? Math.min(6000, retryAfter * 1000) : undefined);
+            throw new RequestFailure(error, true, parseRetryAfterMs(response.headers.get('retry-after')));
           }
           if (!response.ok) {
             const reason = await readRejectionReason(response);
@@ -386,14 +397,13 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
     isIndividualRetry = false,
     // Absolute deadline (ms since epoch), reused as-is by the repair retry.
     deadline: number = Date.now() + OVERALL_DEADLINE_MS,
-    /**
-     * Language a SUSPICIOUS piece is re-requested with. Supplied by a
-     * provider that sends `'auto'` on the wire (see `google.ts`): retrying
-     * such a piece with `'auto'` again would repeat the identical request,
-     * so the caller hands down the page's guessed language instead.
-     */
-    suspiciousRetrySourceLanguage: string | undefined = undefined,
+    /** Language a SUSPICIOUS piece is re-requested with; see `translateBatch`. */
+    suspiciousRetrySourceLanguage: string = sourceLanguage,
   ): Promise<void> {
+    const suspiciousError = (): TranslateError => ({
+      kind: 'suspicious',
+      message: `${label} result kept looking like a silent-echo failure after a repair retry`,
+    });
     try {
       const response = await sendWithRetry(
         sourceLanguage,
@@ -437,36 +447,37 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
           p.resolve(
             err(
               missingBecauseSuspicious.has(p)
-                ? {
-                    kind: 'suspicious',
-                    message: `${label} result kept looking like a silent-echo failure after a repair retry`,
-                  }
+                ? suspiciousError()
                 : { kind: 'badResponse', message: `${label} no result for this piece` },
             ),
           );
         });
         return;
       }
-      // A suspicious piece suggests its declared source language is wrong
-      // (Google echoes input told source == target), so it retries with
-      // `suspiciousRetrySourceLanguage` or 'auto'; a missing piece keeps it.
+      // A suspicious piece retries with `suspiciousRetrySourceLanguage`; a
+      // missing piece keeps its source.
       //
       // Through the shared gate but NOT awaited: this call already holds a
       // slot, so awaiting children deadlocks at low limits. Callers await
       // each piece's own promise, and handleBatch never throws.
       missing.forEach((p) => {
-        void concurrencyGate.run(() =>
-          handleBatch(
-            missingBecauseSuspicious.has(p)
-              ? (suspiciousRetrySourceLanguage ?? (sourceLanguage !== 'auto' ? 'auto' : sourceLanguage))
-              : sourceLanguage,
-            targetLanguage,
-            [p],
-            true,
-            deadline,
-            suspiciousRetrySourceLanguage,
-          ),
-        );
+        const suspicious = missingBecauseSuspicious.has(p);
+        const retrySource = suspicious ? suspiciousRetrySourceLanguage : sourceLanguage;
+        // A lone piece resent unchanged would only get the same echo back.
+        if (suspicious && pending.length === 1 && retrySource === sourceLanguage) {
+          p.resolve(err(suspiciousError()));
+          return;
+        }
+        // A retry that only ran out of time says nothing new about an echoed
+        // piece, so it stays 'suspicious' rather than looking like an outage.
+        const retried: PendingRequest = suspicious
+          ? {
+              ...p,
+              resolve: (settlement) =>
+                p.resolve(!settlement.ok && settlement.error.kind === 'timeout' ? err(suspiciousError()) : settlement),
+            }
+          : p;
+        void concurrencyGate.run(() => handleBatch(retrySource, targetLanguage, [retried], true, deadline));
       });
     } catch (e) {
       console.error(`${label} translation request failed`, e);
@@ -483,7 +494,13 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
 
   return {
     async translateBatch(request: TranslateBatchRequest): Promise<PieceOutcome[]> {
-      const { sourceLanguage, targetLanguage, pieces, onPieceComplete, suspiciousRetrySourceLanguage } = request;
+      const { sourceLanguage, targetLanguage, pieces, onPieceComplete } = request;
+      // An echo under a guessed source suggests the guess is wrong for that
+      // piece, so it retries with 'auto'. An explicit pick is honoured, and
+      // 'auto' has nothing to switch to.
+      const suspiciousRetrySourceLanguage =
+        request.suspiciousRetrySourceLanguage ??
+        (request.sourceLanguageIsExplicit || sourceLanguage === 'auto' ? sourceLanguage : 'auto');
 
       // Bundle pieces into HTTP-request-sized batches, sharing in-flight
       // requests for identical (already-transformed) piece text.
@@ -508,8 +525,13 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
         }
 
         let resolveFn!: (settlement: PieceSettlement) => void;
+        let settled = false;
         const promise = new Promise<PieceSettlement>((resolve) => {
           resolveFn = (settlement) => {
+            // A batch that throws partway settles every piece again from its
+            // catch; only the first settlement counts toward the window.
+            if (settled) return;
+            settled = true;
             // Once the window is over threshold, a suspicious result is
             // reported as `'untranslated'`, a provider failure (likely a broken key).
             const wasSuspicious = !settlement.ok && settlement.error.kind === 'suspicious';
@@ -528,6 +550,13 @@ export function createBatchedHttpProvider(options: BatchedProviderOptions): Tran
         resultPromises.push(promise);
 
         const pending: PendingRequest = { wireText, originalText: piece.join(''), resolve: resolveFn };
+        // The wire ceiling is hard: close the batch before this piece would cross it.
+        if (currentBatch.length > 0 && currentWireChars + wireText.length > HARD_MAX_WIRE_CHARS) {
+          batches.push(currentBatch);
+          currentBatch = [];
+          currentChars = 0;
+          currentWireChars = 0;
+        }
         currentBatch.push(pending);
         // Content against the content budget, wire against the hard ceiling;
         // whichever trips first closes the batch.

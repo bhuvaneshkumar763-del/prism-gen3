@@ -19,9 +19,7 @@ import {
 } from '../src/platform/pageFrames';
 import { createRemoteTranslator } from '../src/platform/remoteTranslator';
 import { resolveBubbleVisibility } from '../src/shared/config/siteOverrides';
-
-/** The bubble/hover tooltip/selection popup would be inert (and just clutter) on an extension-owned page. */
-const SKIP_UI_PROTOCOLS = ['chrome-extension:', 'moz-extension:', 'about:'];
+import { pollForFrameDecision } from './lib/subFramePoll';
 
 /**
  * Posted by the top frame to its sub-frames after publishing a new frame
@@ -29,6 +27,13 @@ const SKIP_UI_PROTOCOLS = ['chrome-extension:', 'moz-extension:', 'about:'];
  * from the background, so a page posting it itself changes nothing.
  */
 const FRAME_SYNC_KEY = 'prismFrameSync';
+
+/**
+ * Posted by a sub-frame to the top frame when the background has no decision
+ * for it (lost, or dropped on a same-document navigation). The top frame just
+ * publishes its current decision again, so a page posting it changes nothing.
+ */
+const FRAME_ASK_KEY = 'prismFrameAsk';
 
 type PageCommand = { kind: 'translate'; targetLanguage: string; sourceLanguage?: string } | { kind: 'restore' };
 
@@ -90,6 +95,9 @@ export default defineContentScript({
     /** The From pick sticks for the page load, as in the page translator, so sub-frames keep using it too. */
     let pickedSourceLanguage: string | undefined;
     let publishing: Promise<void> = Promise.resolve();
+    /** The last command published to sub-frames, re-published when a sub-frame finds no decision. */
+    let lastPublished: PageCommand | null = null;
+    let republishQueued = false;
 
     /** The one entry point for translate/restore in the top frame, whichever control sent it. */
     async function runPageCommand(command: PageCommand, control: PageControl): Promise<PageLanguageState> {
@@ -112,6 +120,7 @@ export default defineContentScript({
      * sub-frames to re-read it. Chained so decisions land in command order.
      */
     function publishToSubFrames(command: PageCommand): void {
+      lastPublished = command;
       const shouldTranslate = command.kind === 'translate';
       const targetLanguage = shouldTranslate ? command.targetLanguage : configStore.get('targetLanguage');
       const pickedSource = pickedSourceLanguage;
@@ -149,7 +158,7 @@ export default defineContentScript({
       }
     }
 
-    if (isTop && !SKIP_UI_PROTOCOLS.includes(location.protocol)) {
+    if (isTop) {
       let bubble: ReturnType<typeof mountBubble> | null = null;
 
       function bubbleShouldShow(): boolean {
@@ -336,6 +345,18 @@ export default defineContentScript({
       onTrustedMessage('getPageWorking', () => {
         return pageTranslator.isWorking();
       });
+
+      // One re-publish at a time, however many sub-frames (or page scripts) ask.
+      window.addEventListener('message', (event) => {
+        if (event.data?.[FRAME_ASK_KEY] !== true || event.origin !== location.origin) return;
+        if (!lastPublished || republishQueued) return;
+        republishQueued = true;
+        const command = lastPublished;
+        publishToSubFrames(command);
+        void publishing.then(() => {
+          republishQueued = false;
+        });
+      });
     } else {
       let followerState: FollowerState = { translated: false };
       let following: Promise<unknown> = Promise.resolve();
@@ -377,13 +398,15 @@ export default defineContentScript({
         // The main frame's report may arrive after this sub-frame loads, so
         // poll, bounded in case the main frame never reports.
         const POLL_INTERVAL_MS = 200;
-        // Covers the main frame's worst case (visibility wait plus language
-        // detection, serial, e.g. a background tab) plus ~1 s of margin.
-        const MAX_ATTEMPTS = Math.ceil(MAIN_FRAME_DECISION_WORST_CASE_MS / POLL_INTERVAL_MS) + 5; // ~9s
-        for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-          if (await syncWithTopFrame()) return;
-          await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-        }
+        await pollForFrameDecision({
+          sync: syncWithTopFrame,
+          intervalMs: POLL_INTERVAL_MS,
+          // Covers the main frame's worst case (visibility wait plus language
+          // detection, serial, e.g. a background tab) plus ~1 s of margin.
+          maxAttempts: Math.ceil(MAIN_FRAME_DECISION_WORST_CASE_MS / POLL_INTERVAL_MS) + 5, // ~9s
+          onFirstWait: () => window.top?.postMessage({ [FRAME_ASK_KEY]: true }, location.origin),
+          onError: (e) => console.warn('[prism] could not follow the page command', e),
+        });
       })();
     }
   },

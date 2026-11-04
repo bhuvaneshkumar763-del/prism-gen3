@@ -33,7 +33,6 @@ import { prioritizeByViewport } from './viewportPriority';
 import { createRestoreLedger, createSlotWriter } from './writeBack';
 
 export type { ErrorKind } from './errorState';
-export { pruneDisconnectedRestoreEntries } from './writeBack';
 
 /**
  * The page-translation engine: collect text nodes, batch-translate them via an

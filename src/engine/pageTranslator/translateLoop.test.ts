@@ -4,7 +4,7 @@ import { err, ok } from '../../shared/result';
 import { TimeoutError } from '../../shared/withTimeout';
 import { connectivity } from '../connectivity';
 import type { PieceOutcome, TranslateError, Translator } from '../translator';
-import { createPageTranslator, pruneDisconnectedRestoreEntries } from './translateLoop';
+import { createPageTranslator } from './translateLoop';
 
 async function waitFor(condition: () => boolean, timeoutMs = 2000): Promise<void> {
   const start = Date.now();
@@ -2383,61 +2383,6 @@ describe("restorePage() vs. noteMissingResult's cooldown timer — real bug this
   });
 });
 
-describe('pruneDisconnectedRestoreEntries', () => {
-  it('keeps an entry after a single disconnected tick — only pruned once a SECOND consecutive tick still finds it disconnected', () => {
-    const node = document.createTextNode('HELLO');
-    // Deliberately never attached to document.body — `.isConnected` is
-    // `false` by construction, standing in for "detached this tick"
-    // without needing a real DOM attach/detach or any timer at all: this
-    // is what makes the test deterministic instead of racing the real
-    // resweep-scheduler/MutationObserver timing stack (interval-driven,
-    // not something a test can pin to an exact tick count).
-    const nodesToRestore = new Map<Text, string>([[node, 'hello']]);
-    const disconnectedLastTick = new WeakSet<Text>();
-
-    pruneDisconnectedRestoreEntries(nodesToRestore, disconnectedLastTick); // tick 1: disconnected — marked as a candidate, not pruned yet
-    expect(nodesToRestore.has(node)).toBe(true);
-  });
-
-  it('prunes an entry after two CONSECUTIVE disconnected ticks — a real removal, not a recycle-pool blip', () => {
-    const node = document.createTextNode('HELLO');
-    const nodesToRestore = new Map<Text, string>([[node, 'hello']]);
-    const disconnectedLastTick = new WeakSet<Text>();
-
-    pruneDisconnectedRestoreEntries(nodesToRestore, disconnectedLastTick); // tick 1: disconnected
-    expect(nodesToRestore.has(node)).toBe(true);
-    pruneDisconnectedRestoreEntries(nodesToRestore, disconnectedLastTick); // tick 2: still disconnected
-    expect(nodesToRestore.has(node)).toBe(false);
-  });
-
-  it('resets the disconnected streak once a node reconnects, so a later real removal needs its own two consecutive ticks again', () => {
-    document.body.innerHTML = '<p id="item">hello</p>';
-    const item = document.getElementById('item');
-    if (!item) throw new Error('unreachable');
-    const node = item.firstChild;
-    if (!(node instanceof Text)) throw new Error('unreachable');
-
-    const nodesToRestore = new Map<Text, string>([[node, 'hello']]);
-    const disconnectedLastTick = new WeakSet<Text>();
-
-    item.remove();
-    pruneDisconnectedRestoreEntries(nodesToRestore, disconnectedLastTick); // tick 1: disconnected — candidate
-    expect(nodesToRestore.has(node)).toBe(true);
-
-    document.body.appendChild(item); // reconnected before a 2nd consecutive disconnected tick
-    pruneDisconnectedRestoreEntries(nodesToRestore, disconnectedLastTick); // tick 2: connected — streak reset, entry untouched
-    expect(nodesToRestore.has(node)).toBe(true);
-
-    item.remove();
-    pruneDisconnectedRestoreEntries(nodesToRestore, disconnectedLastTick); // tick 3: disconnected again — candidate (streak was reset, not carried over)
-    expect(nodesToRestore.has(node)).toBe(true);
-    pruneDisconnectedRestoreEntries(nodesToRestore, disconnectedLastTick); // tick 4: still disconnected — now genuinely pruned
-    expect(nodesToRestore.has(node)).toBe(false);
-
-    document.body.innerHTML = '';
-  });
-});
-
 describe('rapid navigation — overlapping translate cycles must always converge (real bug, found via a live user report: rapidly skipping chapters worked two or three times, then the next one spun forever, recovering only on a reload or on skipping to the page after it)', () => {
   afterEach(() => {
     document.body.innerHTML = '';
@@ -2640,4 +2585,160 @@ describe('rapid navigation — overlapping translate cycles must always converge
 
     pageTranslator.restorePage();
   }, 20000);
+});
+
+describe('cycle and failure bookkeeping', () => {
+  // Restored even when a test fails, so its watchers can't translate the next test's page.
+  const live: ReturnType<typeof createPageTranslator>[] = [];
+  function create(options: Parameters<typeof createPageTranslator>[0]) {
+    const pageTranslator = createPageTranslator(options);
+    live.push(pageTranslator);
+    return pageTranslator;
+  }
+  afterEach(() => {
+    for (const pageTranslator of live.splice(0)) pageTranslator.restorePage();
+    document.body.innerHTML = '';
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  it('Show original restores a translated node that is off the page at that moment', async () => {
+    document.body.innerHTML = '<div id="list"><p>hello</p></div>';
+    const p = document.querySelector('p') as HTMLElement;
+    const node = p.firstChild as Text;
+    const pageTranslator = create({
+      translator: uppercaseTranslator(),
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+    vi.useFakeTimers();
+    void pageTranslator.translatePage('es');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(node.data).toBe('HELLO');
+    p.remove();
+    // Long enough for several resweep ticks to see it detached.
+    await vi.advanceTimersByTimeAsync(30_000);
+    pageTranslator.restorePage();
+    expect(node.data).toBe('hello');
+  });
+
+  it("after a batch times out, re-sends only the pieces that weren't already written", async () => {
+    document.body.innerHTML = '<p>hello</p><p>world</p>';
+    const sent: string[][][] = [];
+    let calls = 0;
+    const translator: Translator = {
+      async translateBatch(request) {
+        sent.push(request.pieces);
+        calls++;
+        if (calls === 1) {
+          request.onPieceComplete?.(0, ok(request.pieces[0]?.map((s) => s.toUpperCase()) ?? []));
+          throw new TimeoutError('timed out');
+        }
+        return request.pieces.map((piece): PieceOutcome => ok(piece.map((s) => s.toUpperCase())));
+      },
+    };
+    const pageTranslator = create({
+      translator,
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+    vi.useFakeTimers();
+    void pageTranslator.translatePage('es');
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(sent[1]).toEqual([['world']]);
+    expect(document.body.textContent).toBe('HELLOWORLD');
+    pageTranslator.restorePage();
+  });
+
+  it('gives a node that gave up in one cycle its full retries again in the next cycle', async () => {
+    document.body.innerHTML = '<p>Wikipedia</p>';
+    const translateBatch = vi.fn(
+      async (request: { pieces: string[][] }): Promise<PieceOutcome[]> =>
+        request.pieces.map(() => err({ kind: 'suspicious', message: 'echoed' })),
+    );
+    const pageTranslator = create({
+      translator: { translateBatch },
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+    vi.useFakeTimers();
+    void pageTranslator.translatePage('es');
+    for (let i = 0; i < 8; i++) await vi.advanceTimersByTimeAsync(1600);
+    expect(translateBatch).toHaveBeenCalledTimes(4);
+
+    void pageTranslator.translatePage('de');
+    for (let i = 0; i < 8; i++) await vi.advanceTimersByTimeAsync(1600);
+    expect(translateBatch).toHaveBeenCalledTimes(8);
+    pageTranslator.restorePage();
+  });
+
+  it('a listener that throws while a batch is being sent does not lose the batch', async () => {
+    document.body.innerHTML = '<p>hello</p>';
+    const pageTranslator = create({
+      translator: uppercaseTranslator(),
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+    let thrown = false;
+    pageTranslator.onWorkingChange(() => {
+      if (thrown) return;
+      thrown = true;
+      throw new Error('listener bug');
+    });
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.useFakeTimers();
+    void pageTranslator.translatePage('es');
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(document.body.textContent).toBe('HELLO');
+    pageTranslator.restorePage();
+  });
+
+  it('a throw while preparing a batch backs off and retries instead of spinning or dropping the nodes', async () => {
+    document.body.innerHTML = '<p>hello</p>';
+    let hintCalls = 0;
+    let broken = true;
+    const pageTranslator = create({
+      translator: uppercaseTranslator(),
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => {
+        hintCalls++;
+        if (broken) throw new Error('grouping bug');
+        return undefined;
+      },
+    });
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.useFakeTimers();
+    void pageTranslator.translatePage('es');
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(hintCalls).toBeLessThan(10);
+    broken = false;
+    await vi.advanceTimersByTimeAsync(31_000);
+    expect(document.body.textContent).toBe('HELLO');
+    pageTranslator.restorePage();
+  });
+
+  it('stops showing "Offline" once back online, even while the provider is failing', async () => {
+    const isOnline = vi.spyOn(connectivity, 'isOnline').mockReturnValue(false);
+    document.body.innerHTML = '<p>hello</p>';
+    const translateBatch = vi.fn(
+      async (request: { pieces: string[][] }): Promise<PieceOutcome[]> =>
+        request.pieces.map(() => err({ kind: 'http', status: 503, message: 'HTTP 503' })),
+    );
+    const pageTranslator = create({
+      translator: { translateBatch },
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+    vi.useFakeTimers();
+    void pageTranslator.translatePage('es');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pageTranslator.getLastErrorKind()).toBe('offline');
+    isOnline.mockReturnValue(true);
+    // The offline re-check sends one batch, which fails.
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(translateBatch).toHaveBeenCalledTimes(1);
+    expect(pageTranslator.getLastErrorKind()).not.toBe('offline');
+    pageTranslator.restorePage();
+  });
 });

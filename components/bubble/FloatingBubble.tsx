@@ -205,18 +205,20 @@ export function FloatingBubble(props: FloatingBubbleProps) {
   }
 
   let actionBusy = false;
+  let actionBusyTimer: ReturnType<typeof setTimeout> | null = null;
   function toggleTranslate(): void {
     // actionBusy (600ms) stops a double tap; props.state.busy covers a long
     // translation. The ball can't use `disabled` like .primary does, because
     // that would also block its drag handlers.
-    if (props.state.busy) {
+    if (props.state.busy && !restorable()) {
       nudge();
       return;
     }
     if (actionBusy) return;
     actionBusy = true;
-    setTimeout(() => {
+    actionBusyTimer = setTimeout(() => {
       actionBusy = false;
+      actionBusyTimer = null;
     }, 600);
     handlePrimaryAction();
   }
@@ -229,7 +231,11 @@ export function FloatingBubble(props: FloatingBubbleProps) {
     window.addEventListener('resize', reflow);
     window.visualViewport?.addEventListener('resize', reflow);
     window.visualViewport?.addEventListener('scroll', reflow);
-    const onOrientationChange = () => setTimeout(reflow, 250);
+    let orientationTimer: ReturnType<typeof setTimeout> | null = null;
+    const onOrientationChange = () => {
+      if (orientationTimer) clearTimeout(orientationTimer);
+      orientationTimer = setTimeout(reflow, 250);
+    };
     window.addEventListener('orientationchange', onOrientationChange);
 
     let dragging = false;
@@ -392,7 +398,10 @@ export function FloatingBubble(props: FloatingBubbleProps) {
         e.preventDefault();
         setPinned(true);
         positionPanelNow();
-        const firstControl = panel.querySelector<HTMLElement>('select, button, input, [tabindex]');
+        // `:disabled` skipped: focus() on the disabled main button (busy, offline) is a no-op.
+        const firstControl = panel.querySelector<HTMLElement>(
+          'select:not(:disabled), button:not(:disabled), input:not(:disabled), [tabindex]',
+        );
         firstControl?.focus();
       }
     };
@@ -414,6 +423,13 @@ export function FloatingBubble(props: FloatingBubbleProps) {
       if (!wrap.contains(e.relatedTarget as Node | null)) setPinned(false);
     };
     wrap.addEventListener('focusout', onWrapFocusOut);
+
+    // Keys pressed in the bubble stay in it, so typing in a picker can't fire
+    // the site's shortcuts. The bubble's own key handlers sit inside the host
+    // and have already run by the time a key reaches it.
+    const stopKey = (e: Event) => e.stopPropagation();
+    const KEY_EVENTS = ['keydown', 'keyup', 'keypress'];
+    for (const type of KEY_EVENTS) props.shadowHost.addEventListener(type, stopKey);
 
     const onFsChange = () => {
       const fs = document.fullscreenElement;
@@ -444,6 +460,9 @@ export function FloatingBubble(props: FloatingBubbleProps) {
       window.visualViewport?.removeEventListener('resize', reflow);
       window.visualViewport?.removeEventListener('scroll', reflow);
       window.removeEventListener('orientationchange', onOrientationChange);
+      if (orientationTimer) clearTimeout(orientationTimer);
+      if (actionBusyTimer) clearTimeout(actionBusyTimer);
+      if (longPressTimer) clearTimeout(longPressTimer);
       if (reflowFrame !== null) cancelAnimationFrame(reflowFrame);
       ball.removeEventListener('pointerdown', onPointerDown);
       ball.removeEventListener('pointermove', onPointerMove);
@@ -459,6 +478,7 @@ export function FloatingBubble(props: FloatingBubbleProps) {
       ball.removeEventListener('keydown', onKeydown);
       wrap.removeEventListener('keydown', onWrapKeydown);
       wrap.removeEventListener('focusout', onWrapFocusOut);
+      for (const type of KEY_EVENTS) props.shadowHost.removeEventListener(type, stopKey);
       document.removeEventListener('fullscreenchange', onFsChange, false);
       unsubConfig();
     });
@@ -530,8 +550,8 @@ export function FloatingBubble(props: FloatingBubbleProps) {
 
   /**
    * One-off retranslate from `code`, to correct bad auto-detection. `code` is
-   * saved to `sourceLanguageByHost` (picker display, auto-translate-on-load)
-   * but not sent on later requests: a forced source on text already in another
+   * saved to `sourceLanguageByHost` (what this picker shows on later visits,
+   * listed in Settings) but not sent on later requests: a forced source on text already in another
    * language mistranslates it (Google: "History" with source=vi → "Association").
    */
   function onSourceLanguageChange(e: Event): void {
@@ -591,12 +611,19 @@ export function FloatingBubble(props: FloatingBubbleProps) {
   const translated = () => !props.state.errorMessage && props.state.pageState === 'translated' && !props.state.busy;
   const errored = () => Boolean(props.state.errorMessage);
   const offline = () => errored() && props.state.errorKind === 'offline';
+  /**
+   * A click restores even while busy: on a live feed new content keeps `busy`
+   * set, and restorePage() stops the work in flight.
+   */
+  function restorable(): boolean {
+    return !errored() && props.state.pageState === 'translated';
+  }
   /** The ball's accessible name: what a click will do. Mirrors handlePrimaryAction. */
   const ballLabel = () => {
     if (offline()) return 'Offline — waiting for connection';
     if (errored()) return props.state.busy ? 'Retrying…' : 'Retry translation';
-    if (props.state.busy) return props.state.pageState === 'translated' ? 'Working…' : 'Translating…';
-    return translated() ? 'Show original' : 'Translate this page';
+    if (restorable()) return 'Show original';
+    return props.state.busy ? 'Translating…' : 'Translate this page';
   };
   const headTitle = () => {
     if (offline()) return 'Offline';
@@ -611,7 +638,7 @@ export function FloatingBubble(props: FloatingBubbleProps) {
     // No "Retry" offline: translateLoop.ts auto-resumes on reconnect.
     if (offline()) return 'Waiting for connection…';
     if (errored()) return props.state.busy ? 'Retrying…' : 'Retry';
-    if (translated()) return props.state.busy ? 'Restoring…' : 'Show original';
+    if (restorable()) return 'Show original';
     return props.state.busy ? 'Translating…' : 'Translate page';
   };
   // `progress` is null until the cycle knows its total. Hide on `busy` going
@@ -620,16 +647,15 @@ export function FloatingBubble(props: FloatingBubbleProps) {
   const showProgress = () => props.state.busy && props.state.progress !== null && props.state.progress < 1;
 
   return (
-    <div class="wrap" classList={{ translated: translated(), error: errored(), offline: offline() }} ref={wrap}>
+    <div class="wrap" classList={{ translated: translated(), error: errored() }} ref={wrap}>
       <button
         type="button"
         class="ball"
         classList={{ busy: props.state.busy }}
         ref={ball}
         aria-label={ballLabel()}
-        aria-haspopup="true"
         aria-expanded={pinned()}
-        title="Click to translate · drag to move · Arrow Down to open settings"
+        title={`${ballLabel()} · drag to move · Arrow Down to open settings`}
       >
         <svg class="ic ic-tr" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
           <path d={TRANSLATE_ICON_PATH} />
@@ -671,7 +697,7 @@ export function FloatingBubble(props: FloatingBubbleProps) {
           </div>
         </Show>
         <div class="body">
-          <button type="button" class="primary" disabled={props.state.busy || offline()} on:click={onPrimaryClick}>
+          <button type="button" class="primary" disabled={(props.state.busy && !restorable()) || offline()} on:click={onPrimaryClick}>
             {primaryLabel()}
           </button>
           <Show when={props.state.errorMessage && !offline()}>

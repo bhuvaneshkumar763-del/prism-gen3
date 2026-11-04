@@ -101,16 +101,68 @@ describe('createRestoreLedger', () => {
     node.data = 'HOLA';
     expect(ledger.findOriginalTextForElement(p)).toBeNull();
   });
+});
 
-  it('prunes a node only after two consecutive disconnected checks', () => {
+describe('createRestoreLedger: nodes off the page', () => {
+  afterEach(() => {
+    document.body.innerHTML = '';
+    vi.restoreAllMocks();
+  });
+
+  it('restores a node that is detached at the moment of Show original', () => {
     document.body.innerHTML = '<p>hello</p>';
-    const node = (document.querySelector('p') as HTMLElement).firstChild as Text;
+    const p = document.querySelector('p') as HTMLElement;
+    const node = p.firstChild as Text;
     const ledger = createRestoreLedger();
-    ledger.record(node);
-    node.parentElement?.remove();
+    ledger.reset([node]);
+    node.data = 'HOLA';
+    p.remove();
+    ledger.restoreAll(() => {});
+    expect(node.data).toBe('hello');
+  });
+
+  it('keeps a node detached for many resweep ticks restorable, and finds it again once reattached', () => {
+    document.body.innerHTML = '<p>hello</p>';
+    const p = document.querySelector('p') as HTMLElement;
+    const node = p.firstChild as Text;
+    const ledger = createRestoreLedger();
+    ledger.reset([node]);
+    node.data = 'HOLA';
+    p.remove();
+    for (let i = 0; i < 5; i++) ledger.prune();
+    document.body.append(p);
     ledger.prune();
-    expect(ledger.has(node)).toBe(true);
-    ledger.prune();
-    expect(ledger.has(node)).toBe(false);
+    expect(ledger.findOriginalTextForElement(p)).toBe('hello');
+    ledger.restoreAll(() => {});
+    expect(node.data).toBe('hello');
+  });
+
+  it("shows a word run's whole sent text on hover, not just its first word", () => {
+    document.body.innerHTML = '<div><i>một</i> <i>hai</i>.</div>';
+    const [first, second] = Array.from(document.querySelectorAll('i')) as [HTMLElement, HTMLElement];
+    const one = first.firstChild as Text;
+    const two = second.firstChild as Text;
+    const div = document.querySelector('div') as HTMLElement;
+    const slot: PieceSlot = {
+      nodes: [one, two],
+      separators: [div.childNodes[1] as Text, div.childNodes[3] as Text],
+      text: 'một hai.',
+    };
+    const d = deps();
+    d.ledger.reset([one, two]);
+    createSlotWriter([[slot]], d)(slot, 'one two.');
+    expect(d.ledger.findOriginalTextForElement(first)).toBe('một hai.');
+  });
+
+  it("looks up a hovered element's own text children instead of scanning every translated node", () => {
+    document.body.innerHTML = Array.from({ length: 500 }, (_, i) => `<p>line ${i}</p>`).join('');
+    const nodes = Array.from(document.querySelectorAll('p'), (p) => p.firstChild as Text);
+    const ledger = createRestoreLedger();
+    ledger.reset(nodes);
+    for (const node of nodes) node.data = node.data.toUpperCase();
+    const target = document.querySelectorAll('p')[499] as HTMLElement;
+    const parentReads = vi.spyOn(Node.prototype, 'parentElement', 'get');
+    expect(ledger.findOriginalTextForElement(target)).toBe('line 499');
+    expect(parentReads.mock.calls.length).toBeLessThan(10);
   });
 });

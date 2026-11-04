@@ -90,12 +90,9 @@ describe('FloatingBubble', () => {
   });
 
   it('disables the primary button and shows a busy label while busy', () => {
-    // pageState:'translated' + busy:true is what an active RE-translate
-    // looks like, not a restore in progress — see mountBubble.test.ts's
-    // matching test for the full explanation.
     const { el } = mount({
       state: {
-        pageState: 'translated',
+        pageState: 'original',
         busy: true,
         errorMessage: null,
         errorKind: null,
@@ -1072,6 +1069,134 @@ describe('FloatingBubble', () => {
       for (const name of ['accent', 'accent2']) {
         const hex = BUBBLE_STYLES.match(new RegExp(`--${name}: #([0-9a-f]{6})`, 'i'))?.[1] ?? '';
         expect(1.05 / (luminance(hex) + 0.05), name).toBeGreaterThanOrEqual(4.5);
+      }
+    });
+  });
+
+  describe('keyboard, busy pages and removal', () => {
+    function stateOf(overrides: Record<string, unknown> = {}) {
+      return {
+        pageState: 'original' as const,
+        busy: false,
+        errorMessage: null as string | null,
+        errorKind: null as 'offline' | 'provider' | null,
+        progress: null as number | null,
+        originalLanguage: 'und',
+        ...overrides,
+      };
+    }
+    function press(ball: HTMLElement, type: string) {
+      ball.dispatchEvent(
+        trusted(
+          new PointerEvent(type, { bubbles: true, composed: true, pointerId: 1, button: 0, clientX: 10, clientY: 10 }),
+        ),
+      );
+    }
+    function listenOnPage(types: string[]) {
+      const seen: string[] = [];
+      const record = (e: Event) => seen.push(`${e.type}:${(e as KeyboardEvent).key}`);
+      for (const type of types) document.addEventListener(type, record);
+      onTestFinished(() => {
+        for (const type of types) document.removeEventListener(type, record);
+      });
+      return seen;
+    }
+
+    it("keys typed in the bubble don't reach the page's own shortcuts", () => {
+      const { el } = mount();
+      const seen = listenOnPage(['keydown', 'keyup', 'keypress']);
+      const select = el.querySelector('select') as HTMLSelectElement;
+
+      for (const type of ['keydown', 'keypress', 'keyup']) {
+        select.dispatchEvent(trusted(new KeyboardEvent(type, { key: 'k', bubbles: true, composed: true })));
+      }
+
+      expect(seen).toEqual([]);
+    });
+
+    it('ArrowDown and Escape still work in the bubble, without reaching the page', () => {
+      const { el } = mount();
+      const seen = listenOnPage(['keydown']);
+      const ball = el.querySelector('.ball') as HTMLButtonElement;
+      const panel = el.querySelector('.panel') as HTMLElement;
+
+      ball.dispatchEvent(trusted(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, composed: true })));
+      expect(panel.classList.contains('pinned')).toBe(true);
+      (document.activeElement as HTMLElement).dispatchEvent(
+        trusted(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true })),
+      );
+
+      expect(panel.classList.contains('pinned')).toBe(false);
+      expect(document.activeElement).toBe(ball);
+      expect(seen).toEqual([]);
+    });
+
+    it('a tap on the ball shows the original while a translated page is still busy (a live feed keeps it busy)', () => {
+      const onRestore = vi.fn();
+      const { el } = mount({ state: stateOf({ pageState: 'translated', busy: true }), onRestore });
+      const ball = el.querySelector('.ball') as HTMLButtonElement;
+
+      press(ball, 'pointerdown');
+      press(ball, 'pointerup');
+
+      expect(onRestore).toHaveBeenCalledTimes(1);
+      expect(ball.getAttribute('aria-label')).toBe('Show original');
+    });
+
+    it("the panel's Show original works while a translated page is still busy", () => {
+      const onRestore = vi.fn();
+      const { el } = mount({ state: stateOf({ pageState: 'translated', busy: true }), onRestore });
+      const primary = el.querySelector('.primary') as HTMLButtonElement;
+
+      expect(primary.disabled).toBe(false);
+      expect(primary.textContent).toBe('Show original');
+      primary.dispatchEvent(trusted(new MouseEvent('click', { bubbles: true })));
+
+      expect(onRestore).toHaveBeenCalledTimes(1);
+    });
+
+    it('ArrowDown moves focus to the first control that can take it when the main button is disabled', () => {
+      const { el } = mount({ state: stateOf({ busy: true }) });
+      const ball = el.querySelector('.ball') as HTMLButtonElement;
+
+      ball.dispatchEvent(trusted(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })));
+
+      expect(document.activeElement).toBe(el.querySelector('select'));
+    });
+
+    it('leaves no timers running once it is removed', () => {
+      vi.useFakeTimers();
+      const frame = vi.fn(() => 1);
+      vi.stubGlobal('requestAnimationFrame', frame);
+      const { el } = mount();
+      const ball = el.querySelector('.ball') as HTMLButtonElement;
+      window.dispatchEvent(new Event('orientationchange'));
+      press(ball, 'pointerdown');
+      press(ball, 'pointerup');
+
+      dispose?.();
+      dispose = undefined;
+
+      expect(vi.getTimerCount()).toBe(0);
+      vi.advanceTimersByTime(1000);
+      expect(frame).not.toHaveBeenCalled();
+    });
+
+    it('does not announce a menu, and its tooltip says what a click will do', () => {
+      const { el } = mount({ state: stateOf({ pageState: 'translated' }) });
+      const ball = el.querySelector('.ball') as HTMLButtonElement;
+
+      expect(ball.hasAttribute('aria-haspopup')).toBe(false);
+      expect(ball.getAttribute('title')).toMatch(/^Show original/);
+    });
+
+    it('sets no class on the bubble that has no style rule', () => {
+      const { el } = mount({ state: stateOf({ errorMessage: 'You are offline', errorKind: 'offline' }) });
+      const wrap = el.querySelector('.wrap') as HTMLElement;
+
+      // `right` is a placement hook read by the tests, not a styled state.
+      for (const name of Array.from(wrap.classList).filter((c) => c !== 'wrap' && c !== 'right')) {
+        expect(BUBBLE_STYLES, name).toMatch(new RegExp(`\\.wrap\\.${name}\\b`));
       }
     });
   });

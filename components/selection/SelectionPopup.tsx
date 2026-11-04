@@ -51,18 +51,24 @@ export function SelectionPopup(props: SelectionPopupProps) {
             'max-width': `${props.panel.maxWidth}px`,
             'max-height': `${props.panel.maxHeight}px`,
           }}
-          // Announces the translation when it lands.
-          role="status"
-          aria-live="polite"
         >
-          <Show when={props.busy}>
-            <span class="status">
-              <span class="spinner" />
-              Translating…
-            </span>
-          </Show>
+          {/* Announces the translation when it lands. Only the message: an
+              error has its own alert, and buttons would be read out too. */}
+          <div role="status" aria-live="polite">
+            <Show when={props.busy}>
+              <span class="status">
+                <span class="spinner" />
+                Translating…
+              </span>
+            </Show>
+            <Show when={!props.busy && props.translatedText}>
+              {/* The result can be in any script, whatever the page's direction. */}
+              <p class="result" dir="auto">
+                {props.translatedText}
+              </p>
+            </Show>
+          </div>
           <Show when={!props.busy && props.translatedText}>
-            <p class="result">{props.translatedText}</p>
             <button
               type="button"
               class="copy"

@@ -4,6 +4,10 @@
  *
  * - `.trigger` is 30px, matching SELECTION_TRIGGER_SIZE in
  *   selectionPanelPlacement.ts, which uses that number to keep it on screen.
+ *   Its `::before` widens what a finger can hit to 44px without moving it.
+ * - Under `pointer: coarse`, Close and Copy grow to the 44px touch minimum;
+ *   the panel's right padding makes room for the larger Close.
+ * - `.result` keeps the line breaks of a multi-paragraph selection.
  * - `.panel` gets max-width/max-height inline from selectionPanelPlacement.ts,
  *   clamped to the room actually available; `overflow: auto` lets a long
  *   translation scroll instead of running off screen.
@@ -27,6 +31,16 @@ export const SELECTION_POPUP_STYLES = `
     color: #fff;
     cursor: pointer;
     box-shadow: 0 2px 8px rgba(15, 23, 42, 0.35);
+  }
+  .trigger::before {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 44px;
+    height: 44px;
+    margin: -22px 0 0 -22px;
+    border-radius: 50%;
   }
   .trigger svg {
     width: 17px;
@@ -76,6 +90,7 @@ export const SELECTION_POPUP_STYLES = `
   }
   .result {
     margin: 0;
+    white-space: pre-wrap;
   }
   .errorText {
     margin: 0;
@@ -111,5 +126,22 @@ export const SELECTION_POPUP_STYLES = `
   .close:hover {
     color: #fff;
     background: rgba(255, 255, 255, 0.15);
+  }
+  @media (pointer: coarse) {
+    .panel {
+      min-height: 44px;
+      padding-right: 44px;
+    }
+    .close {
+      top: 0;
+      right: 0;
+      width: 44px;
+      height: 44px;
+      padding: 0;
+    }
+    .copy {
+      min-height: 44px;
+      padding: 0 16px;
+    }
   }
 `;

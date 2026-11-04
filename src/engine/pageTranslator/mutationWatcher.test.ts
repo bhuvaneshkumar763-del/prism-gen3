@@ -197,3 +197,28 @@ describe('createMutationWatcher', () => {
     watcher.disable();
   });
 });
+
+describe('createMutationWatcher: nested additions', () => {
+  afterEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  it('walks a parent and a child added in the same batch once, through the parent', async () => {
+    const onNewRoot = vi.fn();
+    const watcher = createMutationWatcher({
+      isTranslated: () => true,
+      isNoTranslateNode: () => false,
+      onNewRoot,
+      onChangedTextNode: vi.fn(),
+    });
+    watcher.enable();
+    const parent = document.createElement('div');
+    document.body.append(parent);
+    const child = document.createElement('p');
+    child.textContent = 'New content';
+    parent.append(child);
+    await flushMutations();
+    expect(onNewRoot.mock.calls).toEqual([[parent]]);
+    watcher.disable();
+  });
+});

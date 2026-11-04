@@ -123,9 +123,11 @@ export function mountHoverTooltip(pageTranslator: TranslatedNodesSource): HoverT
 
   function onMouseMove(e: MouseEvent): void {
     if (currentTarget && !showTimer) {
-      // Visible for the current target: follow the cursor.
+      // Visible for the current target: follow the cursor. No original any
+      // more means the page was restored under the pointer, so it hides.
       const original = pageTranslator.findOriginalTextForElement(currentTarget as Element);
       if (original) showAt(original, e.clientX, e.clientY);
+      else hide();
     }
   }
 

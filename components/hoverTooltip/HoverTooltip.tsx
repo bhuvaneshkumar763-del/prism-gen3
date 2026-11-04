@@ -21,6 +21,8 @@ export function HoverTooltip(props: HoverTooltipProps) {
     <Show when={props.visible}>
       <div
         class="tooltip"
+        // The original can be in any script, often unlike the page's own.
+        dir="auto"
         style={{
           top: px(props.placement.top),
           bottom: px(props.placement.bottom),

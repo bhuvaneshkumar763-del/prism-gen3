@@ -109,7 +109,7 @@ export async function translatePiecesWithCache(
   deps: PieceTranslationDeps,
 ): Promise<PieceOutcome[]> {
   const { providerId, provider } = await deps.resolveProvider();
-  const { sourceLanguage, targetLanguage, pieces, requestId } = data;
+  const { sourceLanguage, sourceLanguageIsExplicit, targetLanguage, pieces, requestId } = data;
 
   if (!provider) {
     const error = notConfigured(providerId);
@@ -120,8 +120,11 @@ export async function translatePiecesWithCache(
   // incognito translate skips the cache entirely: it neither writes page text
   // into the normal profile's IndexedDB nor reads from it.
   const cacheEnabled = deps.config.get('translationCacheEnabled') && !sender.tab?.incognito;
+  // A From pick is sent to the provider as-is, while a guess may be swapped
+  // for per-piece detection, so the two must not share cached results.
+  const cacheSourceLanguage = sourceLanguageIsExplicit ? `explicit:${sourceLanguage}` : sourceLanguage;
   const pieceKeys = pieces.map((piece) =>
-    cacheKeyFor(providerId, sourceLanguage, targetLanguage, JSON.stringify(piece)),
+    cacheKeyFor(providerId, cacheSourceLanguage, targetLanguage, JSON.stringify(piece)),
   );
   // The cache is only an optimization: a failed read or unparseable entry is
   // a miss, and a failed write is a no-op. getMany() reads every key in one
@@ -159,6 +162,7 @@ export async function translatePiecesWithCache(
     const tabId = sender.tab?.id;
     freshOutcomes = await provider.translateBatch({
       sourceLanguage,
+      sourceLanguageIsExplicit,
       targetLanguage,
       pieces: missingPieces,
       onPieceComplete:

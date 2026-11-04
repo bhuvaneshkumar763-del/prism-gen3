@@ -623,9 +623,11 @@ describe('mountSelectionPopup', () => {
     trigger.dispatchEvent(trusted(new MouseEvent('click', { bubbles: true, composed: true })));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    const panel = shadowRoot()?.querySelector('.panel');
-    expect(panel?.getAttribute('role')).toBe('status');
-    expect(panel?.getAttribute('aria-live')).toBe('polite');
+    const live = shadowRoot()?.querySelector('.panel [role="status"]');
+    expect(live?.getAttribute('aria-live')).toBe('polite');
+    expect(live?.textContent).toBe('HELLO');
+    // Only the message: buttons and the error's own alert sit outside it.
+    expect(live?.querySelector('button, [role="alert"]')).toBeNull();
     controller.destroy();
   });
 
@@ -1163,6 +1165,88 @@ describe('mountSelectionPopup', () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
 
       expect(translateBatch).not.toHaveBeenCalled();
+      controller.destroy();
+    });
+  });
+
+  describe('dismissing a right-click translation', () => {
+    it("stays dismissed after Escape when the browser's right-click text differs in whitespace from the page selection", async () => {
+      vi.spyOn(window, 'getSelection').mockReturnValue(fakeSelection('Good morning,\n my friend.'));
+      const controller = mountSelectionPopup({
+        translator: uppercaseTranslator(),
+        getSourceLanguage: () => 'en',
+        getTargetLanguage: () => 'es',
+      });
+      controller.translateText('Good morning, my friend.');
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(shadowRoot()?.querySelector('.panel')).not.toBeNull();
+
+      document.dispatchEvent(trusted(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+      document.dispatchEvent(trusted(new KeyboardEvent('keyup', { key: 'Escape', bubbles: true })));
+      await new Promise((resolve) => setTimeout(resolve, KEYUP_SETTLE_MS));
+
+      expect(shadowRoot()?.querySelector('.panel')).toBeNull();
+      expect(shadowRoot()?.querySelector('.trigger')).toBeNull();
+      controller.destroy();
+    });
+  });
+
+  describe('keyboard users', () => {
+    async function keyboardSelect(text: string) {
+      vi.spyOn(window, 'getSelection').mockReturnValue(fakeSelection(text));
+      const controller = mountSelectionPopup({
+        translator: uppercaseTranslator(),
+        getSourceLanguage: () => 'en',
+        getTargetLanguage: () => 'es',
+      });
+      document.dispatchEvent(trusted(new KeyboardEvent('keyup', { key: 'ArrowRight', shiftKey: true, bubbles: true })));
+      await new Promise((resolve) => setTimeout(resolve, KEYUP_SETTLE_MS));
+      return controller;
+    }
+    function tab(): KeyboardEvent {
+      const event = trusted(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
+      document.body.dispatchEvent(event);
+      return event;
+    }
+
+    it('Tab after a keyboard selection moves focus to the translate button', async () => {
+      const controller = await keyboardSelect('hello');
+      const trigger = shown('.trigger');
+
+      const event = tab();
+
+      expect(shadowRoot()?.activeElement).toBe(trigger);
+      expect(event.defaultPrevented).toBe(true);
+      controller.destroy();
+    });
+
+    it('opening the result from the keyboard puts focus in the panel, not on the page', async () => {
+      const controller = await keyboardSelect('hello');
+      tab();
+
+      shown('.trigger').dispatchEvent(trusted(new MouseEvent('click', { bubbles: true, composed: true })));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(shown('.result').textContent).toBe('HELLO');
+      expect(shadowRoot()?.activeElement).toBe(shown('.close'));
+      controller.destroy();
+    });
+
+    it('leaves Tab alone after a mouse selection', async () => {
+      vi.spyOn(window, 'getSelection').mockReturnValue(fakeSelection('hello'));
+      const controller = mountSelectionPopup({
+        translator: uppercaseTranslator(),
+        getSourceLanguage: () => 'en',
+        getTargetLanguage: () => 'es',
+      });
+      document.dispatchEvent(trusted(new MouseEvent('mouseup', { bubbles: true })));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      shown('.trigger');
+
+      const event = tab();
+
+      expect(event.defaultPrevented).toBe(false);
+      expect(shadowRoot()?.activeElement ?? null).toBeNull();
       controller.destroy();
     });
   });
