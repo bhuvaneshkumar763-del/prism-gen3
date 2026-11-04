@@ -101,26 +101,58 @@ final class PrismSimChecks: XCTestCase {
         Thread.sleep(forTimeInterval: 1.5)
     }
 
-    /// Taps a Settings row by its title, scrolling to it first.
+    /// Saves the whole on-screen element tree, so a missing row can be found exactly next run.
+    func dumpTree(_ name: String, of app: XCUIApplication) {
+        let attachment = XCTAttachment(string: app.debugDescription)
+        attachment.name = "tree-\(name)"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    func visibleRow(_ title: String, in app: XCUIApplication) -> XCUIElement? {
+        for query in [app.cells[title], app.staticTexts[title], app.buttons[title]] {
+            let element = query.firstMatch
+            if element.exists && element.isHittable { return element }
+        }
+        return nil
+    }
+
+    /// Taps a Settings row by its title: on screen, by scrolling, or through the page's search field.
     @discardableResult
     func tapRow(_ title: String, in app: XCUIApplication, required: Bool = true) -> Bool {
-        let row = app.staticTexts[title].firstMatch
-        var tries = 0
-        while !(row.exists && row.isHittable) && tries < 12 {
+        var row = visibleRow(title, in: app)
+        for _ in 0..<15 where row == nil {
             app.swipeUp()
-            tries += 1
+            row = visibleRow(title, in: app)
         }
-        if !(row.exists && row.isHittable) {
-            // Back to the top and look downwards once more.
-            for _ in 0..<12 where !(row.exists && row.isHittable) { app.swipeDown() }
+        for _ in 0..<15 where row == nil {
+            app.swipeDown()
+            row = visibleRow(title, in: app)
         }
-        guard row.exists && row.isHittable else {
+        if row == nil {
+            let search = app.searchFields.firstMatch
+            if search.exists {
+                search.tap()
+                search.typeText(title)
+                Thread.sleep(forTimeInterval: 2)
+                row = visibleRow(title, in: app)
+            }
+        }
+        guard let found = row else {
+            dumpTree("missing-\(title)", of: app)
             if required { XCTFail("Settings row '\(title)' not found") }
             return false
         }
-        row.tap()
+        found.tap()
         Thread.sleep(forTimeInterval: 1)
         return true
+    }
+
+    /// Set by test1; the other checks are skipped without it, since none can pass.
+    static var extensionOn = false
+
+    func requireExtension() throws {
+        if !Self.extensionOn { throw XCTSkip("Prism's extension couldn't be turned on in Settings") }
     }
 
     // MARK: checks
@@ -128,32 +160,50 @@ final class PrismSimChecks: XCTestCase {
     func test1_turnOnTheExtension() {
         settings.launch()
         shot("settings-start")
-        // iOS 18 and later list Safari under Apps; earlier versions at the top level.
-        if settings.staticTexts["Apps"].waitForExistence(timeout: 5) {
-            tapRow("Apps", in: settings)
+        // Straight to Safari's extension list where the link works; else through the menus.
+        XCUIDevice.shared.system.open(URL(string: "App-prefs:com.apple.mobilesafari&path=WEB_EXTENSIONS")!)
+        Thread.sleep(forTimeInterval: 3)
+        shot("settings-deep-link")
+        if visibleRow("Prism", in: settings) == nil {
+            settings.terminate()
+            settings.launch()
+            // iOS 18 and later list Safari under Apps; earlier versions at the top level.
+            if settings.staticTexts["Apps"].waitForExistence(timeout: 5) {
+                tapRow("Apps", in: settings)
+                shot("settings-apps")
+            }
+            tapRow("Safari", in: settings)
+            shot("settings-safari")
+            tapRow("Extensions", in: settings)
+            shot("settings-extensions")
         }
-        tapRow("Safari", in: settings)
-        shot("settings-safari")
-        tapRow("Extensions", in: settings)
-        shot("settings-extensions")
-        tapRow("Prism", in: settings)
+        guard tapRow("Prism", in: settings) else { return }
         shot("settings-prism")
 
         let toggle = settings.switches.firstMatch
-        XCTAssertTrue(toggle.waitForExistence(timeout: 5), "No switch on Prism's extension page")
+        guard toggle.waitForExistence(timeout: 5) else {
+            dumpTree("prism-page", of: settings)
+            XCTFail("No switch on Prism's extension page")
+            return
+        }
         if (toggle.value as? String) == "0" { toggle.tap() }
         Thread.sleep(forTimeInterval: 1)
 
         for title in ["Other Websites", "All Websites"] where tapRow(title, in: settings, required: false) {
             tapRow("Allow", in: settings)
+            shot("settings-websites-allow")
             settings.navigationBars.buttons.firstMatch.tap()
             break
         }
         shot("settings-prism-on")
-        XCTAssertEqual(settings.switches.firstMatch.value as? String, "1", "Prism's extension switch is off")
+        dumpTree("prism-page-final", of: settings)
+        let on = (settings.switches.firstMatch.value as? String) == "1"
+        XCTAssertTrue(on, "Prism's extension switch is off")
+        Self.extensionOn = on
     }
 
-    func test2_chineseChapter() {
+    func test2_chineseChapter() throws {
+        try requireExtension()
         let visit = open("/chinese-chapter.html", page: "chinese")
         tapBall()
         let done = waitFor("chinese", visit: visit, timeout: 90) { self.flag($0, "everAllTranslated") }
@@ -168,7 +218,8 @@ final class PrismSimChecks: XCTestCase {
         XCTAssertTrue(flag(back, "restoredExact"), "Show original didn't bring the exact text back")
     }
 
-    func test3_longVietnameseChapter() {
+    func test3_longVietnameseChapter() throws {
+        try requireExtension()
         let visit = open("/vietnamese-long.html", page: "vietnamese")
         tapBall()
         let done = waitFor("vietnamese", visit: visit, timeout: 150) { self.flag($0, "everAllTranslated") }
@@ -180,7 +231,8 @@ final class PrismSimChecks: XCTestCase {
         shot("vietnamese-translated-lower")
     }
 
-    func test4_bubblePanelAndFromPicker() {
+    func test4_bubblePanelAndFromPicker() throws {
+        try requireExtension()
         let visit = open("/plain.html", page: "plain")
         longPressBall()
         let pinned = waitFor("plain", visit: visit, timeout: 10) { self.flag($0, "panelPinned") }
@@ -195,7 +247,8 @@ final class PrismSimChecks: XCTestCase {
         XCTAssertEqual(closed?["flips"] as? Int, 0, "Tapping the ball with the panel open translated the page")
     }
 
-    func test5_selectToTranslate() {
+    func test5_selectToTranslate() throws {
+        try requireExtension()
         let visit = open("/plain.html", page: "plain")
         let paragraph = safari.webViews.staticTexts.matching(
             NSPredicate(format: "label CONTAINS 'bán hàng'")).firstMatch
@@ -212,7 +265,8 @@ final class PrismSimChecks: XCTestCase {
         XCTAssertNotNil(result?["selectionResult"] as? String, "No translation shown for the selection")
     }
 
-    func test6_sameOriginIframe() {
+    func test6_sameOriginIframe() throws {
+        try requireExtension()
         let visit = open("/iframe.html", page: "iframe")
         tapBall()
         let done = waitFor("iframe", visit: visit, timeout: 90) { self.flag($0, "everAllTranslated") }
@@ -226,7 +280,8 @@ final class PrismSimChecks: XCTestCase {
     }
 
     /// Screenshots only: Safari's menus change between iOS versions, so nothing here fails the run.
-    func test7_popupAndSettingsScreens() {
+    func test7_popupAndSettingsScreens() throws {
+        try requireExtension()
         _ = open("/plain.html", page: "plain")
         for label in ["Page Menu", "Page Settings", "Format Options", "Website Settings"] {
             let menu = safari.buttons[label]

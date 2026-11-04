@@ -16,6 +16,9 @@ permissions:
 jobs:
   simulator:
     runs-on: macos-latest
+    # Write access only to force-push the screenshots branch below.
+    permissions:
+      contents: write
     timeout-minutes: 50
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -75,12 +78,13 @@ jobs:
 
       - name: Run the checks
         run: |
+          set -o pipefail
           xcodebuild test \
             -project tests/ios-sim/PrismSimChecks.xcodeproj \
             -scheme PrismSimChecks \
             -destination "id=$UDID" \
             -resultBundlePath sim.xcresult \
-            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee xcodebuild.log
 
       - name: Export screenshots
         if: always()
@@ -96,6 +100,28 @@ jobs:
             echo "### iPhone Simulator check on $DEVICE"
             node tests/ios-sim/summary.mjs results.json
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # Artifact downloads go to a storage host some reviewers can't reach;
+      # a git branch is readable anywhere git is.
+      - name: Publish screenshots to the ios-sim-results branch
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p out
+          node tests/ios-sim/collect-shots.mjs shots out
+          cp shots/00-prism-app.png out/ 2>/dev/null || true
+          for f in out/*.png; do sips -Z 1000 "$f" > /dev/null; done
+          cp results.json out/ 2>/dev/null || true
+          grep -E "error:|Test Case|Executed" xcodebuild.log > out/failures.txt || true
+          echo "$DEVICE · run $GITHUB_RUN_ID · ${GITHUB_SHA::7}" > out/README.txt
+          cd out
+          git init -q -b ios-sim-results
+          git config user.name github-actions
+          git config user.email github-actions@users.noreply.github.com
+          git add -A
+          git commit -qm "iPhone Simulator check, run $GITHUB_RUN_ID (${GITHUB_SHA::7})"
+          git push -qf "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" ios-sim-results
 
       - name: Upload screenshots and reports
         if: always()
