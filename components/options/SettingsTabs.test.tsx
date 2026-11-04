@@ -7,7 +7,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from '../../entrypoints/options/App';
 import { BubbleTab } from '../../entrypoints/options/tabs/BubbleTab';
 import { PageTranslationTab } from '../../entrypoints/options/tabs/PageTranslationTab';
-import { SelectionTab } from '../../entrypoints/options/tabs/SelectionTab';
 import type { SettingsTabProps } from '../../entrypoints/options/tabs/types';
 import { type Config, type ConfigKey, defaultConfig } from '../../src/shared/config/schema';
 
@@ -72,9 +71,9 @@ describe('PageTranslationTab', () => {
   });
 });
 
-describe('SelectionTab', () => {
+describe('PageTranslationTab', () => {
   it('shows per-site source-language overrides by language name', () => {
-    const { el } = mountTab(SelectionTab, { sourceLanguageByHost: { 'example.com': 'zh-CN' } });
+    const { el } = mountTab(PageTranslationTab, { sourceLanguageByHost: { 'example.com': 'zh-CN' } });
     expect(el.querySelector('.siteTable')?.textContent).toContain('Chinese (Simplified)');
     expect(el.querySelector('.siteTable')?.textContent).not.toContain('zh-CN');
   });
