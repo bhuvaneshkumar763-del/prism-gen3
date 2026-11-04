@@ -1,8 +1,8 @@
 {
   "name": "prism-gen3",
-  "description": "Prism \u2014 AI Page Translator (Gen 3, ground-up rewrite)",
+  "description": "Prism — AI Page Translator (Gen 3, ground-up rewrite)",
   "private": true,
-  "version": "0.3.2-beta.4",
+  "version": "0.3.2-beta.5",
   "type": "module",
   "scripts": {
     "dev": "wxt",
