@@ -25,7 +25,6 @@ import {
 import { missingProviderSetup, type ProviderSetupFields } from '../../src/shared/config/providerSetup';
 import {
   clearBubbleOverrideForHost,
-  resolveSourceLanguageForHost,
   setBubbleVisibilityForHost,
   setSourceLanguageForHost,
 } from '../../src/shared/config/siteOverrides';
@@ -96,9 +95,9 @@ export function FloatingBubble(props: FloatingBubbleProps) {
   const [alwaysOn, setAlwaysOn] = createSignal(
     siteListIncludesHostname(configStore.get('alwaysTranslateSites'), props.hostname),
   );
-  const [sourceLanguage, setSourceLanguageSignal] = createSignal(
-    resolveSourceLanguageForHost(configStore.get('sourceLanguageByHost'), props.hostname, 'auto'),
-  );
+  // Starts at Auto: a page load translates from the detected language, so an
+  // earlier visit's pick isn't in effect and must stay choosable.
+  const [sourceLanguage, setSourceLanguageSignal] = createSignal('auto');
 
   const targetLangOptions = () => uniq([targetLanguage(), ...COMMON_LANGUAGES.map((l) => l.code)]);
   const sourceLangOptions = () => uniq(['auto', sourceLanguage(), ...COMMON_LANGUAGES.map((l) => l.code)]);
@@ -443,9 +442,7 @@ export function FloatingBubble(props: FloatingBubbleProps) {
       else if (name === 'googleCloudTranslateApiKey') setSetupFields(readSetupFields());
       else if (name === 'alwaysTranslateSites')
         setAlwaysOn(siteListIncludesHostname(value as string[], props.hostname));
-      else if (name === 'sourceLanguageByHost') {
-        setSourceLanguageSignal(resolveSourceLanguageForHost(value as Record<string, string>, props.hostname, 'auto'));
-      } else if (name === 'bubblePosition') {
+      else if (name === 'bubblePosition') {
         // Keeps other tabs' bubbles in sync after a drag; also fires
         // (idempotently) for this instance's own write in onPointerUp.
         dockState = normalizeBubblePosition(value as BubblePosition);
@@ -550,10 +547,9 @@ export function FloatingBubble(props: FloatingBubbleProps) {
 
   /**
    * One-off retranslate from `code`, to correct bad auto-detection. `code` is
-   * saved to `sourceLanguageByHost` (what this picker shows on later visits,
-   * listed in Settings) but not sent on later requests: a forced source on
-   * text already in another language mistranslates it (Google: "History"
-   * with source=vi → "Association").
+   * saved to `sourceLanguageByHost` (listed in Settings) but not used on later
+   * page loads: a forced source on text already in another language
+   * mistranslates it (Google: "History" with source=vi → "Association").
    */
   function onSourceLanguageChange(e: Event): void {
     if (!e.isTrusted) return;

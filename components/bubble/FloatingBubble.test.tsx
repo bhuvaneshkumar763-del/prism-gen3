@@ -670,10 +670,32 @@ describe('FloatingBubble', () => {
       expect(el.querySelector('.htitle')?.textContent).toBe('Vietnamese → Spanish');
     });
 
-    it('uses the source the user forced with the From picker — that is what the page was actually translated from', async () => {
-      await configStore.set('sourceLanguageByHost', { 'example.com': 'zh' });
-      const { el } = mount({ state: translatedFrom('vi') });
+    const fromSelect = (el: Element) =>
+      Array.from(el.querySelectorAll('select')).find((s) =>
+        s.querySelector('option[value="auto"]'),
+      ) as HTMLSelectElement;
+
+    it('uses the source the user forced with the From picker — that is what the page was actually translated from', () => {
+      const { el } = mount({ state: translatedFrom('vi'), onTranslate: vi.fn() });
+      const from = fromSelect(el);
+      from.value = 'zh';
+      from.dispatchEvent(trusted(new Event('change', { bubbles: true })));
       expect(el.querySelector('.htitle')?.textContent).toBe('Chinese → Spanish');
+    });
+
+    it("starts at Auto on a new page, since a page load uses the detected language, not an earlier visit's pick", async () => {
+      await configStore.set('sourceLanguageByHost', { 'example.com': 'zh' });
+      const onTranslate = vi.fn();
+      const { el } = mount({ state: translatedFrom('vi'), onTranslate });
+      const from = fromSelect(el);
+
+      expect(from.value).toBe('auto');
+      expect(el.querySelector('.htitle')?.textContent).toBe('Vietnamese → Spanish');
+
+      // The earlier pick can be chosen again: it's no longer already selected.
+      from.value = 'zh';
+      from.dispatchEvent(trusted(new Event('change', { bubbles: true })));
+      expect(onTranslate).toHaveBeenCalledWith('es', 'zh');
     });
 
     it('falls back to the plain title while the page language is still unknown', () => {

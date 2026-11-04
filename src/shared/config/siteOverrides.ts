@@ -28,15 +28,6 @@ export function clearBubbleOverrideForHost(
   return next;
 }
 
-/** Falls back to `fallback` (typically `'auto'`) when the host has no saved override. */
-export function resolveSourceLanguageForHost(
-  sourceLanguageByHost: Record<string, string>,
-  hostname: string,
-  fallback: string,
-): string {
-  return sourceLanguageByHost[hostname] ?? fallback;
-}
-
 /** Setting the code to `'auto'` clears the override rather than storing the literal string. */
 export function setSourceLanguageForHost(
   sourceLanguageByHost: Record<string, string>,

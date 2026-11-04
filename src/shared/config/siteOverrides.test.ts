@@ -3,7 +3,6 @@ import {
   clearBubbleOverrideForHost,
   clearSourceLanguageOverrideForHost,
   resolveBubbleVisibility,
-  resolveSourceLanguageForHost,
   setBubbleVisibilityForHost,
   setSourceLanguageForHost,
 } from './siteOverrides';
@@ -46,15 +45,6 @@ describe('setBubbleVisibilityForHost / clearBubbleOverrideForHost', () => {
   it('clearing a host with no existing override is a no-op', () => {
     const input = { 'other.com': true };
     expect(clearBubbleOverrideForHost(input, 'example.com')).toEqual({ 'other.com': true });
-  });
-});
-
-describe('resolveSourceLanguageForHost', () => {
-  it('returns the saved override', () => {
-    expect(resolveSourceLanguageForHost({ 'example.com': 'ja' }, 'example.com', 'auto')).toBe('ja');
-  });
-  it('falls back when no override is saved', () => {
-    expect(resolveSourceLanguageForHost({}, 'example.com', 'auto')).toBe('auto');
   });
 });
 
