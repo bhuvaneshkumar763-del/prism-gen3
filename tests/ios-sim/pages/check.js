@@ -50,6 +50,10 @@
       sample: texts[texts.length - 1]?.slice(-80) ?? '',
       frameAsks,
       frameSyncs: Array.from(document.querySelectorAll('iframe'), (f) => f.contentWindow?.__prismSyncs ?? null),
+      frameStatus: Array.from(
+        document.querySelectorAll('iframe'),
+        (f) => f.contentDocument?.documentElement.dataset.prismFrame ?? null,
+      ),
     };
   }
 

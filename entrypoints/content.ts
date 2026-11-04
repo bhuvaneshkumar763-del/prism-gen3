@@ -19,6 +19,7 @@ import {
 } from '../src/platform/pageFrames';
 import { createRemoteTranslator } from '../src/platform/remoteTranslator';
 import { resolveBubbleVisibility } from '../src/shared/config/siteOverrides';
+import { describeFollow, describeFollowError, describeTranslated, showFrameStatus } from './lib/frameStatus';
 import { FRAME_SYNC_KEY, pageKeyFromSync } from './lib/frameSync';
 import { pollForFrameDecision } from './lib/subFramePoll';
 
@@ -362,7 +363,9 @@ export default defineContentScript({
       /** Applies the top frame's latest decision; false while there is none for this page load yet. */
       async function followOnce(): Promise<boolean> {
         const decision = await sendMessage('getFrameLanguageDecision', pageKey ? { pageKey } : undefined);
-        const step = followTopFrame(decision, window.top?.location.origin ?? '', followerState);
+        const topOrigin = window.top?.location.origin ?? '';
+        const step = followTopFrame(decision, topOrigin, followerState);
+        showFrameStatus(document, describeFollow(decision, topOrigin, step.action));
         if (step.action === 'translate') {
           followerState = {
             translated: true,
@@ -370,6 +373,7 @@ export default defineContentScript({
             sourceLanguage: step.sourceLanguage,
           };
           await pageTranslator.translatePage(step.targetLanguage, step.sourceLanguage);
+          showFrameStatus(document, describeTranslated(pageTranslator.getState(), pageTranslator.getLastErrorKind()));
         } else if (step.action === 'restore') {
           followerState = { translated: false };
           pageTranslator.restorePage();
@@ -390,6 +394,7 @@ export default defineContentScript({
         // background, so a page posting one itself changes nothing.
         pageKey = pageKeyFromSync(event.data, event.origin, location.origin) ?? pageKey;
         syncWithTopFrame().catch((e) => {
+          showFrameStatus(document, describeFollowError(e));
           console.warn('[prism] could not follow the page command', e);
         });
       });
@@ -406,7 +411,10 @@ export default defineContentScript({
           // detection, serial, e.g. a background tab) plus ~1 s of margin.
           maxAttempts: Math.ceil(MAIN_FRAME_DECISION_WORST_CASE_MS / POLL_INTERVAL_MS) + 5, // ~9s
           onFirstWait: () => window.top?.postMessage({ [FRAME_ASK_KEY]: true }, location.origin),
-          onError: (e) => console.warn('[prism] could not follow the page command', e),
+          onError: (e) => {
+            showFrameStatus(document, describeFollowError(e));
+            console.warn('[prism] could not follow the page command', e);
+          },
         });
       })();
     }

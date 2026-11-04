@@ -110,6 +110,19 @@ final class PrismSimChecks: XCTestCase {
         Thread.sleep(forTimeInterval: 1.5)
     }
 
+    /// Starts a page translation from the ball. A slow runner can turn the tap into
+    /// a long press, which opens the panel; its main button then does the same.
+    func startTranslating(_ page: String, visit: String) {
+        tapBall()
+        let report = waitFor(page, visit: visit, timeout: 3) { self.flag($0, "panelPinned") }
+        if flag(report, "panelPinned") {
+            shot("\(page)-panel-opened-instead")
+            let primary = safari.webViews.buttons["Translate page"]
+            if primary.waitForExistence(timeout: 5) { primary.tap() }
+            Thread.sleep(forTimeInterval: 1.5)
+        }
+    }
+
     func longPressBall() {
         let button = ball()
         if button.waitForExistence(timeout: 5) && button.isHittable {
@@ -236,7 +249,7 @@ final class PrismSimChecks: XCTestCase {
     func test2_chineseChapter() throws {
         try requireExtension()
         let visit = open("/chinese-chapter.html", page: "chinese")
-        tapBall()
+        startTranslating("chinese", visit: visit)
         let done = waitFor("chinese", visit: visit, timeout: 90) { self.flag($0, "everAllTranslated") }
         shot("chinese-translated")
         XCTAssertTrue(flag(done, "everAllTranslated"), "Chinese chapter not fully translated: \(done ?? [:])")
@@ -252,7 +265,7 @@ final class PrismSimChecks: XCTestCase {
     func test3_longVietnameseChapter() throws {
         try requireExtension()
         let visit = open("/vietnamese-long.html", page: "vietnamese")
-        tapBall()
+        startTranslating("vietnamese", visit: visit)
         let done = waitFor("vietnamese", visit: visit, timeout: 150) { self.flag($0, "everAllTranslated") }
         shot("vietnamese-translated")
         XCTAssertTrue(flag(done, "everAllTranslated"), "Long chapter not fully translated: \(done ?? [:])")
@@ -299,7 +312,7 @@ final class PrismSimChecks: XCTestCase {
     func test6_sameOriginIframe() throws {
         try requireExtension()
         let visit = open("/iframe.html", page: "iframe")
-        tapBall()
+        startTranslating("iframe", visit: visit)
         let done = waitFor("iframe", visit: visit, timeout: 90) { self.flag($0, "everAllTranslated") }
         shot("iframe-translated")
         XCTAssertTrue(flag(done, "everAllTranslated"), "The page and its iframe weren't both translated: \(done ?? [:])")
