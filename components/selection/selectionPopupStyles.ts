@@ -69,9 +69,6 @@ export const SELECTION_POPUP_STYLES = `
     align-items: center;
     gap: 0.4em;
   }
-  /* Perceived-speed fix: this used to be text-only while busy — see
-     FloatingBubble.tsx's .spinner (components/bubble/bubbleStyles.ts) for
-     the same pattern reused here. */
   .status .spinner {
     width: 11px;
     height: 11px;
