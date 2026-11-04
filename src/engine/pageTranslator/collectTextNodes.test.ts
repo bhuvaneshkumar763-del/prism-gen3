@@ -375,3 +375,22 @@ describe('collectAttributeTargets', () => {
     expect(collectAttributeTargets(document.body)).toEqual([]);
   });
 });
+
+describe('translate="no" and shadow-DOM attributes', () => {
+  it('honours translate="no" in any letter case, for text and for attributes', () => {
+    document.body.innerHTML =
+      '<span translate="NO">BrandName</span><span translate="No" title="Brand tooltip">Other</span><p>Translate me</p>';
+    expect(collectTextNodes(document.body).map((n) => n.data)).toEqual(['Translate me']);
+    expect(collectAttributeTargets(document.body)).toEqual([]);
+  });
+
+  it('collects attributes inside an open shadow root', () => {
+    document.body.innerHTML = '<div id="host"></div>';
+    const host = document.getElementById('host') as HTMLElement;
+    const shadow = host.attachShadow({ mode: 'open' });
+    shadow.innerHTML = '<input placeholder="Search comments">';
+    const targets = collectAttributeTargets(document.body);
+    expect(targets.map((t) => [t.element.tagName, t.attribute])).toEqual([['INPUT', 'placeholder']]);
+    document.body.innerHTML = '';
+  });
+});

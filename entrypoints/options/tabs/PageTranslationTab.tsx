@@ -14,14 +14,30 @@ import {
   removeSiteFromNeverTranslate,
 } from '../../../src/shared/config/listMutations';
 import { missingProviderSetup } from '../../../src/shared/config/providerSetup';
+import { clearSourceLanguageOverrideForHost } from '../../../src/shared/config/siteOverrides';
+import { languageLabel } from '../../../src/shared/languageLabel';
 import { describeTranslationTest, pickTranslationTestSample } from '../../../src/shared/translationTest';
 import { describeError, type SettingsTabProps } from './types';
 
-/** Page translation tab: provider and its setup, the always/never lists, content handling. */
+/**
+ * Page translation tab: provider and its setup, the always/never lists, the
+ * bubble's per-site source languages, content handling.
+ */
 export function PageTranslationTab(props: SettingsTabProps) {
   const [testRunning, setTestRunning] = createSignal(false);
   const [testResult, setTestResult] = createSignal<{ ok: boolean; message: string } | null>(null);
   const providerGaps = () => missingProviderSetup(props.settings.pageTranslatorProvider, props.settings);
+
+  /**
+   * Provider fields save on change, as focus leaves them, which can be after
+   * the Test button's click starts. The test saves a key still in the box and
+   * waits for pending saves, so it never runs on the old key.
+   */
+  let providerSaves: Promise<unknown> = Promise.resolve();
+  let apiKeyInput: HTMLInputElement | undefined;
+  function saveProviderField(...args: Parameters<SettingsTabProps['setField']>): void {
+    providerSaves = Promise.all([providerSaves, props.setField(...args)]);
+  }
 
   /**
    * Diagnostics test: sends one short sample through the same background path
@@ -33,6 +49,10 @@ export function PageTranslationTab(props: SettingsTabProps) {
     const sample = pickTranslationTestSample(props.settings.targetLanguage);
     const started = performance.now();
     try {
+      if (apiKeyInput?.isConnected && apiKeyInput.value !== props.settings.googleCloudTranslateApiKey) {
+        saveProviderField('googleCloudTranslateApiKey', apiKeyInput.value);
+      }
+      await providerSaves;
       const result = await sendMessage('translateText', sample);
       setTestResult(describeTranslationTest(sample, result, performance.now() - started));
     } catch (e) {
@@ -62,6 +82,17 @@ export function PageTranslationTab(props: SettingsTabProps) {
     );
   }
 
+  function sourceLanguageHostEntries(): Array<[string, string]> {
+    return Object.entries(props.settings.sourceLanguageByHost ?? {});
+  }
+
+  async function removeSourceLanguageOverride(host: string): Promise<void> {
+    await props.setField(
+      'sourceLanguageByHost',
+      clearSourceLanguageOverrideForHost(props.settings.sourceLanguageByHost, host),
+    );
+  }
+
   return (
     <>
       <section class="section">
@@ -70,7 +101,7 @@ export function PageTranslationTab(props: SettingsTabProps) {
           <span>Provider</span>
           <select
             value={props.settings.pageTranslatorProvider}
-            onChange={(e) => void props.setField('pageTranslatorProvider', e.currentTarget.value as never)}
+            onChange={(e) => saveProviderField('pageTranslatorProvider', e.currentTarget.value as never)}
           >
             <For each={providerDescriptors}>{(d) => <option value={d.id}>{d.displayName}</option>}</For>
           </select>
@@ -81,9 +112,10 @@ export function PageTranslationTab(props: SettingsTabProps) {
             <label class="field">
               <span>Google Cloud Translation API key</span>
               <input
+                ref={apiKeyInput}
                 type="password"
                 value={props.settings.googleCloudTranslateApiKey}
-                onChange={(e) => void props.setField('googleCloudTranslateApiKey', e.currentTarget.value)}
+                onChange={(e) => saveProviderField('googleCloudTranslateApiKey', e.currentTarget.value)}
               />
             </label>
           </div>
@@ -158,6 +190,37 @@ export function PageTranslationTab(props: SettingsTabProps) {
           onAdd={(lang) => void applyPatch(addLangToNeverTranslate(listsSnapshot(), lang))}
           onRemove={(lang) => void applyPatch(removeLangFromNeverTranslate(listsSnapshot(), lang))}
         />
+      </section>
+
+      <section class="section">
+        <h2>Source language picked in the bubble</h2>
+        <p class="hint">
+          Picking a language in the bubble's "From" menu retranslates the current page from that language right now — a
+          one-off correction for when auto-detection got the whole page wrong, not a standing rule. A fresh page load
+          goes back to automatic detection.
+        </p>
+        <Show when={sourceLanguageHostEntries().length > 0} fallback={<p class="listEditorEmpty">None</p>}>
+          <ul class="siteTable">
+            <For each={sourceLanguageHostEntries()}>
+              {([host, lang]) => (
+                <li>
+                  <span>
+                    {host}: <span class="siteValue">{languageLabel(lang)}</span>
+                  </span>
+                  <button
+                    type="button"
+                    class="removeBtn"
+                    aria-label={`Remove override for ${host}`}
+                    title={`Remove override for ${host}`}
+                    onClick={() => void removeSourceLanguageOverride(host)}
+                  >
+                    ×
+                  </button>
+                </li>
+              )}
+            </For>
+          </ul>
+        </Show>
       </section>
 
       <section class="section">

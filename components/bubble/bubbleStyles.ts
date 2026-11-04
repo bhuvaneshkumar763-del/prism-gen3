@@ -1,3 +1,5 @@
+import { UI_FONT_STACK } from '../shared/uiFont';
+
 /**
  * Inline CSS for the floating bubble's shadow root. Inlined because a shadow
  * root on a third-party page can't load the extension's stylesheets by path.
@@ -28,7 +30,7 @@
  */
 export const BUBBLE_STYLES = `
   * { box-sizing: border-box; margin: 0; padding: 0;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; }
+      font-family: ${UI_FONT_STACK}; }
 
   :host { all: initial !important; }
 
@@ -108,8 +110,6 @@ export const BUBBLE_STYLES = `
   .head .htitle { font-size: 13.5px; font-weight: 700; }
   .head .hsub { font-size: 11px; opacity: .85; font-weight: 500; }
 
-  /* Perceived-speed fix: real progress instead of just a spinner — see
-     FloatingBubble.tsx's showProgress()/translateLoop.ts's onProgressChange. */
   .progressTrack { height: 3px; background: rgba(15,23,42,.08); overflow: hidden; }
   .progressFill {
     height: 100%;

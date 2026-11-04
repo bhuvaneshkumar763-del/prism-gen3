@@ -327,6 +327,21 @@ describe('mountHoverTooltip', () => {
     controller.destroy();
   });
 
+  it('hides when the page is shown in the original while the tooltip is up', () => {
+    const p = document.getElementById('target') as HTMLParagraphElement;
+    const textNode = p.firstChild as Text;
+    const controller = mountHoverTooltip(makeSource([{ node: textNode, original: 'Hello' }]));
+    dispatchMouseEvent('mouseover', p);
+    vi.advanceTimersByTime(350);
+    expect(tooltipShadowRoot()?.querySelector('.tooltip')).not.toBeNull();
+
+    textNode.data = 'Hello';
+    dispatchMouseEvent('mousemove', p, { clientX: 12, clientY: 12 });
+
+    expect(tooltipShadowRoot()?.querySelector('.tooltip')).toBeNull();
+    controller.destroy();
+  });
+
   it('destroy() removes the host and listeners', () => {
     const source: TranslatedNodesSource = makeSource([]);
     const controller = mountHoverTooltip(source);

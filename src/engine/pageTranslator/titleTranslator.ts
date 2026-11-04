@@ -103,6 +103,7 @@ export function createTitleTranslator(options: TitleTranslatorOptions) {
   /**
    * Writes both `document.title` and the `<title>` element, which can drift
    * apart (writing one can leave the tab stale); separate try/catch for each.
+   * The <head> observer sees these writes; `translatedPageTitle` makes it ignore them.
    */
   function applyTabTitle(text: string): void {
     try {
@@ -116,19 +117,10 @@ export function createTitleTranslator(options: TitleTranslatorOptions) {
         titleEl = document.createElement('title');
         (document.head || document.documentElement).prepend(titleEl);
       }
-      if (titleEl.textContent !== text) {
-        noteOwnHeadWrite();
-        titleEl.textContent = text;
-      }
+      if (titleEl.textContent !== text) titleEl.textContent = text;
     } catch (e) {
       console.debug(e);
     }
-  }
-
-  // Loop guard: the <head> observer would otherwise fire on our own <title> write.
-  let suppressNextObserverTick = false;
-  function noteOwnHeadWrite(): void {
-    suppressNextObserverTick = true;
   }
 
   async function translate(targetLanguage: string): Promise<void> {
@@ -180,10 +172,6 @@ export function createTitleTranslator(options: TitleTranslatorOptions) {
   function startWatching(): void {
     stopWatching();
     headObserver = new MutationObserver(() => {
-      if (suppressNextObserverTick) {
-        suppressNextObserverTick = false;
-        return;
-      }
       void maybeRetranslate();
     });
     const head = document.head || document.querySelector('head');

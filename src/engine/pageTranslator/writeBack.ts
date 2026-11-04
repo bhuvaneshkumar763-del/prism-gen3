@@ -1,5 +1,6 @@
 import { restoreBoundaryText } from './boundaryText';
 import type { PieceSlot } from './grouping';
+import { createRestoreMap } from './restoreMap';
 
 /**
  * Writing translations into the page, and the bookkeeping that undoes it:
@@ -14,66 +15,63 @@ import type { PieceSlot } from './grouping';
 const LEADING_NON_LETTER_OR_DIGIT = /^[^\p{L}\p{N}]+/u;
 
 /**
- * Drops a `nodesToRestore` entry once its node has been disconnected for two
- * CONSECUTIVE resweep ticks: recycled list widgets detach and reattach the
- * same node within one tick, and pruning it then would make it unrestorable.
- */
-export function pruneDisconnectedRestoreEntries(
-  nodesToRestore: Map<Text, string>,
-  disconnectedLastTick: WeakSet<Text>,
-): void {
-  for (const node of nodesToRestore.keys()) {
-    if (!node.isConnected) {
-      if (disconnectedLastTick.has(node)) {
-        nodesToRestore.delete(node);
-      } else {
-        disconnectedLastTick.add(node);
-      }
-    } else {
-      disconnectedLastTick.delete(node);
-    }
-  }
-}
-
-/**
- * Every node this cycle may change, with its pre-translation text. Keyed by
- * node so `prune` can drop nodes the page removed; otherwise a long-lived SPA
- * would keep every detached Text node it translated.
+ * Every node this cycle may change, with its pre-translation text. Nodes the
+ * page removes are parked weakly (see `createRestoreMap`), so a long-lived SPA
+ * doesn't keep every detached Text node it translated.
  */
 export function createRestoreLedger() {
-  let originals = new Map<Text, string>();
-  const disconnectedLastTick = new WeakSet<Text>();
+  const originals = createRestoreMap<Text, string>();
+  /** A word run's whole sent text, kept on its nodes for the hover tooltip. */
+  let runText = new WeakMap<Text, string>();
 
   return {
     /** Records `node`'s current text as its original, replacing any earlier one. */
     record(node: Text): void {
       originals.set(node, node.data);
+      runText.delete(node);
     },
     /** Starts a new cycle with `nodes` as everything there is to restore. */
     reset(nodes: readonly Text[] = []): void {
-      originals = new Map(nodes.map((node) => [node, node.data]));
+      originals.clear();
+      runText = new WeakMap();
+      for (const node of nodes) originals.set(node, node.data);
     },
-    /** Puts every connected node's original back, through `noteOwnWrite`, and forgets them all. */
+    /**
+     * Puts every node's original back, through `noteOwnWrite`, and forgets them
+     * all. Includes detached nodes: a recycled one may be reattached later.
+     */
     restoreAll(noteOwnWrite: (node: Text, text: string) => void): void {
       originals.forEach((original, node) => {
-        if (node.isConnected && node.data !== original) {
+        if (node.data !== original) {
           noteOwnWrite(node, original);
           node.data = original;
         }
       });
-      originals = new Map();
+      originals.clear();
+      runText = new WeakMap();
     },
-    /** Bounds the ledger's growth; see `pruneDisconnectedRestoreEntries`. */
+    /** Parks entries for nodes off the page; see `createRestoreMap`. */
     prune(): void {
-      pruneDisconnectedRestoreEntries(originals, disconnectedLastTick);
+      originals.prune();
     },
     has(node: Text): boolean {
       return originals.has(node);
     },
-    /** Original text of a translated node directly under `target`, or null. Doesn't allocate: called on every mousemove. */
+    /** Notes that `nodes` were translated together as `text`, so hovering any of them shows all of it. */
+    recordRun(nodes: readonly Text[], text: string): void {
+      for (const node of nodes) runText.set(node, text);
+    },
+    /**
+     * Original text of a translated node directly under `target`, or null.
+     * Reads only `target`'s children, without allocating: called on every mousemove.
+     */
     findOriginalTextForElement(target: Element): string | null {
-      for (const [node, original] of originals) {
-        if (node.parentElement === target && node.data !== original) return original;
+      const children = target.childNodes;
+      for (let i = 0; i < children.length; i++) {
+        const node = children[i];
+        if (node?.nodeType !== Node.TEXT_NODE) continue;
+        const original = originals.get(node as Text);
+        if (original !== undefined && (node as Text).data !== original) return runText.get(node as Text) ?? original;
       }
       return null;
     },
@@ -165,6 +163,7 @@ export function createSlotWriter(
     }
     writeTranslatedNode(head, rawTranslated);
     if (head.data !== sentText.get(head)) return;
+    deps.ledger.recordRun(slot.nodes, slot.text.trim());
     // The run's translation stands for every word in it, not just the head.
     for (const node of tail) {
       const sourceChars = node.data.trim().length;

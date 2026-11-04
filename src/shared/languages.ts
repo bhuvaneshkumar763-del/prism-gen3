@@ -58,10 +58,47 @@ const LEGACY_BASE_LANGUAGE_CODES = new Map<string, string>([
  * Strips a region/script subtag ('pt-BR' -> 'pt', 'zh-Hans' -> 'zh') and maps
  * legacy codes, so a regional variant compares equal to its base language
  * (e.g. a pt-BR page matches a `neverTranslateLangs: ['pt']` rule).
+ * To compare two codes, use `sameLanguage`, which keeps Chinese scripts apart.
  */
 export function baseLanguageTag(code: string): string {
   const base = code.split('-')[0]?.toLowerCase() ?? code;
   return LEGACY_BASE_LANGUAGE_CODES.get(base) ?? base;
+}
+
+const SIMPLIFIED_CHINESE_REGIONS = new Set(['cn', 'sg', 'my']);
+const TRADITIONAL_CHINESE_REGIONS = new Set(['tw', 'hk', 'mo']);
+
+/** 'hans' or 'hant' for a Chinese code that names a script or a script-specific region; null when it names neither. */
+function chineseScript(code: string): 'hans' | 'hant' | null {
+  const subtags = code.toLowerCase().split('-').slice(1);
+  if (subtags.includes('hans')) return 'hans';
+  if (subtags.includes('hant')) return 'hant';
+  if (subtags.some((s) => SIMPLIFIED_CHINESE_REGIONS.has(s))) return 'hans';
+  if (subtags.some((s) => TRADITIONAL_CHINESE_REGIONS.has(s))) return 'hant';
+  return null;
+}
+
+/**
+ * `code`'s identity for de-duplicating language lists: the base tag, except
+ * that Simplified and Traditional Chinese stay separate ('zh-hans', 'zh-hant').
+ */
+export function languageKey(code: string): string {
+  const base = baseLanguageTag(code);
+  if (base !== 'zh') return base;
+  const script = chineseScript(code);
+  return script ? `zh-${script}` : 'zh';
+}
+
+/**
+ * Whether two codes name the same language: same base tag, except that
+ * Simplified and Traditional Chinese differ (translating one to the other is
+ * real work). A plain 'zh' names no script, so it matches both.
+ */
+export function sameLanguage(a: string, b: string): boolean {
+  if (baseLanguageTag(a) !== baseLanguageTag(b)) return false;
+  const keyA = languageKey(a);
+  const keyB = languageKey(b);
+  return keyA === keyB || keyA === 'zh' || keyB === 'zh';
 }
 
 /**
@@ -72,6 +109,6 @@ export function baseLanguageTag(code: string): string {
  */
 export function translationDirection(originalLanguage: string, targetLanguage: string): string | null {
   if (!originalLanguage || originalLanguage === 'und' || originalLanguage === 'auto') return null;
-  if (baseLanguageTag(originalLanguage) === baseLanguageTag(targetLanguage)) return null;
+  if (sameLanguage(originalLanguage, targetLanguage)) return null;
   return `${languageName(originalLanguage)} → ${languageName(targetLanguage)}`;
 }

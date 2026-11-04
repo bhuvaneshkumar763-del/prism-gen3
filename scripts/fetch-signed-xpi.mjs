@@ -1,13 +1,11 @@
-// Downloads the Mozilla-signed .xpi for a release that was already submitted
-// to AMO — for when the Release workflow's signing step gave up waiting for
-// approval and published an unsigned zip instead (beta.69 and beta.70 both
-// did, Sept 2026, while the step still reported success).
+// Downloads the Mozilla-signed .xpi for a release already submitted to AMO,
+// for when the Release workflow stopped waiting before Mozilla approved it.
 //
 // Run by .github/workflows/fetch-signed-xpi.yml. Node built-ins only (plus one
 // TypeScript file Node runs directly), so it needs no install step and pulls
 // nothing from npm at run time.
 //
-// Env: AMO_JWT_ISSUER, AMO_JWT_SECRET, VERSION (e.g. "0.3.0-beta.70"),
+// Env: AMO_JWT_ISSUER, AMO_JWT_SECRET, VERSION (e.g. "0.3.2-beta.4"),
 // optional OUT_DIR (default "."). Writes the path of the saved file to
 // $GITHUB_OUTPUT as `xpi=<path>` when running in Actions.
 //

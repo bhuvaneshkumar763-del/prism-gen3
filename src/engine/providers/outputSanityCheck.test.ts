@@ -24,6 +24,29 @@ describe('isSuspiciousOutcome', () => {
     expect(isSuspiciousOutcome('NASA', { text: 'NASA', detectedLanguage: null }, 'en', 'fr')).toBe(false);
   });
 
+  describe('Simplified and Traditional Chinese are different languages here', () => {
+    const SIMPLIFIED =
+      '这是一个很长的句子，用来测试简体中文是否被原样送回，而没有转换成繁体中文的情况，这种情况应该被标记出来。';
+
+    it('flags a long Simplified echo for a Traditional target, by detected language', () => {
+      expect(isSuspiciousOutcome(SIMPLIFIED, { text: SIMPLIFIED, detectedLanguage: 'zh-CN' }, 'auto', 'zh-TW')).toBe(
+        true,
+      );
+    });
+
+    it('flags a long Simplified echo for a Traditional target, by declared source', () => {
+      expect(isSuspiciousOutcome(SIMPLIFIED, { text: SIMPLIFIED, detectedLanguage: null }, 'zh-CN', 'zh-TW')).toBe(
+        true,
+      );
+    });
+
+    it("still accepts an echo when detection names plain 'zh', which matches either script", () => {
+      expect(isSuspiciousOutcome(SIMPLIFIED, { text: SIMPLIFIED, detectedLanguage: 'zh' }, 'auto', 'zh-TW')).toBe(
+        false,
+      );
+    });
+  });
+
   it('does not flag an identical result when the provider detected the source was already in the target language', () => {
     expect(isSuspiciousOutcome(LONG, { text: LONG, detectedLanguage: 'fr' }, 'en', 'fr')).toBe(false);
   });

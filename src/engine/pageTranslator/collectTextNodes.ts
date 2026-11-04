@@ -72,6 +72,11 @@ export interface NoTranslateOptions {
   translatePreTags?: boolean;
 }
 
+/** HTML enumerated values match case-insensitively, so `translate="NO"` counts. */
+function hasTranslateNo(el: Element): boolean {
+  return el.getAttribute('translate')?.toLowerCase() === 'no';
+}
+
 export function isNoTranslateNode(node: Node, options: NoTranslateOptions = {}): boolean {
   if (node.nodeType === Node.ELEMENT_NODE) {
     const el = node as Element;
@@ -80,7 +85,7 @@ export function isNoTranslateNode(node: Node, options: NoTranslateOptions = {}):
     if (el.tagName === 'PRE' && options.translatePreTags === false && !isWholePageBarePre()) return true;
     if ((el as HTMLElement).isContentEditable) return true;
     // Standard opt-outs: the HTML `translate="no"` attribute and the `.notranslate` class.
-    if (el.getAttribute('translate') === 'no') return true;
+    if (hasTranslateNo(el)) return true;
     if (el.classList.contains('notranslate')) return true;
     if (ICON_FONT_CLASSES.some((cls) => el.classList.contains(cls))) return true;
     if (el.classList.contains(KATEX_CLASS)) return true;
@@ -166,7 +171,7 @@ export interface AttributeTarget {
  */
 function isHardExcludedFromAttributes(el: Element): boolean {
   if ((el as HTMLElement).isContentEditable) return true;
-  if (el.getAttribute('translate') === 'no') return true;
+  if (hasTranslateNo(el)) return true;
   if (el.classList.contains('notranslate')) return true;
   return false;
 }
@@ -189,9 +194,21 @@ function translatableAttributesFor(el: Element): AttributeTarget['attribute'][] 
   return attrs;
 }
 
+/** `el`'s own translatable attributes, without looking at its subtree. */
+export function attributeTargetsOf(el: Element): AttributeTarget[] {
+  if (isHardExcludedFromAttributes(el)) return [];
+  const targets: AttributeTarget[] = [];
+  for (const attribute of translatableAttributesFor(el)) {
+    const value = el.getAttribute(attribute);
+    if (value?.trim() && !NO_LETTERS.test(value)) targets.push({ element: el, attribute });
+  }
+  return targets;
+}
+
 /**
- * Same iterative walk as `collectTextNodes`, but inspects every element's own
- * attributes. Only button-type `value` is a label; other inputs' are user data.
+ * Same iterative walk as `collectTextNodes`, open shadow roots included, but
+ * inspects every element's own attributes. Only button-type `value` is a
+ * label; other inputs' are user data.
  */
 export function collectAttributeTargets(root: Node, options: NoTranslateOptions = {}): AttributeTarget[] {
   const targets: AttributeTarget[] = [];
@@ -199,20 +216,20 @@ export function collectAttributeTargets(root: Node, options: NoTranslateOptions 
   while (stack.length > 0) {
     // biome-ignore lint/style/noNonNullAssertion: length just checked above
     const node = stack.pop()!;
-    if (node.nodeType !== Node.ELEMENT_NODE) continue;
-    const el = node as Element;
-    if (isHardExcludedFromAttributes(el)) continue;
-    for (const attribute of translatableAttributesFor(el)) {
-      const value = el.getAttribute(attribute);
-      if (value?.trim() && !NO_LETTERS.test(value)) targets.push({ element: el, attribute });
+    // A shadow root is a fragment, not an element: walk its children.
+    if (node.nodeType !== Node.ELEMENT_NODE && node.nodeType !== Node.DOCUMENT_FRAGMENT_NODE) continue;
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      const el = node as Element;
+      if (isHardExcludedFromAttributes(el)) continue;
+      targets.push(...attributeTargetsOf(el));
+      if (isNoTranslateNode(el, options)) continue; // don't descend, but this element's own attributes above were still checked
     }
-    if (isNoTranslateNode(el, options)) continue; // don't descend, but this element's own attributes above were still checked
-    const children = el.childNodes;
+    const children = node.childNodes;
     for (let i = children.length - 1; i >= 0; i--) {
       // biome-ignore lint/style/noNonNullAssertion: i is always in bounds
       stack.push(children[i]!);
     }
-    const shadowRoot = el.shadowRoot;
+    const shadowRoot = (node as Element).shadowRoot;
     if (shadowRoot) stack.push(shadowRoot);
   }
   return targets;

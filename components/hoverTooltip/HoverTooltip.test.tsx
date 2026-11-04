@@ -47,4 +47,9 @@ describe('HoverTooltip', () => {
     expect(tooltip.style.maxWidth).toBe('320px');
     expect(tooltip.style.maxHeight).toBe('200px');
   });
+
+  it('lets a right-to-left original read right to left', () => {
+    const el = mount({ visible: true, text: 'שלום עולם', placement: PLACEMENT });
+    expect(el.querySelector('.tooltip')?.getAttribute('dir')).toBe('auto');
+  });
 });

@@ -43,4 +43,59 @@ describe('copyText', () => {
 
     await expect(copyText('x')).resolves.toBe(false);
   });
+
+  describe('the copy-command fallback', () => {
+    afterEach(() => {
+      document.body.innerHTML = '';
+    });
+
+    function copyCommandThatFiresCopy() {
+      // What a browser does for execCommand('copy'): a `copy` event from the focused field.
+      return vi.fn(() => {
+        const event = new Event('copy', { bubbles: true, cancelable: true, composed: true });
+        Object.defineProperty(event, 'clipboardData', { value: { setData: vi.fn() } });
+        (document.activeElement ?? document.body).dispatchEvent(event);
+        return true;
+      });
+    }
+
+    it("keeps the page's own copy handlers from seeing or rewriting the copy", async () => {
+      vi.stubGlobal('navigator', { ...navigator, clipboard: undefined });
+      Object.defineProperty(document, 'execCommand', { value: copyCommandThatFiresCopy(), configurable: true });
+      const pageCopy = vi.fn();
+      document.addEventListener('copy', pageCopy);
+
+      await expect(copyText('Buenos días')).resolves.toBe(true);
+
+      document.removeEventListener('copy', pageCopy);
+      expect(pageCopy).not.toHaveBeenCalled();
+    });
+
+    it("puts the page's own text selection back afterwards", async () => {
+      vi.stubGlobal('navigator', { ...navigator, clipboard: undefined });
+      Object.defineProperty(document, 'execCommand', { value: copyCommandThatFiresCopy(), configurable: true });
+      document.body.innerHTML = '<p id="picked">Hola mundo</p>';
+      const selection = window.getSelection() as Selection;
+      selection.selectAllChildren(document.getElementById('picked') as HTMLElement);
+      const removeAllRanges = vi.spyOn(selection, 'removeAllRanges');
+      const addRange = vi.spyOn(selection, 'addRange');
+
+      await copyText('Hello world');
+
+      // Put back after the field's select() replaced it.
+      expect(removeAllRanges).toHaveBeenCalled();
+      expect(addRange.mock.calls.at(-1)?.[0].toString()).toBe('Hola mundo');
+    });
+
+    it('reports failure instead of throwing on a page with no body', async () => {
+      vi.stubGlobal('navigator', { ...navigator, clipboard: undefined });
+      Object.defineProperty(document, 'execCommand', { value: vi.fn().mockReturnValue(true), configurable: true });
+      Object.defineProperty(document, 'body', { get: () => null, configurable: true });
+      try {
+        await expect(copyText('x')).resolves.toBeTypeOf('boolean');
+      } finally {
+        delete (document as { body?: unknown }).body;
+      }
+    });
+  });
 });

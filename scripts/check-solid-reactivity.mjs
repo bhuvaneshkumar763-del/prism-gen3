@@ -13,7 +13,8 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import ts from 'typescript';
+// TypeScript 7 has no stable parser API yet; the guards parse with 5.9 (package alias typescript-api).
+import ts from 'typescript-api';
 
 const REPO_ROOT = resolve(dirname(new URL(import.meta.url).pathname), '..');
 const DEFAULT_DIRS = ['entrypoints', 'components'];

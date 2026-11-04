@@ -424,6 +424,45 @@ describe('translationCache', () => {
       expect(failedOnce).toBe(true);
     });
 
+    it('closes the connection it gives up on before retrying, so a failed operation does not leave it open', async () => {
+      const capture = captureNextOpenedDb();
+      const cache = createTranslationCache();
+      await cache.set('warm', '1');
+      const db = capture.db();
+      if (!db) throw new Error('unreachable');
+
+      const closeSpy = vi.spyOn(db, 'close');
+      let failedOnce = false;
+      const originalTransaction = db.transaction.bind(db);
+      vi.spyOn(db, 'transaction').mockImplementation((...args: Parameters<typeof originalTransaction>) => {
+        if (!failedOnce) {
+          failedOnce = true;
+          throw new Error('simulated: a non-connection failure');
+        }
+        return originalTransaction(...args);
+      });
+
+      await expect(cache.get('warm')).resolves.toBe('1');
+      expect(closeSpy).toHaveBeenCalled();
+    });
+
+    it('does not throw away a fresh connection that a concurrent retry already opened', async () => {
+      const capture = captureNextOpenedDb();
+      const cache = createTranslationCache();
+      await cache.set('warm', '1');
+      const db = capture.db();
+      if (!db) throw new Error('unreachable');
+
+      vi.spyOn(db, 'transaction').mockImplementation(() => {
+        throw new Error('simulated: connection is closing');
+      });
+      const openSpy = vi.spyOn(globalThis.indexedDB, 'open');
+      openSpy.mockClear();
+      // Both operations fail on the same dead connection; one reopen should serve both retries.
+      await expect(Promise.all([cache.get('warm'), cache.get('warm')])).resolves.toEqual(['1', '1']);
+      expect(openSpy).toHaveBeenCalledTimes(1);
+    });
+
     it('gives up after one retry when the reopen fails too, and reads as a miss (does not loop forever or hang)', async () => {
       const capture = captureNextOpenedDb();
       const cache = createTranslationCache();

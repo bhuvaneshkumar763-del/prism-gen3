@@ -45,6 +45,11 @@ export function wentOffline(state: ErrorState): ErrorState {
   };
 }
 
+/** Connectivity is back: the offline error goes, and the provider's own failures surface by the usual threshold. */
+export function backOnline(state: ErrorState): ErrorState {
+  return { ...state, surfacedStreak: 0, error: null };
+}
+
 /** A batch failed for real (not just a suspicious echo); surfaces `error` once the threshold is reached. */
 export function batchFailed(state: ErrorState, error: TranslateError): ErrorState {
   const failures = state.failures + 1;

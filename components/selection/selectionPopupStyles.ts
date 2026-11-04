@@ -1,9 +1,15 @@
+import { UI_FONT_STACK } from '../shared/uiFont';
+
 /*
  * Rationale lives here, in a JS comment the minifier strips — CSS comments
  * inside the string below ship verbatim in the content script on every page.
  *
  * - `.trigger` is 30px, matching SELECTION_TRIGGER_SIZE in
  *   selectionPanelPlacement.ts, which uses that number to keep it on screen.
+ *   Its `::before` widens what a finger can hit to 44px without moving it.
+ * - Under `pointer: coarse`, Close and Copy grow to the 44px touch minimum;
+ *   the panel's right padding makes room for the larger Close.
+ * - `.result` keeps the line breaks of a multi-paragraph selection.
  * - `.panel` gets max-width/max-height inline from selectionPanelPlacement.ts,
  *   clamped to the room actually available; `overflow: auto` lets a long
  *   translation scroll instead of running off screen.
@@ -28,6 +34,16 @@ export const SELECTION_POPUP_STYLES = `
     cursor: pointer;
     box-shadow: 0 2px 8px rgba(15, 23, 42, 0.35);
   }
+  .trigger::before {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 44px;
+    height: 44px;
+    margin: -22px 0 0 -22px;
+    border-radius: 50%;
+  }
   .trigger svg {
     width: 17px;
     height: 17px;
@@ -42,7 +58,7 @@ export const SELECTION_POPUP_STYLES = `
     border-radius: 8px;
     background: #1e1b4b;
     color: #fff;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+    font-family: ${UI_FONT_STACK};
     font-size: 13px;
     line-height: 1.4;
     box-shadow: 0 4px 16px rgba(15, 23, 42, 0.35);
@@ -53,9 +69,6 @@ export const SELECTION_POPUP_STYLES = `
     align-items: center;
     gap: 0.4em;
   }
-  /* Perceived-speed fix: this used to be text-only while busy — see
-     FloatingBubble.tsx's .spinner (components/bubble/bubbleStyles.ts) for
-     the same pattern reused here. */
   .status .spinner {
     width: 11px;
     height: 11px;
@@ -76,6 +89,7 @@ export const SELECTION_POPUP_STYLES = `
   }
   .result {
     margin: 0;
+    white-space: pre-wrap;
   }
   .errorText {
     margin: 0;
@@ -111,5 +125,22 @@ export const SELECTION_POPUP_STYLES = `
   .close:hover {
     color: #fff;
     background: rgba(255, 255, 255, 0.15);
+  }
+  @media (pointer: coarse) {
+    .panel {
+      min-height: 44px;
+      padding-right: 44px;
+    }
+    .close {
+      top: 0;
+      right: 0;
+      width: 44px;
+      height: 44px;
+      padding: 0;
+    }
+    .copy {
+      min-height: 44px;
+      padding: 0 16px;
+    }
   }
 `;

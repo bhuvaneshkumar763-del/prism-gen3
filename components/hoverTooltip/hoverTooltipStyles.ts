@@ -1,3 +1,5 @@
+import { UI_FONT_STACK } from '../shared/uiFont';
+
 /*
  * `.tooltip` gets its edges and max-width/max-height inline from
  * hoverTooltipPlacement.ts, sized to the room on screen; `overflow: hidden`
@@ -17,7 +19,7 @@ export const HOVER_TOOLTIP_STYLES = `
     border-radius: 6px;
     background: #1e1b4b;
     color: #fff;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+    font-family: ${UI_FONT_STACK};
     font-size: 12px;
     line-height: 1.4;
     box-shadow: 0 4px 12px rgba(15, 23, 42, 0.35);

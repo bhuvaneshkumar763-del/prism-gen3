@@ -4,7 +4,7 @@ import { err, ok } from '../../shared/result';
 import { TimeoutError } from '../../shared/withTimeout';
 import { connectivity } from '../connectivity';
 import type { PieceOutcome, TranslateError, Translator } from '../translator';
-import { createPageTranslator, pruneDisconnectedRestoreEntries } from './translateLoop';
+import { createPageTranslator } from './translateLoop';
 
 async function waitFor(condition: () => boolean, timeoutMs = 2000): Promise<void> {
   const start = Date.now();
@@ -1608,18 +1608,9 @@ describe('viewport-priority reordering — dirty-flag gating', () => {
   });
 
   it('re-measures after a scroll invalidates the previous ordering', async () => {
-    // Real wall-clock time (multiple ~150ms batches) comfortably exceeds
-    // vitest's default 5000ms test timeout — bumped below.
-    // 1500 nodes at MAX_PIECES_PER_TICK=300 needs 5 batches to drain. Each
-    // mock batch has a real, deliberately generous delay so the drain
-    // naturally spans real wall-clock time well past resweep's 400ms
-    // scroll debounce, instead of finishing near-instantly now that ticks
-    // no longer have a fixed inter-batch pause (see translateLoop.ts's
-    // nextDelay comment) — real timers throttled by a realistic per-batch
-    // cost, not a race against fake-timer cascading semantics. Scroll is
-    // dispatched immediately after the first reorder (not after an
-    // additional wait) so the debounce's 400ms target lands mid-drain with
-    // comfortable margin, rather than right at the finish line.
+    // 1500 nodes at MAX_PIECES_PER_TICK=300 needs 5 batches of 150ms each, so
+    // resweep's 400ms scroll debounce lands mid-drain. Fake timers keep that
+    // ordering exact however slow the machine is.
     for (let i = 0; i < 1500; i++) {
       const p = document.createElement('p');
       p.textContent = `hello ${i}`;
@@ -1640,19 +1631,25 @@ describe('viewport-priority reordering — dirty-flag gating', () => {
       getBatchingHint: () => undefined,
     });
 
-    await pageTranslator.translatePage('es');
-    await waitFor(() => rectSpy.mock.calls.length > 0, 3000); // tick 1's reorder measured something
-    const callsAfterTick1 = rectSpy.mock.calls.length;
+    vi.useFakeTimers();
+    try {
+      await pageTranslator.translatePage('es');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(rectSpy.mock.calls.length).toBeGreaterThan(0); // tick 1's reorder measured something
+      const callsAfterTick1 = rectSpy.mock.calls.length;
 
-    // Scroll — resweep.ts's own debounced listener (400ms) marks the
-    // ordering dirty again via onViewportChanged, landing mid-drain (see
-    // the timing comment above) so there's a real eligible tick left for
-    // the dirty flag to take effect on.
-    window.dispatchEvent(new Event('scroll'));
-    await waitFor(() => rectSpy.mock.calls.length > callsAfterTick1, 5000);
-
-    pageTranslator.restorePage();
-  }, 10000);
+      // Scroll — resweep.ts's own debounced listener (400ms) marks the
+      // ordering dirty again via onViewportChanged, while batches remain.
+      window.dispatchEvent(new Event('scroll'));
+      await vi.advanceTimersByTimeAsync(400);
+      expect(rectSpy.mock.calls.length).toBe(callsAfterTick1);
+      await vi.advanceTimersByTimeAsync(300);
+      expect(rectSpy.mock.calls.length).toBeGreaterThan(callsAfterTick1);
+    } finally {
+      pageTranslator.restorePage();
+      vi.useRealTimers();
+    }
+  });
 
   it('reorders by viewport even on a typical, small page — perceived-speed fix: this used to be gated behind queue.length > MAX_PIECES_PER_TICK (300), so on any page with fewer pieces than that (the common case) reordering never ran at all', async () => {
     // 10 paragraphs total, well under the old 300-piece gate — a page this
@@ -1966,18 +1963,25 @@ describe('incremental write-back (onPieceComplete)', () => {
       getBatchingHint: () => undefined,
     });
 
-    void pageTranslator.translatePage('es');
+    // Fake timers, so "after the fast piece, before the slow one" can't be
+    // overrun by a slow test machine.
+    vi.useFakeTimers();
+    try {
+      void pageTranslator.translatePage('es');
 
-    // Past the fast piece's 10ms but well short of the slow piece's
-    // 150ms — the fast node must already be written.
-    await new Promise((resolve) => setTimeout(resolve, 60));
-    expect(fastNode.data).toBe('FAST');
-    expect(slowNode.data).toBe('beta'); // not yet translated — the whole call hasn't resolved
+      // Past the fast piece's 10ms but well short of the slow piece's
+      // 150ms — the fast node must already be written.
+      await vi.advanceTimersByTimeAsync(60);
+      expect(fastNode.data).toBe('FAST');
+      expect(slowNode.data).toBe('beta'); // not yet translated — the whole call hasn't resolved
 
-    await waitFor(() => slowNode.data === 'SLOW');
-    expect(fastNode.data).toBe('FAST');
-
-    pageTranslator.restorePage();
+      await vi.advanceTimersByTimeAsync(100);
+      expect(slowNode.data).toBe('SLOW');
+      expect(fastNode.data).toBe('FAST');
+    } finally {
+      pageTranslator.restorePage();
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -2116,6 +2120,44 @@ describe("a partial (mixed-outcome) batch failure — real bug this closed: 'all
     expect(pageTranslator.getLastError()).not.toBeNull();
     expect(aAttempts).toBeGreaterThanOrEqual(3); // genuinely kept being retried, not silently abandoned after 1
 
+    pageTranslator.restorePage();
+  });
+
+  it('keeps retrying a piece that failed for a real reason in a mixed batch, and translates it once the service recovers', async () => {
+    document.body.innerHTML = '<p id="a">alpha</p><p id="b">beta0</p>';
+    const aNode = (document.getElementById('a') as HTMLElement).firstChild as Text;
+    const bNode = (document.getElementById('b') as HTMLElement).firstChild as Text;
+    let aAttempts = 0;
+    const translateBatch = vi.fn(
+      async (request: { pieces: string[][] }): Promise<PieceOutcome[]> =>
+        request.pieces.map((piece): PieceOutcome => {
+          if ((piece[0] ?? '').startsWith('alpha') && ++aAttempts <= 5) {
+            return err({ kind: 'http', status: 429, message: 'rate limited' });
+          }
+          return ok(piece.map((s) => s.toUpperCase()));
+        }),
+    );
+    const pageTranslator = createPageTranslator({
+      translator: { translateBatch },
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+
+    vi.useFakeTimers();
+    try {
+      void pageTranslator.translatePage('es');
+      // A busy page: other text keeps arriving, so every retry of 'alpha' shares
+      // its batch with text that succeeds, as on a long chapter.
+      for (let i = 1; i <= 600; i++) {
+        bNode.data = `beta${i}`;
+        await vi.advanceTimersByTimeAsync(100);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(aAttempts).toBeGreaterThan(5);
+    expect(aNode.data).toBe('ALPHA');
     pageTranslator.restorePage();
   });
 
@@ -2383,61 +2425,6 @@ describe("restorePage() vs. noteMissingResult's cooldown timer — real bug this
   });
 });
 
-describe('pruneDisconnectedRestoreEntries', () => {
-  it('keeps an entry after a single disconnected tick — only pruned once a SECOND consecutive tick still finds it disconnected', () => {
-    const node = document.createTextNode('HELLO');
-    // Deliberately never attached to document.body — `.isConnected` is
-    // `false` by construction, standing in for "detached this tick"
-    // without needing a real DOM attach/detach or any timer at all: this
-    // is what makes the test deterministic instead of racing the real
-    // resweep-scheduler/MutationObserver timing stack (interval-driven,
-    // not something a test can pin to an exact tick count).
-    const nodesToRestore = new Map<Text, string>([[node, 'hello']]);
-    const disconnectedLastTick = new WeakSet<Text>();
-
-    pruneDisconnectedRestoreEntries(nodesToRestore, disconnectedLastTick); // tick 1: disconnected — marked as a candidate, not pruned yet
-    expect(nodesToRestore.has(node)).toBe(true);
-  });
-
-  it('prunes an entry after two CONSECUTIVE disconnected ticks — a real removal, not a recycle-pool blip', () => {
-    const node = document.createTextNode('HELLO');
-    const nodesToRestore = new Map<Text, string>([[node, 'hello']]);
-    const disconnectedLastTick = new WeakSet<Text>();
-
-    pruneDisconnectedRestoreEntries(nodesToRestore, disconnectedLastTick); // tick 1: disconnected
-    expect(nodesToRestore.has(node)).toBe(true);
-    pruneDisconnectedRestoreEntries(nodesToRestore, disconnectedLastTick); // tick 2: still disconnected
-    expect(nodesToRestore.has(node)).toBe(false);
-  });
-
-  it('resets the disconnected streak once a node reconnects, so a later real removal needs its own two consecutive ticks again', () => {
-    document.body.innerHTML = '<p id="item">hello</p>';
-    const item = document.getElementById('item');
-    if (!item) throw new Error('unreachable');
-    const node = item.firstChild;
-    if (!(node instanceof Text)) throw new Error('unreachable');
-
-    const nodesToRestore = new Map<Text, string>([[node, 'hello']]);
-    const disconnectedLastTick = new WeakSet<Text>();
-
-    item.remove();
-    pruneDisconnectedRestoreEntries(nodesToRestore, disconnectedLastTick); // tick 1: disconnected — candidate
-    expect(nodesToRestore.has(node)).toBe(true);
-
-    document.body.appendChild(item); // reconnected before a 2nd consecutive disconnected tick
-    pruneDisconnectedRestoreEntries(nodesToRestore, disconnectedLastTick); // tick 2: connected — streak reset, entry untouched
-    expect(nodesToRestore.has(node)).toBe(true);
-
-    item.remove();
-    pruneDisconnectedRestoreEntries(nodesToRestore, disconnectedLastTick); // tick 3: disconnected again — candidate (streak was reset, not carried over)
-    expect(nodesToRestore.has(node)).toBe(true);
-    pruneDisconnectedRestoreEntries(nodesToRestore, disconnectedLastTick); // tick 4: still disconnected — now genuinely pruned
-    expect(nodesToRestore.has(node)).toBe(false);
-
-    document.body.innerHTML = '';
-  });
-});
-
 describe('rapid navigation — overlapping translate cycles must always converge (real bug, found via a live user report: rapidly skipping chapters worked two or three times, then the next one spun forever, recovering only on a reload or on skipping to the page after it)', () => {
   afterEach(() => {
     document.body.innerHTML = '';
@@ -2640,4 +2627,160 @@ describe('rapid navigation — overlapping translate cycles must always converge
 
     pageTranslator.restorePage();
   }, 20000);
+});
+
+describe('cycle and failure bookkeeping', () => {
+  // Restored even when a test fails, so its watchers can't translate the next test's page.
+  const live: ReturnType<typeof createPageTranslator>[] = [];
+  function create(options: Parameters<typeof createPageTranslator>[0]) {
+    const pageTranslator = createPageTranslator(options);
+    live.push(pageTranslator);
+    return pageTranslator;
+  }
+  afterEach(() => {
+    for (const pageTranslator of live.splice(0)) pageTranslator.restorePage();
+    document.body.innerHTML = '';
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  it('Show original restores a translated node that is off the page at that moment', async () => {
+    document.body.innerHTML = '<div id="list"><p>hello</p></div>';
+    const p = document.querySelector('p') as HTMLElement;
+    const node = p.firstChild as Text;
+    const pageTranslator = create({
+      translator: uppercaseTranslator(),
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+    vi.useFakeTimers();
+    void pageTranslator.translatePage('es');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(node.data).toBe('HELLO');
+    p.remove();
+    // Long enough for several resweep ticks to see it detached.
+    await vi.advanceTimersByTimeAsync(30_000);
+    pageTranslator.restorePage();
+    expect(node.data).toBe('hello');
+  });
+
+  it("after a batch times out, re-sends only the pieces that weren't already written", async () => {
+    document.body.innerHTML = '<p>hello</p><p>world</p>';
+    const sent: string[][][] = [];
+    let calls = 0;
+    const translator: Translator = {
+      async translateBatch(request) {
+        sent.push(request.pieces);
+        calls++;
+        if (calls === 1) {
+          request.onPieceComplete?.(0, ok(request.pieces[0]?.map((s) => s.toUpperCase()) ?? []));
+          throw new TimeoutError('timed out');
+        }
+        return request.pieces.map((piece): PieceOutcome => ok(piece.map((s) => s.toUpperCase())));
+      },
+    };
+    const pageTranslator = create({
+      translator,
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+    vi.useFakeTimers();
+    void pageTranslator.translatePage('es');
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(sent[1]).toEqual([['world']]);
+    expect(document.body.textContent).toBe('HELLOWORLD');
+    pageTranslator.restorePage();
+  });
+
+  it('gives a node that gave up in one cycle its full retries again in the next cycle', async () => {
+    document.body.innerHTML = '<p>Wikipedia</p>';
+    const translateBatch = vi.fn(
+      async (request: { pieces: string[][] }): Promise<PieceOutcome[]> =>
+        request.pieces.map(() => err({ kind: 'suspicious', message: 'echoed' })),
+    );
+    const pageTranslator = create({
+      translator: { translateBatch },
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+    vi.useFakeTimers();
+    void pageTranslator.translatePage('es');
+    for (let i = 0; i < 8; i++) await vi.advanceTimersByTimeAsync(1600);
+    expect(translateBatch).toHaveBeenCalledTimes(4);
+
+    void pageTranslator.translatePage('de');
+    for (let i = 0; i < 8; i++) await vi.advanceTimersByTimeAsync(1600);
+    expect(translateBatch).toHaveBeenCalledTimes(8);
+    pageTranslator.restorePage();
+  });
+
+  it('a listener that throws while a batch is being sent does not lose the batch', async () => {
+    document.body.innerHTML = '<p>hello</p>';
+    const pageTranslator = create({
+      translator: uppercaseTranslator(),
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+    let thrown = false;
+    pageTranslator.onWorkingChange(() => {
+      if (thrown) return;
+      thrown = true;
+      throw new Error('listener bug');
+    });
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.useFakeTimers();
+    void pageTranslator.translatePage('es');
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(document.body.textContent).toBe('HELLO');
+    pageTranslator.restorePage();
+  });
+
+  it('a throw while preparing a batch backs off and retries instead of spinning or dropping the nodes', async () => {
+    document.body.innerHTML = '<p>hello</p>';
+    let hintCalls = 0;
+    let broken = true;
+    const pageTranslator = create({
+      translator: uppercaseTranslator(),
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => {
+        hintCalls++;
+        if (broken) throw new Error('grouping bug');
+        return undefined;
+      },
+    });
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.useFakeTimers();
+    void pageTranslator.translatePage('es');
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(hintCalls).toBeLessThan(10);
+    broken = false;
+    await vi.advanceTimersByTimeAsync(31_000);
+    expect(document.body.textContent).toBe('HELLO');
+    pageTranslator.restorePage();
+  });
+
+  it('stops showing "Offline" once back online, even while the provider is failing', async () => {
+    const isOnline = vi.spyOn(connectivity, 'isOnline').mockReturnValue(false);
+    document.body.innerHTML = '<p>hello</p>';
+    const translateBatch = vi.fn(
+      async (request: { pieces: string[][] }): Promise<PieceOutcome[]> =>
+        request.pieces.map(() => err({ kind: 'http', status: 503, message: 'HTTP 503' })),
+    );
+    const pageTranslator = create({
+      translator: { translateBatch },
+      getSourceLanguage: () => 'en',
+      getBatchingHint: () => undefined,
+    });
+    vi.useFakeTimers();
+    void pageTranslator.translatePage('es');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pageTranslator.getLastErrorKind()).toBe('offline');
+    isOnline.mockReturnValue(true);
+    // The offline re-check sends one batch, which fails.
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(translateBatch).toHaveBeenCalledTimes(1);
+    expect(pageTranslator.getLastErrorKind()).not.toBe('offline');
+    pageTranslator.restorePage();
+  });
 });

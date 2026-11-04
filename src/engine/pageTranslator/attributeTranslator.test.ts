@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { err, ok } from '../../shared/result';
 import type { PieceOutcome, Translator } from '../translator';
-import { createAttributeTranslator, pruneDisconnectedAttributeEntries } from './attributeTranslator';
+import { createAttributeTranslator } from './attributeTranslator';
 
 const translateBatch = vi.fn<Translator['translateBatch']>();
 const translator: Translator = { translateBatch };
@@ -539,35 +539,60 @@ describe('createAttributeTranslator', () => {
     expect(translateBatch).toHaveBeenCalledTimes(1); // only the initial call — no spurious re-send of our own write
     expect(input.getAttribute('placeholder')).toBe('SEARCH');
   });
+});
 
-  describe("pruneDisconnectedAttributeEntries (bounds originals' growth the same way translateLoop.ts bounds nodesToRestore)", () => {
-    it('drops an entry only after TWO CONSECUTIVE disconnected ticks, not one — a virtualized/recycled list widget detaching and reattaching the SAME element within one resweep interval must not lose its restore entry', () => {
-      const el = document.createElement('input');
-      const originals = new Map<Element, Map<string, string>>([[el, new Map([['placeholder', 'Search']])]]);
-      const disconnectedLastTick = new WeakSet<Element>();
+describe('createAttributeTranslator: nodes off the page, late additions, changed attributes', () => {
+  it('restores an attribute whose element is detached at the moment of Show original', async () => {
+    document.body.innerHTML = '<input id="a" placeholder="Search">';
+    uppercaseOnce();
+    const t = newTranslator();
+    await t.start('es');
+    const input = document.getElementById('a') as HTMLInputElement;
+    expect(input.getAttribute('placeholder')).toBe('SEARCH');
+    input.remove();
+    t.pruneDisconnected();
+    t.pruneDisconnected();
+    t.pruneDisconnected();
+    t.restore();
+    expect(input.getAttribute('placeholder')).toBe('Search');
+  });
 
-      // Never attached to document.body — .isConnected is false throughout.
-      pruneDisconnectedAttributeEntries(originals, disconnectedLastTick);
-      expect(originals.has(el)).toBe(true); // first disconnected tick: noted, not yet pruned
+  it('translates an element added while the first request is still in flight', async () => {
+    document.body.innerHTML = '<input id="a" placeholder="Search">';
+    let resolveFirst!: (outcomes: PieceOutcome[]) => void;
+    translateBatch.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveFirst = resolve;
+        }),
+    );
+    uppercaseOnce();
+    const t = newTranslator();
+    const started = t.start('es');
+    const late = document.createElement('input');
+    late.setAttribute('placeholder', 'Late field');
+    document.body.appendChild(late);
+    await flushAsyncWork();
+    resolveFirst([ok(['BUSCAR'])]);
+    await started;
+    await flushAsyncWork();
+    expect(late.getAttribute('placeholder')).toBe('LATE FIELD');
+  });
 
-      pruneDisconnectedAttributeEntries(originals, disconnectedLastTick);
-      expect(originals.has(el)).toBe(false); // second consecutive tick: pruned
-    });
-
-    it('resets the disconnected streak if the element reconnects in between, so a transient detach/reattach never loses the entry', () => {
-      const el = document.createElement('input');
-      document.body.appendChild(el);
-      const originals = new Map<Element, Map<string, string>>([[el, new Map([['placeholder', 'Search']])]]);
-      const disconnectedLastTick = new WeakSet<Element>();
-
-      el.remove();
-      pruneDisconnectedAttributeEntries(originals, disconnectedLastTick); // 1st disconnected tick
-      document.body.appendChild(el); // reconnects before the 2nd tick
-      pruneDisconnectedAttributeEntries(originals, disconnectedLastTick); // reconnected: streak reset, not pruned
-      el.remove();
-      pruneDisconnectedAttributeEntries(originals, disconnectedLastTick); // 1st disconnected tick again
-
-      expect(originals.has(el)).toBe(true);
-    });
+  it("re-sends only the changed element's own attributes, not every attribute in its subtree", async () => {
+    document.body.innerHTML = '<div id="box" title="Box"><input id="a" placeholder="Search"></div>';
+    translateBatch.mockImplementationOnce(async (request) =>
+      request.pieces.map(
+        (piece): PieceOutcome =>
+          piece[0] === 'Search' ? err({ kind: 'network', message: 'x' }) : ok([piece[0]?.toUpperCase() ?? '']),
+      ),
+    );
+    const t = newTranslator();
+    await t.start('es');
+    uppercaseOnce();
+    document.getElementById('box')?.setAttribute('title', 'New box');
+    await flushAsyncWork();
+    expect(translateBatch).toHaveBeenCalledTimes(2);
+    expect(translateBatch.mock.calls[1]?.[0].pieces).toEqual([['New box']]);
   });
 });

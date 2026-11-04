@@ -21,14 +21,39 @@ export function extractSection(changelog, version) {
   return (end === -1 ? rest : rest.slice(0, end)).join('\n');
 }
 
-/** Null when `notes` records a real-page check, otherwise why not. Only a line that starts with "Checked on:" counts. */
-export function checkedOnProblem(notes) {
+// A check names where it ran: one of these words must appear in the line.
+const BROWSER_OR_DEVICE =
+  /\b(chrom(e|ium)|firefox|safari|orion|edge|brave|webkit|iphone|ipad|ios|android|mac(os)?|windows|linux|desktop|mobile)\b/i;
+const DATE = /\b(\d{4})-(\d{2})-(\d{2})\b/;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Why one "Checked on:" value is incomplete, or null. A date up to a day past `now` (UTC) is allowed for zones ahead of UTC. */
+function lineProblem(value, now) {
+  if (value === '' || /^(todo|tbd)\b/i.test(value)) return "the 'Checked on:' line is a placeholder";
+  const match = DATE.exec(value);
+  if (!match) return "the 'Checked on:' line has no YYYY-MM-DD date";
+  const [year, month, day] = match.slice(1).map(Number);
+  const date = Date.UTC(year, month - 1, day);
+  if (new Date(date).getUTCMonth() !== month - 1 || new Date(date).getUTCDate() !== day)
+    return `the 'Checked on:' date ${match[0]} is not a real date`;
+  const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  if (date > today + DAY_MS) return `the 'Checked on:' date ${match[0]} is in the future`;
+  if (!BROWSER_OR_DEVICE.test(value)) return "the 'Checked on:' line names no browser or device";
+  return null;
+}
+
+/**
+ * Null when `notes` records a real-page check, otherwise why not. Only a line that
+ * starts with "Checked on:" counts, and every such line needs a browser or device and a date.
+ */
+export function checkedOnProblem(notes, now = new Date()) {
   const lines = notes.split('\n').map((line) => line.trim());
   const checked = lines.filter((line) => line.startsWith('Checked on:'));
   if (checked.length === 0) return "no 'Checked on: <page>, <browser>, <date>' line";
-  const values = checked.map((line) => line.slice('Checked on:'.length).trim());
-  if (values.some((value) => value === '' || /^(todo|tbd)\b/i.test(value)))
-    return "the 'Checked on:' line is a placeholder";
+  for (const line of checked) {
+    const problem = lineProblem(line.slice('Checked on:'.length).trim(), now);
+    if (problem) return problem;
+  }
   return null;
 }
 

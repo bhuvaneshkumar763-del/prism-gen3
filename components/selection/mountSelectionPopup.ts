@@ -73,6 +73,7 @@ export interface MountSelectionPopupOptions {
  */
 export function mountSelectionPopup(options: MountSelectionPopupOptions): SelectionPopupController {
   const { host, mountPoint } = createShadowHost(HOST_ID, SELECTION_POPUP_STYLES);
+  const shadowRoot = mountPoint.getRootNode() as ShadowRoot;
 
   let selectedText = '';
   // Sent as the source language instead of 'auto': Google's auto-detection
@@ -99,6 +100,8 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
    * the trigger can clear the selection while the panel should stay put.
    */
   let anchorRanges: Range[] | null = null;
+  /** The trigger on screen came from a keyboard selection, so Tab moves focus to it. */
+  let triggerFromKeyboard = false;
   // Rendered once from a store: setting a field to its current value notifies
   // nothing, so document-wide keyups cost nothing while the popup is hidden.
   const [state, setState] = createStore({
@@ -153,7 +156,11 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
         // quota (see onMouseUp).
         onTranslateClick: (e) => {
           if (!e.isTrusted) return;
+          // Pressed from the keyboard: focus follows into the panel that
+          // replaces the trigger, instead of dropping back to the page.
+          const fromKeyboard = shadowRoot.activeElement?.classList.contains('trigger') ?? false;
           void handleTranslateClick();
+          if (fromKeyboard) shadowRoot.querySelector<HTMLElement>('.panel .close')?.focus();
         },
         // For consistency, not defense: closing spends nothing, and the page
         // owns the document anyway.
@@ -278,7 +285,11 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
    * Shared by the mouse, keyboard and touch paths below. `keepOpenPanel`: a
    * touch on the panel can clear the page selection, which must not close it.
    */
-  async function updateFromCurrentSelection(path: readonly EventTarget[], keepOpenPanel = false): Promise<void> {
+  async function updateFromCurrentSelection(
+    path: readonly EventTarget[],
+    keepOpenPanel = false,
+    fromKeyboard = false,
+  ): Promise<void> {
     const selection = resolveActiveSelection(path);
     const info = getSelectionInfo(selection);
     if (keepOpenPanel && state.panelOpen && !info) return;
@@ -320,6 +331,7 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
     shownForSelection = info.text;
     selectedTextLanguage = detected;
     anchorRanges = ranges;
+    triggerFromKeyboard = fromKeyboard;
     const viewport = viewportSize();
     const trigger = placeSelectionTrigger(info.rect, viewport, { preferBelow: lastPointerType !== 'mouse' });
     setState({
@@ -363,7 +375,7 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
     if (keyupTimer) clearTimeout(keyupTimer);
     keyupTimer = setTimeout(() => {
       keyupTimer = null;
-      void updateFromCurrentSelection(path);
+      void updateFromCurrentSelection(path, false, true);
     }, KEYUP_DEBOUNCE_MS);
   }
 
@@ -417,14 +429,33 @@ export function mountSelectionPopup(options: MountSelectionPopupOptions): Select
 
   function dismiss(): void {
     if (!state.buttonVisible && !state.panelOpen) return;
-    dismissedText = selectedText;
+    // The page selection's own text, which is what later keyups compare.
+    dismissedText = shownForSelection;
     hideTrigger();
   }
 
-  /** Escape dismisses the trigger or the result panel. */
+  /**
+   * Escape dismisses the trigger or the result panel. Tab after a keyboard
+   * selection moves focus to the trigger, which otherwise sits at the very
+   * end of the page's tab order.
+   */
   function onKeyDown(e: KeyboardEvent): void {
-    if (!e.isTrusted || e.key !== 'Escape') return;
-    dismiss();
+    if (!e.isTrusted) return;
+    if (e.key === 'Escape') {
+      dismiss();
+    } else if (
+      e.key === 'Tab' &&
+      !(e.shiftKey || e.altKey || e.ctrlKey || e.metaKey || e.defaultPrevented) &&
+      triggerFromKeyboard &&
+      state.buttonVisible &&
+      state.buttonInView &&
+      !state.panelOpen
+    ) {
+      const trigger = shadowRoot.querySelector<HTMLElement>('.trigger');
+      if (!trigger) return;
+      e.preventDefault();
+      trigger.focus();
+    }
   }
 
   /**

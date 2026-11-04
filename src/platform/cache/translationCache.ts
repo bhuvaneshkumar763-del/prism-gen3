@@ -157,6 +157,8 @@ export interface TranslationCache {
 
 export function createTranslationCache(defaultMaxBytes: number = DEFAULT_MAX_BYTES): TranslationCache {
   let dbPromise: Promise<IDBDatabase> | null = null;
+  /** The connection `dbPromise` resolved to, so a failed operation can tell whether it's still the current one. */
+  let currentDb: IDBDatabase | null = null;
   /** Shares one in-flight `getSizeBytes()` count across concurrent callers. */
   let sizeScanInFlight: Promise<number> | null = null;
 
@@ -165,6 +167,7 @@ export function createTranslationCache(defaultMaxBytes: number = DEFAULT_MAX_BYT
       const opening = openDb().then((db) => {
         const forget = () => {
           if (dbPromise === opening) dbPromise = null;
+          if (currentDb === db) currentDb = null;
           // A count on the dead connection will reject; callers on the next
           // connection shouldn't inherit that failure.
           sizeScanInFlight = null;
@@ -178,6 +181,7 @@ export function createTranslationCache(defaultMaxBytes: number = DEFAULT_MAX_BYT
           db.close();
           forget();
         };
+        currentDb = db;
         return db;
       });
       // Forget a failed open so one transient failure doesn't turn the
@@ -210,7 +214,14 @@ export function createTranslationCache(defaultMaxBytes: number = DEFAULT_MAX_BYT
       return await operation(db);
     } catch (e) {
       console.warn('[prism] translation cache operation failed, retrying with a fresh connection', e);
-      dbPromise = null;
+      // Close the failed connection rather than just dropping it, and only
+      // forget it if a concurrent retry hasn't already replaced it.
+      db.close();
+      if (currentDb === db) {
+        currentDb = null;
+        dbPromise = null;
+        sizeScanInFlight = null;
+      }
       let freshDb: IDBDatabase;
       try {
         freshDb = await getDb();

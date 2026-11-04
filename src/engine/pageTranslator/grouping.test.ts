@@ -504,3 +504,25 @@ describe('slotsForGroup', () => {
     expect(slotsForGroup(nodes).map((s) => s.text)).toEqual(['Hello ', 'big wide', ' world.']);
   });
 });
+
+describe('groupNodesForBatching: block boundaries', () => {
+  const hint = { groupByBlock: true, maxGroupChars: 2000 };
+
+  it('does not put text from a page header and a page footer into one piece', () => {
+    document.body.innerHTML = '<header><span>Menu</span></header><footer><span>Copyright</span></footer>';
+    const [a, b] = Array.from(document.querySelectorAll('span'), (el) => el.firstChild as Text) as [Text, Text];
+    expect(groupNodesForBatching([a, b], hint)).toEqual([[a], [b]]);
+    document.body.innerHTML = '';
+  });
+
+  it('does not put text from two separate shadow-DOM components into one piece', () => {
+    document.body.innerHTML = '<x-card></x-card><x-card></x-card>';
+    const texts = Array.from(document.querySelectorAll('x-card'), (host) => {
+      const shadow = host.attachShadow({ mode: 'open' });
+      shadow.innerHTML = '<span>Card text</span>';
+      return (shadow.firstChild as Element).firstChild as Text;
+    }) as [Text, Text];
+    expect(groupNodesForBatching(texts, hint)).toEqual([[texts[0]], [texts[1]]]);
+    document.body.innerHTML = '';
+  });
+});

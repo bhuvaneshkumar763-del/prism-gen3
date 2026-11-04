@@ -232,6 +232,30 @@ describe('translatePiecesWithCache', () => {
     expect(requests[0]).toMatchObject({ sourceLanguage: 'zh', targetLanguage: 'en' });
   });
 
+  it("passes a From pick through to the provider as explicit, so it isn't swapped for 'auto'", async () => {
+    const { provider, requests } = fakeProvider();
+    await translatePiecesWithCache(
+      { ...request([['a']]), sourceLanguageIsExplicit: true },
+      TAB_SENDER,
+      deps({ provider }),
+    );
+    expect(requests[0]?.sourceLanguageIsExplicit).toBe(true);
+  });
+
+  it("doesn't serve a From pick from translations cached under the page's guessed language", async () => {
+    const { provider, requests } = fakeProvider();
+    const cache = fakeCache({ [keyFor(['a'])]: JSON.stringify(['from-auto']) });
+    const outcomes = await translatePiecesWithCache(
+      { ...request([['a']]), sourceLanguageIsExplicit: true },
+      TAB_SENDER,
+      deps({ provider, cache }),
+    );
+    expect(requests).toHaveLength(1);
+    expect(outcomes).toEqual([{ ok: true, value: ['A'] }]);
+    // The guessed-language entry is left as it was.
+    expect(cache.stored[keyFor(['a'])]).toBe(JSON.stringify(['from-auto']));
+  });
+
   it('writes only the successful fresh pieces back, JSON-encoded, in one setMany call', async () => {
     const provider: Translator = {
       translateBatch: async () => [

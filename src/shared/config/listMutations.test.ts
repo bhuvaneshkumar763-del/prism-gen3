@@ -177,6 +177,34 @@ describe('removeLangFromAlwaysTranslate / removeLangFromNeverTranslate', () => {
   });
 });
 
+describe('language lists match the way the auto-translate decision does (base language, Chinese scripts kept apart)', () => {
+  it('"always from Chinese" on a zh-CN page clears a plain zh never-rule, so the page can auto-translate', () => {
+    const snapshot = { ...emptySnapshot, neverTranslateLangs: ['zh'] };
+    const patch = addLangToAlwaysTranslate(snapshot, 'zh-CN');
+    expect(patch.alwaysTranslateLangs).toEqual(['zh-CN']);
+    expect(patch.neverTranslateLangs).toEqual([]);
+  });
+  it('adding pt to never clears a pt-BR always-rule', () => {
+    const snapshot = { ...emptySnapshot, alwaysTranslateLangs: ['pt-BR'] };
+    expect(addLangToNeverTranslate(snapshot, 'pt').alwaysTranslateLangs).toEqual([]);
+  });
+  it('removing zh-CN from always also removes a plain zh entry, which would otherwise keep matching the page', () => {
+    const snapshot = { ...emptySnapshot, alwaysTranslateLangs: ['zh', 'fr'] };
+    expect(removeLangFromAlwaysTranslate(snapshot, 'zh-CN').alwaysTranslateLangs).toEqual(['fr']);
+  });
+  it('does not add a regional duplicate of a language already listed', () => {
+    const snapshot = { ...emptySnapshot, alwaysTranslateLangs: ['pt'] };
+    expect(addLangToAlwaysTranslate(snapshot, 'pt-BR').alwaysTranslateLangs).toEqual(['pt']);
+  });
+  it('keeps Simplified and Traditional Chinese apart: zh-CN on always leaves a zh-TW never-rule alone', () => {
+    const snapshot = { ...emptySnapshot, neverTranslateLangs: ['zh-TW'], alwaysTranslateLangs: ['zh-TW'] };
+    const patch = addLangToAlwaysTranslate(snapshot, 'zh-CN');
+    expect(patch.neverTranslateLangs).toEqual(['zh-TW']);
+    expect(patch.alwaysTranslateLangs).toEqual(['zh-TW', 'zh-CN']);
+    expect(removeLangFromNeverTranslate(snapshot, 'zh-CN').neverTranslateLangs).toEqual(['zh-TW']);
+  });
+});
+
 describe('addRecentTargetLanguage', () => {
   it('prepends a new code', () => {
     expect(addRecentTargetLanguage(['es', 'fr'], 'ja', 5)).toEqual(['ja', 'es', 'fr']);

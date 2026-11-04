@@ -48,6 +48,47 @@ describe('checkedOnProblem', () => {
   });
 });
 
+describe('checkedOnProblem: what the line must say', () => {
+  const now = new Date('2026-11-03T12:00:00Z');
+
+  it('accepts the lines real releases use', () => {
+    for (const line of [
+      'Checked on: sangtacviet, Orion on iPhone, 2026-11-02',
+      'Checked on: built extension in desktop Chromium (9 checks), plus live free Google, 2026-11-03. iPhone next.',
+      'Checked on: pixiv, Firefox, 2025-01-31',
+    ])
+      expect(checkedOnProblem(line, now), line).toBeNull();
+  });
+
+  it('refuses a line without a YYYY-MM-DD date', () => {
+    expect(checkedOnProblem('Checked on: sangtacviet, Orion on iPhone', now)).toMatch(/date/);
+    expect(checkedOnProblem('Checked on: sangtacviet, Orion on iPhone, 3 Nov 2026', now)).toMatch(/date/);
+    expect(checkedOnProblem('Checked on: sangtacviet, Orion on iPhone, 11/03/2026', now)).toMatch(/date/);
+  });
+
+  it('refuses a date that is not on the calendar', () => {
+    expect(checkedOnProblem('Checked on: sangtacviet, Safari, 2026-02-30', now)).toMatch(/date/);
+    expect(checkedOnProblem('Checked on: sangtacviet, Safari, 2026-13-01', now)).toMatch(/date/);
+  });
+
+  it('refuses a date in the future, allowing for time zones ahead of UTC', () => {
+    expect(checkedOnProblem('Checked on: sangtacviet, Safari, 2026-11-05', now)).toMatch(/future/);
+    expect(checkedOnProblem('Checked on: sangtacviet, Safari, 2027-01-01', now)).toMatch(/future/);
+    // 12:00 UTC on the 3rd is already the 4th in Vietnam and Kiribati.
+    expect(checkedOnProblem('Checked on: sangtacviet, Safari, 2026-11-04', now)).toBeNull();
+  });
+
+  it('refuses a line that names no browser or device', () => {
+    expect(checkedOnProblem('Checked on: sangtacviet, 2026-11-02', now)).toMatch(/browser/);
+    expect(checkedOnProblem('Checked on: looked fine, 2026-11-02', now)).toMatch(/browser/);
+  });
+
+  it('refuses when any of several lines is incomplete', () => {
+    const notes = 'Checked on: pixiv, Firefox, 2026-11-01\n\nChecked on: sangtacviet, 2026-11-02';
+    expect(checkedOnProblem(notes, now)).toMatch(/browser/);
+  });
+});
+
 describe('fitToLimit', () => {
   it('leaves notes that fit alone', () => {
     expect(fitToLimit('short', '1.0.0', 'o/r')).toEqual({ notes: 'short', trimmed: false });

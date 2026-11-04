@@ -400,3 +400,35 @@ describe('createTitleTranslator', () => {
     }
   });
 });
+
+describe('createTitleTranslator: own writes', () => {
+  it('still reacts to the next real title change after writing the <title> element itself', async () => {
+    // A page whose document.title setter is blocked: only the <title> element write lands.
+    const titleEl = document.querySelector('title') as HTMLTitleElement;
+    titleEl.textContent = 'Chapter 1';
+    vi.spyOn(console, 'debug').mockImplementation(() => {});
+    Object.defineProperty(document, 'title', {
+      configurable: true,
+      get: () => document.querySelector('title')?.textContent ?? '',
+      set: () => {
+        throw new Error('blocked');
+      },
+    });
+    try {
+      mockTranslateOnce(ok(['Capítulo 1']));
+      mockTranslateOnce(ok(['Capítulo 2']));
+      const titleTranslator = newTranslator({ getSourceLanguage: () => 'en', isPageVisible: () => true });
+      await titleTranslator.start('es');
+      expect(titleEl.textContent).toBe('Capítulo 1');
+
+      titleEl.textContent = 'Chapter 2';
+      await flushAsyncWork();
+      await flushAsyncWork();
+      expect(translateBatch).toHaveBeenCalledTimes(2);
+      expect(titleEl.textContent).toBe('Capítulo 2');
+    } finally {
+      // Drops the own-property override, so the prototype's real accessor applies again.
+      delete (document as { title?: string }).title;
+    }
+  });
+});

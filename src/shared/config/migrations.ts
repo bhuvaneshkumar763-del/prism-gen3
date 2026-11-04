@@ -5,10 +5,10 @@
  * - v1: adopt the pre-versioning `libreTranslate*` keys as `provider*`.
  * - v2: rename `provider*` back to `libreTranslate*` (per-provider fields).
  * - v3/v4: the `builtin` and `libretranslate` providers were removed; a
- *   stored value falls back to `'google'`. The orphaned `libreTranslate*`
- *   keys are left in storage; they're inert since nothing reads them.
+ *   stored value falls back to `'google'`.
  * - v5: the `llm` provider was removed; falls back to `'google'`, and its
  *   fields are deleted because one of them is an API key.
+ * - v6: the `libreTranslate*` fields are deleted, for the same reason.
  */
 
 export interface ConfigMigration {
@@ -23,7 +23,7 @@ export interface ConfigMigration {
   migrate(rawEntries: Record<string, unknown>): Record<string, unknown>;
 }
 
-export const CONFIG_SCHEMA_VERSION = 5;
+export const CONFIG_SCHEMA_VERSION = 6;
 
 export const configMigrations: ConfigMigration[] = [
   {
@@ -86,6 +86,15 @@ export const configMigrations: ConfigMigration[] = [
       delete next.llmBaseUrl;
       delete next.llmApiKey;
       delete next.llmModel;
+      return next;
+    },
+  },
+  {
+    toVersion: 6,
+    migrate(rawEntries) {
+      const next = { ...rawEntries };
+      delete next.libreTranslateBaseUrl;
+      delete next.libreTranslateApiKey;
       return next;
     },
   },

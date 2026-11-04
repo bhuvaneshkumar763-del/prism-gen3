@@ -2,34 +2,13 @@ import { hasLetter } from '../../shared/text';
 import type { Translator } from '../translator';
 import {
   type AttributeTarget,
+  attributeTargetsOf,
   collectAttributeTargets,
   hasNoTranslateAncestor,
   isNoTranslateNode,
   TRANSLATABLE_ATTRIBUTES,
 } from './collectTextNodes';
-
-/**
- * Drops an `originals` entry once its element has been disconnected for two
- * CONSECUTIVE resweep ticks, so a recycled list row that detaches and
- * reattaches within one tick keeps its restore value. Same rule as
- * `translateLoop.ts`'s `pruneDisconnectedRestoreEntries`.
- */
-export function pruneDisconnectedAttributeEntries(
-  originals: Map<Element, Map<string, string>>,
-  disconnectedLastTick: WeakSet<Element>,
-): void {
-  for (const el of originals.keys()) {
-    if (!el.isConnected) {
-      if (disconnectedLastTick.has(el)) {
-        originals.delete(el);
-      } else {
-        disconnectedLastTick.add(el);
-      }
-    } else {
-      disconnectedLastTick.delete(el);
-    }
-  }
-}
+import { createRestoreMap } from './restoreMap';
 
 /**
  * Attribute translation (`placeholder`, `alt`, button `value`, `title`,
@@ -53,11 +32,10 @@ const WATCHED_ATTRIBUTES: AttributeTarget['attribute'][] = [...TRANSLATABLE_ATTR
 export function createAttributeTranslator(options: AttributeTranslatorOptions) {
   /**
    * Element -> attribute -> pre-translation value, for `restore()`, kept only
-   * while the attribute holds our write. A `Map` because restore must
-   * enumerate it; `pruneDisconnected` bounds its growth.
+   * while the attribute holds our write. `pruneDisconnected` parks detached
+   * elements weakly (see `createRestoreMap`).
    */
-  const originals = new Map<Element, Map<string, string>>();
-  const disconnectedLastTick = new WeakSet<Element>();
+  const originals = createRestoreMap<Element, Map<string, string>>();
   /**
    * Last value this module wrote per element/attribute: the observer's loop
    * guard, so our own write isn't re-queued forever. A `WeakMap` since it's
@@ -68,7 +46,7 @@ export function createAttributeTranslator(options: AttributeTranslatorOptions) {
   let currentTargetLanguage = '';
   let observer: MutationObserver | null = null;
   // Bumped by start()/restore(); async work that resumes under a stale
-  // generation must not write back or install the observer.
+  // generation must not write back.
   let generation = 0;
   // One translate in flight at a time; mutations arriving meanwhile coalesce
   // here, so an infinite-scroll feed can't fire a request per mutation batch.
@@ -106,8 +84,11 @@ export function createAttributeTranslator(options: AttributeTranslatorOptions) {
     perEl.set(attribute, value);
   }
 
-  /** Never rejects: callers `void` it, and start() must still install the observer. */
-  async function translateTargets(targets: AttributeTarget[]): Promise<void> {
+  /** Never rejects: callers `void` it. */
+  async function translateTargets(queued: AttributeTarget[]): Promise<void> {
+    // The first batch and an observer drain can overlap, so a queued target
+    // may already hold our translation by the time it's sent.
+    const targets = queued.filter((t) => !isOwnWrite(t.element, t.attribute));
     if (targets.length === 0) return;
     // A restore() during the await must win: writing back would re-translate
     // a restored page and record translated text in `originals`.
@@ -149,6 +130,7 @@ export function createAttributeTranslator(options: AttributeTranslatorOptions) {
   }
 
   function startWatching(): void {
+    stopWatching();
     observer = new MutationObserver((mutations) => {
       const newTargets: AttributeTarget[] = [];
       const changedElements = new Set<Element>();
@@ -179,9 +161,9 @@ export function createAttributeTranslator(options: AttributeTranslatorOptions) {
         // Same rule as the initial walk: an element's own attributes count even
         // on a skip tag (a textarea placeholder), but nothing below a skip node does.
         if (hasNoTranslateAncestor(el, isNoTranslateNode)) continue;
-        // Re-collect so the collector's rules decide whether the changed
-        // attribute is still translatable (e.g. a non-button input's `value`).
-        for (const target of collectAttributeTargets(el)) {
+        // Only the element's own attributes changed, so its subtree isn't re-walked;
+        // the collector's rules decide whether each is still translatable.
+        for (const target of attributeTargetsOf(el)) {
           if (isOwnWrite(target.element, target.attribute)) continue;
           newTargets.push(target);
         }
@@ -241,25 +223,23 @@ export function createAttributeTranslator(options: AttributeTranslatorOptions) {
 
   /** Bounds `originals`' growth; called from translateLoop.ts's `onResweep`. */
   function pruneDisconnected(): void {
-    pruneDisconnectedAttributeEntries(originals, disconnectedLastTick);
+    originals.prune();
   }
 
   async function start(targetLanguage: string): Promise<void> {
-    const myGeneration = ++generation;
+    generation++;
     currentTargetLanguage = targetLanguage;
-    const targets = collectAttributeTargets(document.body);
-    await translateTargets(targets);
-    // A restore() or newer start() landed during the await.
-    if (myGeneration !== generation) return;
+    // Watching before the first request catches elements added while it's in flight.
     startWatching();
+    await translateTargets(collectAttributeTargets(document.body));
   }
 
   function restore(): void {
     generation++;
     stopWatching();
     pendingTargets = [];
+    // Detached elements too: a recycled one may be reattached later.
     originals.forEach((perEl, el) => {
-      if (!el.isConnected) return;
       perEl.forEach((original, attribute) => {
         el.setAttribute(attribute, original);
       });

@@ -1,11 +1,12 @@
 import { createShadowHost } from '../../src/shared/ui/shadowHost';
+import { UI_FONT_STACK } from '../shared/uiFont';
 
 const HOST_ID = 'prism-bubble-undo-host';
 export const UNDO_TOAST_MS = 5000;
 
 const TOAST_STYLES = `
   * { box-sizing: border-box; margin: 0; padding: 0;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; }
+      font-family: ${UI_FONT_STACK}; }
   :host { all: initial !important; }
   .toast {
     position: fixed; z-index: 2147483647;

@@ -46,14 +46,36 @@ export function getAuthKeySnapshot(): AuthKeySnapshot | undefined {
   return { key: translateAuth, notFound: authNotFound, time: lastRequestAuthTime };
 }
 
+let authKeyListener: ((snapshot: AuthKeySnapshot | undefined) => void) | null = null;
+
+/**
+ * Called after every scrape and every invalidation (`undefined`), so
+ * `background.ts` can keep its persisted copy current and a restarted worker
+ * never restores a key Google already rejected.
+ */
+export function onAuthKeyChange(listener: (snapshot: AuthKeySnapshot | undefined) => void): void {
+  authKeyListener = listener;
+}
+
+/** Saving the key is best-effort: a listener that throws must never fail a translation. */
+function notifyAuthKeyChange(snapshot: AuthKeySnapshot | undefined): void {
+  try {
+    authKeyListener?.(snapshot);
+  } catch (e) {
+    console.warn('[google] auth key listener failed', e);
+  }
+}
+
 /**
  * Forces the next `findAuth` to re-scrape, for a rejected key or a suspicious
  * streak (the endpoint's usual failure mode for a bad key). Clearing
- * `translateAuth` makes racing requests fail fast instead of resending it.
+ * `translateAuth` makes a request still waiting to be sent fetch a fresh key
+ * first (see `getExtraHeaders`) instead of resending the dead one.
  */
 function invalidateAuth(): void {
   translateAuth = null;
   lastRequestAuthTime = null;
+  notifyAuthKeyChange(undefined);
 }
 
 /**
@@ -133,6 +155,8 @@ async function findAuth(): Promise<void> {
               'https://translate.googleapis.com/_/translate_http/_/js/k=translate_http.tr.en_US.YusFYy3P_ro.O/am=AAg/d=1/exm=el_conf/ed=1/rs=AN8SPfq1Hb8iJRleQqQc8zhdzXmF9E56eQ/m=el_main',
               { signal: controller.signal },
             );
+            // An error page is never the script, even if it happens to hold a key.
+            if (!response.ok) throw new Error(`Auth scrape got HTTP ${response.status}`);
             return await response.text();
           })(),
           new Promise<never>((_, reject) => {
@@ -151,6 +175,8 @@ async function findAuth(): Promise<void> {
         translateAuth = match[1];
         authNotFound = false;
       } else {
+        // Most likely Google changed the script; worth seeing in the log.
+        console.warn('[google] auth scrape found no key, using the fallback key');
         translateAuth = fallbackKey;
         authNotFound = true;
       }
@@ -159,6 +185,7 @@ async function findAuth(): Promise<void> {
       translateAuth = fallbackKey;
       authNotFound = true;
     }
+    notifyAuthKeyChange(getAuthKeySnapshot());
   })();
 
   try {
@@ -212,8 +239,26 @@ function tokenize(html: string): Token[] {
   return tokens;
 }
 
+// Scripts written without spaces between words: a reflow join must not add one.
+const NO_SPACE_SCRIPT_END =
+  /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Thai}\p{Script=Lao}\p{Script=Khmer}\p{Script=Myanmar}]$/u;
+const NO_SPACE_SCRIPT_START =
+  /^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Thai}\p{Script=Lao}\p{Script=Khmer}\p{Script=Myanmar}]/u;
+
+/** Joins two occurrences of one index, adding a space only where the text needs one and lacks it. */
+function joinReflowed(before: string, after: string): string {
+  if (/\s$/.test(before) || /^\s/.test(after)) return before + after;
+  if (NO_SPACE_SCRIPT_END.test(before) || NO_SPACE_SCRIPT_START.test(after)) return before + after;
+  return `${before} ${after}`;
+}
+
+// A broken tag structure mid-response leaves literal `<a i=N>` markup in the
+// orphan text, which then folds into a real index while the entry count
+// still matches. Caught by looking for the markers directly.
+const RAW_MARKER_LEAK = /<a i=\d+>|<\/a>/;
+
 function splitPieceResponse(raw: string): string[] {
-  const preMatch = raw.match(/^<pre[^>]*>([\s\S]*)<\/pre>$/);
+  const preMatch = raw.match(/^\s*<pre[^>]*>([\s\S]*)<\/pre>\s*$/);
   const html = preMatch ? (preMatch[1] ?? raw) : raw;
   const tokens = tokenize(html);
 
@@ -236,7 +281,7 @@ function splitPieceResponse(raw: string): string[] {
       text = leading + text;
       leading = '';
     }
-    byIndex.set(token.index, existing ? `${existing} ${text}` : text);
+    byIndex.set(token.index, existing ? joinReflowed(existing, text) : text);
     lastIndex = token.index;
   }
 
@@ -279,10 +324,14 @@ export function createGoogleProvider(): Translator {
       splitPieceResponse,
       getRequestBody: (sourceLanguage, targetLanguage, pieceWireTexts) =>
         JSON.stringify([[pieceWireTexts, sourceLanguage, targetLanguage], 'te']),
-      getExtraHeaders: () => [
-        { name: 'Content-Type', value: 'application/application/json+protobuf' },
-        { name: 'X-goog-api-key', value: translateAuth ?? '' },
-      ],
+      getExtraHeaders: async () => {
+        // A sibling request may have had the key rejected while this one queued.
+        if (!translateAuth) await findAuth();
+        return [
+          { name: 'Content-Type', value: 'application/json+protobuf' },
+          { name: 'X-goog-api-key', value: translateAuth ?? '' },
+        ];
+      },
       parseResponse: parseTranslateHtmlResponse,
     },
     // A key rejection means the cached key is dead; other statuses are unrelated to it.
@@ -320,11 +369,6 @@ export function createGoogleProvider(): Translator {
        */
       const repairs = new Map<number, Promise<PieceOutcome>>();
 
-      // A broken tag structure mid-response leaves literal `<a i=N>` markup in
-      // the orphan text, which then folds into a real index while the entry
-      // count still matches. Caught by looking for the markers directly.
-      const RAW_MARKER_LEAK = /<a i=\d+>|<\/a>/;
-
       function needsRepair(index: number, outcome: PieceOutcome): boolean {
         if (paddedIndices.has(index) || !outcome.ok) return false;
         const originalPiece = request.pieces[index];
@@ -336,6 +380,25 @@ export function createGoogleProvider(): Translator {
         // A same-count reflow (content shifted across node boundaries) is
         // invisible to both checks above; see reflowIntegrity.ts.
         return hasBoundaryReflow(originalPiece, outcome.value);
+      }
+
+      /**
+       * A padded piece comes back as [text, padding]. Google can reflow real
+       * content into the padding slot (e.g. "Max" from "Apple iPhone 15 Pro
+       * Max"), so non-whitespace overflow is appended; otherwise index 0 is
+       * kept alone, preserving a real trailing space ("Bonjour " before
+       * "<b>Monde</b>"). Leaked markup fails the piece: a single string has
+       * no per-node repair, and markup must never reach the page.
+       */
+      function finishPadded(index: number, outcome: PieceOutcome): PieceOutcome {
+        if (!outcome.ok) return outcome;
+        const [first, ...rest] = outcome.value;
+        const overflow = rest.join('');
+        const text = overflow.trim().length > 0 ? (first ?? '') + overflow : (first ?? '');
+        if (RAW_MARKER_LEAK.test(text) && !RAW_MARKER_LEAK.test(request.pieces[index]?.[0] ?? '')) {
+          return err({ kind: 'badResponse', message: '[google] answer had broken tag markup' });
+        }
+        return ok([text]);
       }
 
       function repair(index: number): Promise<PieceOutcome> {
@@ -350,6 +413,7 @@ export function createGoogleProvider(): Translator {
           // the same multi-item wire text and could reflow again.
           const results = await translator.translateBatch({
             sourceLanguage: request.sourceLanguage,
+            sourceLanguageIsExplicit: request.sourceLanguageIsExplicit,
             targetLanguage: request.targetLanguage,
             pieces: originalPiece.map((s) => [s]),
           });
@@ -386,7 +450,8 @@ export function createGoogleProvider(): Translator {
             });
             return;
           }
-          request.onPieceComplete?.(index, classifyKeyFailure(rawOutcome));
+          const outcome = paddedIndices.has(index) ? finishPadded(index, rawOutcome) : rawOutcome;
+          request.onPieceComplete?.(index, classifyKeyFailure(outcome));
         },
       });
 
@@ -401,18 +466,7 @@ export function createGoogleProvider(): Translator {
           repairIndices.push(index);
           continue;
         }
-        if (paddedIndices.has(index) && outcome.ok) {
-          // Google can reflow real content into the padding slot (e.g. "Max"
-          // from "Apple iPhone 15 Pro Max"), so append it when it's
-          // non-whitespace. Otherwise keep index 0 alone, which preserves
-          // legitimate trailing whitespace ("Bonjour " before "<b>Monde</b>").
-          const [first, ...rest] = outcome.value;
-          const overflow = rest.join('');
-          const hasRealOverflow = overflow.trim().length > 0;
-          final[index] = ok([hasRealOverflow ? (first ?? '') + overflow : (first ?? '')]);
-          continue;
-        }
-        final[index] = outcome;
+        final[index] = paddedIndices.has(index) ? finishPadded(index, outcome) : outcome;
       }
       if (repairIndices.length > 0) {
         const repaired = await Promise.all(

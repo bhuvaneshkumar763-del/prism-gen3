@@ -960,4 +960,300 @@ describe('createGoogleProvider', () => {
       expect(fetchMock).toHaveBeenCalledTimes(1);
     });
   });
+
+  describe('From pick, repairs and response parsing', () => {
+    const sourceOf = (call: unknown) => {
+      const [, init] = call as [string, RequestInit];
+      return (JSON.parse(init.body as string) as [[string[], string, string], string])[0][1];
+    };
+
+    it('sends an explicit From pick on the per-node repair too, not just the first request', async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(authScrapeResponse())
+        .mockResolvedValueOnce(jsonResponse([['<a i=0>Foo</a><a i=0>Bar</a>'], ['vi']]))
+        .mockResolvedValueOnce(
+          jsonResponse([
+            ['<a i=0>Hello</a><a i=1> </a>', '<a i=0>World</a><a i=1> </a>'],
+            ['vi', 'vi'],
+          ]),
+        );
+      vi.stubGlobal('fetch', fetchMock);
+
+      const provider = await freshCreateGoogleProvider();
+      const results = await provider.translateBatch({
+        sourceLanguage: 'vi',
+        sourceLanguageIsExplicit: true,
+        targetLanguage: 'en',
+        pieces: [['xin chào', 'thế giới']],
+      });
+
+      expect(results).toEqual([{ ok: true, value: ['Hello', 'World'] }]);
+      expect(sourceOf(fetchMock.mock.calls[1])).toBe('vi');
+      expect(sourceOf(fetchMock.mock.calls[2])).toBe('vi');
+    });
+
+    it("retries a suspicious piece with the explicit From pick, not 'auto'", async () => {
+      const text = '你好世界你好世界';
+      const echoed = `<pre><a i=0>${text}</a><a i=1> </a></pre>`;
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(authScrapeResponse())
+        .mockResolvedValueOnce(
+          jsonResponse([
+            [echoed, '<pre><a i=0>Goodbye</a><a i=1> </a></pre>'],
+            ['en', 'zh-CN'],
+          ]),
+        )
+        .mockResolvedValueOnce(jsonResponse([['<pre><a i=0>Hello world</a><a i=1> </a></pre>'], ['zh-CN']]));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const provider = await freshCreateGoogleProvider();
+      // Two pieces, so the retry of the echoed one is not an identical request.
+      await provider.translateBatch({
+        sourceLanguage: 'zh-CN',
+        sourceLanguageIsExplicit: true,
+        targetLanguage: 'en',
+        pieces: [[text], ['再见']],
+      });
+
+      expect(sourceOf(fetchMock.mock.calls[1])).toBe('zh-CN');
+      const retry = fetchMock.mock.calls[2];
+      if (!retry) throw new Error('expected a suspicious retry');
+      expect(sourceOf(retry)).toBe('zh-CN');
+    });
+
+    it('fails a one-string piece whose answer leaks tag markup, instead of writing the markup onto the page', async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(authScrapeResponse())
+        .mockResolvedValueOnce(jsonResponse([['<a i=0>Hola</a><a i=1 > </a>'], ['en']]));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const provider = await freshCreateGoogleProvider();
+      const delivered: PieceOutcome[] = [];
+      const [outcome] = await provider.translateBatch({
+        sourceLanguage: 'en',
+        targetLanguage: 'es',
+        pieces: [['hello']],
+        onPieceComplete: (_index, o) => delivered.push(o),
+      });
+
+      expect(outcome).toMatchObject({ ok: false, error: { kind: 'badResponse' } });
+      expect(delivered).toEqual([outcome]);
+    });
+
+    it('keeps a literal </a> that was in the source text of a one-string piece', async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(authScrapeResponse())
+        .mockResolvedValueOnce(jsonResponse([['<a i=0>Cerrar &lt;/a&gt;</a><a i=1> </a>'], ['en']]));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const provider = await freshCreateGoogleProvider();
+      const results = await provider.translateBatch({
+        sourceLanguage: 'en',
+        targetLanguage: 'es',
+        pieces: [['Close </a>']],
+      });
+
+      expect(results).toEqual([{ ok: true, value: ['Cerrar </a>'] }]);
+    });
+
+    it('streams the same joined text for a one-string piece as the final result, not the raw padding split', async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(authScrapeResponse())
+        .mockResolvedValueOnce(jsonResponse([['<a i=0>Apple iPhone 15 Pro </a><a i=1>Max</a>'], ['en']]));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const provider = await freshCreateGoogleProvider();
+      const delivered: PieceOutcome[] = [];
+      const results = await provider.translateBatch({
+        sourceLanguage: 'zh',
+        targetLanguage: 'en',
+        pieces: [['Apple iPhone 15 Pro Max']],
+        onPieceComplete: (_index, o) => delivered.push(o),
+      });
+
+      expect(results).toEqual([{ ok: true, value: ['Apple iPhone 15 Pro Max'] }]);
+      expect(delivered).toEqual(results);
+    });
+
+    it('reads a <pre> answer that ends in a newline without leaking </pre> as text', async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(authScrapeResponse())
+        .mockResolvedValueOnce(jsonResponse([['<pre><a i=0>Hola</a><a i=1> </a></pre>\n'], ['en']]));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const provider = await freshCreateGoogleProvider();
+      const results = await provider.translateBatch({
+        sourceLanguage: 'en',
+        targetLanguage: 'es',
+        pieces: [['hello']],
+      });
+
+      expect(results).toEqual([{ ok: true, value: ['Hola'] }]);
+    });
+
+    it.each([
+      ['Chinese, no space between', '<a i=0>你好</a><a i=0>世界</a><a i=1> </a>', 'zh', '你好世界'],
+      ['Latin, one space between', '<a i=0>Hello</a><a i=0>world</a><a i=1> </a>', 'en', 'Hello world'],
+      ['Latin that already has a space, not two', '<a i=0>Hello </a><a i=0>world</a><a i=1> </a>', 'en', 'Hello world'],
+    ])('joins a repeated index: %s', async (_label, wire, target, expected) => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(authScrapeResponse())
+        .mockResolvedValueOnce(jsonResponse([[wire], ['ja']]));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const provider = await freshCreateGoogleProvider();
+      const results = await provider.translateBatch({
+        sourceLanguage: 'ja',
+        targetLanguage: target,
+        pieces: [['こんにちは世界']],
+      });
+
+      expect(results).toEqual([{ ok: true, value: [expected] }]);
+    });
+
+    it("sends Content-Type 'application/json+protobuf'", async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(authScrapeResponse())
+        .mockResolvedValueOnce(jsonResponse([['<a i=0>hola</a><a i=1> </a>'], ['en']]));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const provider = await freshCreateGoogleProvider();
+      await provider.translateBatch({ sourceLanguage: 'en', targetLanguage: 'es', pieces: [['hello']] });
+
+      const [, init] = fetchMock.mock.calls[1] as unknown as [string, RequestInit];
+      expect((init.headers as Record<string, string>)['Content-Type']).toBe('application/json+protobuf');
+    });
+  });
+
+  describe('auth key state', () => {
+    it('re-scrapes for a request still queued when a sibling request had the key rejected, instead of sending an empty key', async () => {
+      vi.resetModules();
+      const networkQuality = await import('../networkQuality');
+      const concurrency = vi.spyOn(networkQuality, 'getAdaptiveConcurrency').mockReturnValue(1);
+      try {
+        const keyA = 'A'.repeat(39);
+        const keyB = 'B'.repeat(39);
+        let scrapes = 0;
+        const keysSent: string[] = [];
+        vi.stubGlobal(
+          'fetch',
+          vi.fn(async (url: string, init?: RequestInit) => {
+            if (String(url).includes('translate_http')) {
+              scrapes++;
+              return new Response(`"x-goog-api-key": "${scrapes === 1 ? keyA : keyB}"`, { status: 200 });
+            }
+            keysSent.push((init?.headers as Record<string, string> | undefined)?.['X-goog-api-key'] ?? '');
+            if (keysSent.length === 1) return new Response('unauthorized', { status: 401 });
+            return jsonResponse([['<a i=0>hola</a><a i=1> </a>'], ['en']]);
+          }),
+        );
+
+        const { createGoogleProvider } = await import('./google');
+        // Each piece is over the 2000-char batch budget, so they go out as two requests.
+        const results = await createGoogleProvider().translateBatch({
+          sourceLanguage: 'en',
+          targetLanguage: 'es',
+          pieces: [['a'.repeat(2001)], ['b'.repeat(2001)]],
+        });
+
+        expect(keysSent).toEqual([keyA, keyB]);
+        expect(results[1]).toEqual({ ok: true, value: ['hola'] });
+      } finally {
+        concurrency.mockRestore();
+      }
+    });
+
+    it('reports every key change, including a rejection, so a restarted worker never restores a dead key', async () => {
+      vi.resetModules();
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (url: string) =>
+          String(url).includes('translate_http') ? authScrapeResponse() : new Response('unauthorized', { status: 401 }),
+        ),
+      );
+      const { createGoogleProvider, onAuthKeyChange } = await import('./google');
+      const seen: unknown[] = [];
+      onAuthKeyChange((snapshot) => seen.push(snapshot));
+
+      await createGoogleProvider().translateBatch({ sourceLanguage: 'en', targetLanguage: 'es', pieces: [['hello']] });
+
+      expect(seen).toEqual([
+        { key: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', notFound: false, time: expect.any(Number) },
+        undefined,
+      ]);
+    });
+
+    it('keeps translating when the key-change listener throws, as a missing storage area would', async () => {
+      vi.resetModules();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        vi.stubGlobal(
+          'fetch',
+          vi
+            .fn()
+            .mockResolvedValueOnce(authScrapeResponse())
+            .mockResolvedValueOnce(jsonResponse([['<a i=0>hola</a>'], ['en']])),
+        );
+        const { createGoogleProvider, onAuthKeyChange } = await import('./google');
+        onAuthKeyChange(() => {
+          throw new TypeError("Cannot read properties of undefined (reading 'set')");
+        });
+
+        const result = await createGoogleProvider().translateBatch({
+          sourceLanguage: 'en',
+          targetLanguage: 'es',
+          pieces: [['hello']],
+        });
+
+        expect(result).toEqual([{ ok: true, value: ['hola'] }]);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it("doesn't take a key from an error page, and says so in the log", async () => {
+      vi.resetModules();
+      const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        vi.stubGlobal(
+          'fetch',
+          vi
+            .fn()
+            .mockResolvedValueOnce(
+              new Response('"x-goog-api-key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"', { status: 503 }),
+            ),
+        );
+        const { ensureAuthReady, getAuthKeySnapshot } = await import('./google');
+        await ensureAuthReady();
+
+        expect(getAuthKeySnapshot()?.notFound).toBe(true);
+        expect(warn).toHaveBeenCalled();
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('logs when the scraped script no longer holds a key', async () => {
+      vi.resetModules();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(new Response('no key in here', { status: 200 })));
+        const { ensureAuthReady, getAuthKeySnapshot } = await import('./google');
+        await ensureAuthReady();
+
+        expect(getAuthKeySnapshot()?.notFound).toBe(true);
+        expect(warn).toHaveBeenCalled();
+      } finally {
+        warn.mockRestore();
+      }
+    });
+  });
 });

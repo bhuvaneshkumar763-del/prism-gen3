@@ -1,4 +1,4 @@
-import { baseLanguageTag } from '../../shared/languages';
+import { baseLanguageTag, sameLanguage } from '../../shared/languages';
 import { HAS_LETTER } from '../../shared/text';
 
 /**
@@ -211,11 +211,11 @@ export function isSuspiciousOutcome(
   // already in the target language — an identical result is then the
   // CORRECT no-op, not a failure.
   if (result.detectedLanguage) {
-    return baseLanguageTag(result.detectedLanguage) !== baseLanguageTag(targetLanguage);
+    return !sameLanguage(result.detectedLanguage, targetLanguage);
   }
   // No detected-language signal from the provider — fall back to the
   // request's own declared languages. 'auto' means we don't actually know
   // the source, so there's no basis to call an identical result wrong.
   if (sourceLanguage === 'auto') return false;
-  return baseLanguageTag(sourceLanguage) !== baseLanguageTag(targetLanguage);
+  return !sameLanguage(sourceLanguage, targetLanguage);
 }

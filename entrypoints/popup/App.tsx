@@ -6,14 +6,10 @@ import { applyListPatch, readListsSnapshot } from '../../src/platform/configMuta
 import { configStore } from '../../src/platform/configStore';
 import { sendMessage } from '../../src/platform/messaging/protocol';
 import { getActiveTab, getActiveTabId } from '../../src/platform/messaging/tabTarget';
-import {
-  addLangToAlwaysTranslate,
-  addRecentTargetLanguage,
-  type ListsPatch,
-} from '../../src/shared/config/listMutations';
+import { addRecentTargetLanguage, type ListsPatch } from '../../src/shared/config/listMutations';
 import { missingProviderSetup } from '../../src/shared/config/providerSetup';
 import { resolveBubbleVisibility, setBubbleVisibilityForHost } from '../../src/shared/config/siteOverrides';
-import { baseLanguageTag, COMMON_LANGUAGES, languageName } from '../../src/shared/languages';
+import { COMMON_LANGUAGES, languageName } from '../../src/shared/languages';
 import { loadPageStatus } from '../../src/shared/pageStatus';
 import {
   describePopupError,
@@ -30,6 +26,13 @@ import { translateShortcut } from '../../src/shared/shortcut';
 import { CANT_TRANSLATE_MESSAGE, describeUnsupportedPage } from '../../src/shared/unsupportedPage';
 import { withTimeout } from '../../src/shared/withTimeout';
 import './App.css';
+import {
+  alwaysFromTogglePatch,
+  alwaysTranslatesFrom,
+  offersAlwaysTranslateFrom,
+  type PopupAction,
+  primaryButtonMode,
+} from './popupLogic';
 
 /**
  * Bounds every content-script message: a tab that never replies (navigated
@@ -55,6 +58,8 @@ const SITE_RULES: ReadonlyArray<{ rule: SiteRule; label: string }> = [
 function App() {
   const { config, ready, setLocal } = createConfigMirror(configStore);
   const [status, setStatus] = createSignal<'idle' | 'busy' | 'error'>('idle');
+  /** What `busy` is doing, so the button can say "Restoring…" rather than "Translating…". */
+  const [busyAction, setBusyAction] = createSignal<PopupAction>('translate');
   const [pageState, setPageState] = createSignal<PageLanguageState>('original');
   const [errorMessage, setErrorMessage] = createSignal<string | null>(null);
   const [errorKind, setErrorKind] = createSignal<ErrorKind>(null);
@@ -82,12 +87,11 @@ function App() {
   // `pageState` turns 'translated' before the work finishes, so also require
   // not busy (kept accurate by pollUntilWorkingDone). Same rule as the bubble.
   const translated = createMemo(() => pageState() === 'translated' && status() !== 'busy');
+  const buttonMode = createMemo(() => primaryButtonMode(pageState(), status(), busyAction()));
   // The shared helper, not `.includes()`, so `www.`/apex hosts match the way
   // auto-translate matches them.
   const siteRule = createMemo(() => siteRuleFor(config, hostname()));
-  const alwaysLangOn = createMemo(() =>
-    config.alwaysTranslateLangs.some((l) => baseLanguageTag(l) === baseLanguageTag(originalLanguage())),
-  );
+  const alwaysLangOn = createMemo(() => alwaysTranslatesFrom(config.alwaysTranslateLangs, originalLanguage()));
   const bubbleOnForSite = createMemo(() =>
     resolveBubbleVisibility({
       hostname: hostname(),
@@ -235,6 +239,7 @@ function App() {
   }
 
   async function onTranslateClick() {
+    setBusyAction('translate');
     setStatus('busy');
     setErrorMessage(null);
     setErrorKind(null);
@@ -256,6 +261,7 @@ function App() {
   }
 
   async function onRestoreClick() {
+    setBusyAction('restore');
     setStatus('busy');
     setErrorMessage(null);
     setErrorKind(null);
@@ -313,16 +319,7 @@ function App() {
     const host = hostname();
     const lang = originalLanguage();
     if (lang === 'und') return;
-    if (alwaysLangOn()) {
-      const langBase = baseLanguageTag(lang);
-      await saveListPatch(
-        { alwaysTranslateLangs: config.alwaysTranslateLangs.filter((l) => baseLanguageTag(l) !== langBase) },
-        input,
-      );
-      return;
-    }
-    const snapshot = readListsSnapshot(configStore);
-    await saveListPatch(addLangToAlwaysTranslate(snapshot, lang, host || undefined), input);
+    await saveListPatch(alwaysFromTogglePatch(readListsSnapshot(configStore), lang, alwaysLangOn(), host), input);
   }
 
   async function onToggleBubbleForSite(): Promise<void> {
@@ -361,7 +358,7 @@ function App() {
       </Show>
 
       <Show
-        when={translated()}
+        when={buttonMode() === 'restore' || buttonMode() === 'restoring'}
         fallback={
           <button
             type="button"
@@ -372,7 +369,7 @@ function App() {
           >
             {/* Same spinner pattern as FloatingBubble.tsx's .spinner. */}
             <span class="spinner" />
-            {status() === 'busy' ? 'Translating…' : translateButtonLabel(config.targetLanguage)}
+            {buttonMode() === 'translating' ? 'Translating…' : translateButtonLabel(config.targetLanguage)}
           </button>
         }
       >
@@ -384,7 +381,7 @@ function App() {
           onClick={onRestoreClick}
         >
           <span class="spinner" />
-          {status() === 'busy' ? 'Restoring…' : 'Show original'}
+          {buttonMode() === 'restoring' ? 'Restoring…' : 'Show original'}
         </button>
       </Show>
 
@@ -486,7 +483,7 @@ function App() {
         </fieldset>
 
         <div class="toggleList">
-          <Show when={originalLanguage() !== 'und' && originalLanguage() !== config.targetLanguage}>
+          <Show when={offersAlwaysTranslateFrom(originalLanguage(), config.targetLanguage)}>
             <label class="toggleRow">
               <input
                 type="checkbox"

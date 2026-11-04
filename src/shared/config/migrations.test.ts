@@ -27,7 +27,7 @@ describe('applyConfigMigrations', () => {
 
   it('toVersion 2 renames the version-1 generic provider fields to provider-specific ones', () => {
     const raw = { providerBaseUrl: 'https://libretranslate.com', providerApiKey: 'secret', targetLanguage: 'fr' };
-    const migrated = applyConfigMigrations(raw, 1);
+    const migrated = configMigrations.find((m) => m.toVersion === 2)?.migrate(raw) ?? {};
     expect(migrated).toEqual({
       libreTranslateBaseUrl: 'https://libretranslate.com',
       libreTranslateApiKey: 'secret',
@@ -37,14 +37,13 @@ describe('applyConfigMigrations', () => {
     expect(Object.hasOwn(migrated, 'providerApiKey')).toBe(false);
   });
 
-  it('a fresh (version 0) install with Session 2s ad hoc keys round-trips through both migrations back to the original field names', () => {
+  it('a fresh (version 0) install with Session 2s ad hoc keys ends with those keys deleted and other settings kept', () => {
     const raw = {
       libreTranslateBaseUrl: 'https://libretranslate.com',
       libreTranslateApiKey: 'secret',
       targetLanguage: 'fr',
     };
-    const migrated = applyConfigMigrations(raw, 0);
-    expect(migrated).toEqual(raw);
+    expect(applyConfigMigrations(raw, 0)).toEqual({ targetLanguage: 'fr' });
   });
 
   it('leaves storage untouched when the legacy keys are absent (a fresh install)', () => {
@@ -108,6 +107,11 @@ describe('applyConfigMigrations', () => {
 
     expect(order).toEqual(['v2', 'v3']);
     expect(result).toEqual({ v2Ran: true, v3Ran: true });
+  });
+
+  it('toVersion 6 deletes the orphaned LibreTranslate URL and API key', () => {
+    const raw = { libreTranslateBaseUrl: 'https://lt.example', libreTranslateApiKey: 'secret', targetLanguage: 'fr' };
+    expect(applyConfigMigrations(raw, 5)).toEqual({ targetLanguage: 'fr' });
   });
 
   it('CONFIG_SCHEMA_VERSION matches the highest registered migration', () => {
