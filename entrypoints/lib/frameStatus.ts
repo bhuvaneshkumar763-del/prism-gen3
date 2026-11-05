@@ -19,7 +19,7 @@ export function describeFollowError(e: unknown): string {
   return `error:${e instanceof Error ? e.message : String(e)}`;
 }
 
-const STATUS_STEPS_KEPT = 8;
+const STATUS_STEPS_KEPT = 12;
 
 /** Shown on the frame's own <html>, and only when the page asked for it: the last few steps, oldest first. */
 export function showFrameStatus(doc: Document, status: string): void {

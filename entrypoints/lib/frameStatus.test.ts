@@ -63,18 +63,11 @@ describe('showFrameStatus', () => {
     );
   });
 
-  it('keeps only the last eight steps', () => {
+  it('keeps only the last twelve steps', () => {
     document.head.innerHTML = '<meta name="prism-diagnostics">';
-    for (let i = 1; i <= 10; i++) showFrameStatus(document, `s${i}`);
-    expect(document.documentElement.dataset.prismFrame?.split(' > ')).toEqual([
-      's3',
-      's4',
-      's5',
-      's6',
-      's7',
-      's8',
-      's9',
-      's10',
-    ]);
+    for (let i = 1; i <= 14; i++) showFrameStatus(document, `s${i}`);
+    expect(document.documentElement.dataset.prismFrame?.split(' > ')).toEqual(
+      Array.from({ length: 12 }, (_, i) => `s${i + 3}`),
+    );
   });
 });

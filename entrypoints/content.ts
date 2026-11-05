@@ -359,6 +359,11 @@ export default defineContentScript({
       let following: Promise<unknown> = Promise.resolve();
       /** The top frame's page key, from its sync message; a forged one finds no decision. */
       let pageKey: string | undefined;
+      // The engine's own progress, for the opt-in status (showFrameStatus does nothing without it).
+      pageTranslator.onWorkingChange((working) => showFrameStatus(document, working ? 'working' : 'idle'));
+      pageTranslator.onError((message, kind) => {
+        if (message) showFrameStatus(document, `engine-error:${kind}:${message.slice(0, 80)}`);
+      });
 
       /** Applies the top frame's latest decision; false while there is none for this page load yet. */
       async function followOnce(): Promise<boolean> {
