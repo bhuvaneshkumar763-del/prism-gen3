@@ -57,42 +57,24 @@ function snapshotList() {
   };
 }
 
-/** The page's own script lines that mention its chapter list or the Expand toggle. */
-async function pageScriptsAbout(page) {
-  return page.evaluate(async () => {
-    const keys = /chaptercontainer|max-height|maxHeight|Expand|Collapse|Mở rộng|Thu gọn|chapterfetcher|loadchapter/i;
-    const found = [];
-    const take = (source, text) => {
-      const lines = text.split(/[\n;]/);
-      lines.forEach((line, i) => {
-        if (keys.test(line))
-          found.push(
-            `${source}: ${lines
-              .slice(Math.max(0, i - 1), i + 2)
-              .join(' ; ')
-              .slice(0, 400)}`,
-          );
-      });
-    };
-    for (const s of Array.from(document.scripts)) {
-      if (!s.src) take('inline', s.textContent ?? '');
-    }
+/** Saves the page's own same-origin script files, so its list and Expand code can be read. */
+async function savePageScripts(page, prefix) {
+  const scripts = await page.evaluate(async () => {
+    const out = [];
     for (const s of Array.from(document.scripts)) {
       if (!s.src || new URL(s.src).origin !== location.origin) continue;
       try {
-        take(s.src, await (await fetch(s.src)).text());
+        out.push({ name: new URL(s.src).pathname.split('/').pop(), text: await (await fetch(s.src)).text() });
       } catch {}
     }
-    return found.slice(0, 120);
+    return out;
   });
+  for (const { name, text } of scripts) writeFileSync(join(outDir, `${prefix}-script-${name}`), text);
+  return scripts.map((x) => x.name);
 }
 
 async function clickExpand(page) {
-  const candidates = [
-    'text=/^\\s*(Expand|Mở rộng|Xem thêm|展开)/i',
-    '#chaptercontainer + *',
-    '.blk-body >> text=/Expand|Mở rộng/i',
-  ];
+  const candidates = ['#clicktoexp', 'text=/^\\s*(Expand|Mở rộng|Xem thêm|展开)\\s*$/i'];
   for (const selector of candidates) {
     const el = page.locator(selector).first();
     if ((await el.count()) > 0) {
@@ -104,69 +86,77 @@ async function clickExpand(page) {
   return null;
 }
 
-const context = await chromium.launchPersistentContext(mkdtempSync(join(tmpdir(), 'probe-')), {
-  headless: false,
-  executablePath,
-  viewport: { width: 390, height: 844 },
-  args: [
-    '--headless=new',
-    '--no-sandbox',
-    `--disable-extensions-except=${extensionPath}`,
-    `--load-extension=${extensionPath}`,
-  ],
-});
-if (context.serviceWorkers().length === 0) await context.waitForEvent('serviceworker', { timeout: 15_000 });
+const IPHONE_UA =
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1';
+/** iPhone: translate right after the page starts, as auto-translate on load does. Desktop: once the list is in. */
+const MODES = [
+  { name: 'iphone-early', userAgent: IPHONE_UA, early: true },
+  { name: 'desktop', userAgent: undefined, early: false },
+];
 
 const results = [];
-for (const [n, url] of urls.entries()) {
-  const page = await context.newPage();
-  const consoleLines = [];
-  page.on('console', (msg) => {
-    if (/prism|google/i.test(msg.text())) consoleLines.push(`${msg.type()}: ${msg.text().slice(0, 300)}`);
+for (const mode of MODES) {
+  const context = await chromium.launchPersistentContext(mkdtempSync(join(tmpdir(), 'probe-')), {
+    headless: false,
+    executablePath,
+    viewport: { width: 390, height: 844 },
+    userAgent: mode.userAgent,
+    args: [
+      '--headless=new',
+      '--no-sandbox',
+      `--disable-extensions-except=${extensionPath}`,
+      `--load-extension=${extensionPath}`,
+    ],
   });
-  const entry = { url, steps: {} };
-  try {
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
-    // PROBE_EARLY=1 translates before the list arrives, as auto-translate on load does.
-    if (!process.env.PROBE_EARLY) {
+  if (context.serviceWorkers().length === 0) await context.waitForEvent('serviceworker', { timeout: 15_000 });
+
+  for (const [n, url] of urls.entries()) {
+    const prefix = `${n}-${mode.name}`;
+    const page = await context.newPage();
+    const consoleLines = [];
+    page.on('console', (msg) => {
+      if (/prism|google/i.test(msg.text())) consoleLines.push(`${msg.type()}: ${msg.text().slice(0, 300)}`);
+    });
+    const entry = { url, mode: mode.name, steps: {} };
+    try {
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+      if (!mode.early) {
+        await page
+          .waitForSelector('#chaptercontainerinner a, #chaptercontainerinner div', { timeout: 30_000 })
+          .catch(() => {});
+        await wait(3000);
+      }
+      entry.steps.loaded = await page.evaluate(snapshotList);
+      await page.locator('#prism-bubble-host .ball').click({ timeout: 15_000 });
+      await wait(25_000);
+      writeFileSync(join(outDir, `${prefix}-page.html`), await page.content());
+      entry.steps.translated = await page.evaluate(snapshotList);
+      await page.screenshot({ path: join(outDir, `${prefix}-2-translated.png`) });
+
+      entry.expandSelector = await clickExpand(page);
+      await wait(5000);
+      entry.steps.expandedSoon = await page.evaluate(snapshotList);
+      await wait(20_000);
+      entry.steps.expanded = await page.evaluate(snapshotList);
       await page
-        .waitForSelector('#chaptercontainerinner a, #chaptercontainerinner div', { timeout: 30_000 })
+        .locator('#chaptercontainer')
+        .evaluate((el) => el.scrollIntoView({ block: 'end' }))
         .catch(() => {});
+      await page.screenshot({ path: join(outDir, `${prefix}-3-expanded.png`) });
+      if (n === 0 && mode.name === 'desktop') entry.scripts = await savePageScripts(page, prefix);
+    } catch (e) {
+      entry.error = String(e);
+      await page.screenshot({ path: join(outDir, `${prefix}-error.png`) }).catch(() => {});
     }
-    await wait(3000);
-    writeFileSync(join(outDir, `${n}-page.html`), await page.content());
-    entry.steps.loaded = await page.evaluate(snapshotList);
-    await page.screenshot({ path: join(outDir, `${n}-1-loaded.png`) });
-
-    await page.locator('#prism-bubble-host .ball').click({ timeout: 10_000 });
-    await wait(20_000);
-    entry.steps.translated = await page.evaluate(snapshotList);
-    await page.screenshot({ path: join(outDir, `${n}-2-translated.png`) });
-
-    entry.expandSelector = await clickExpand(page);
-    await wait(5000);
-    entry.steps.expandedSoon = await page.evaluate(snapshotList);
-    await wait(20_000);
-    entry.steps.expanded = await page.evaluate(snapshotList);
-    await page
-      .locator('#chaptercontainer')
-      .evaluate((el) => el.scrollIntoView({ block: 'end' }))
-      .catch(() => {});
-    await page.screenshot({ path: join(outDir, `${n}-3-expanded.png`) });
-
-    entry.pageScripts = await pageScriptsAbout(page);
-  } catch (e) {
-    entry.error = String(e);
-    await page.screenshot({ path: join(outDir, `${n}-error.png`) }).catch(() => {});
+    entry.console = consoleLines.slice(0, 80);
+    results.push(entry);
+    await page.close();
   }
-  entry.console = consoleLines.slice(0, 80);
-  results.push(entry);
-  await page.close();
+  await context.close();
 }
-await context.close();
 writeFileSync(join(outDir, 'results.json'), `${JSON.stringify(results, null, 2)}\n`);
 for (const r of results) {
-  console.log(r.url, r.error ?? '');
+  console.log(r.mode, r.url, r.error ?? '');
   for (const [step, s] of Object.entries(r.steps))
     console.log(`  ${step}: rows ${s.rows}`, JSON.stringify(s.count), s.clip ? JSON.stringify(s.clip) : '');
 }
