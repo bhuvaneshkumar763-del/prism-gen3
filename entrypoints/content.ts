@@ -130,6 +130,7 @@ export default defineContentScript({
             shouldTranslate,
             targetLanguage,
             originalLanguage: pickedSource ?? originalLanguageTracker.get(),
+            sourceLanguageIsExplicit: pickedSource !== undefined,
             mainFrameOrigin: location.origin,
             pageKey,
           });

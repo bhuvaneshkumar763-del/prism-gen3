@@ -70,11 +70,10 @@ interface ProtocolMap {
 export interface FrameLanguageDecision {
   shouldTranslate: boolean;
   targetLanguage: string;
-  /**
-   * The main frame's detected source language, so a sub-frame passes it as an
-   * explicit source instead of falling back to `'auto'`.
-   */
+  /** The main frame's source language: the user's From pick, or else its detected language. */
   originalLanguage: string;
+  /** True only for a From pick, which sub-frames pass on as an explicit source; a detected language isn't. */
+  sourceLanguageIsExplicit?: boolean;
   /**
    * The reporting main frame's origin. The background's entry isn't cleared on
    * navigation, so a sub-frame rejects a decision whose origin doesn't match

@@ -41,12 +41,13 @@ export function pageCommandRoute(frame: FrameKind, _control: PageControl): PageC
 /** What a following sub-frame last applied. */
 export type FollowerState =
   | { translated: false }
-  | { translated: true; targetLanguage: string; sourceLanguage: string };
+  | { translated: true; targetLanguage: string; sourceLanguage: string | undefined };
 
 export type FollowerStep =
   | { action: 'wait' }
   | { action: 'stay' }
-  | { action: 'translate'; targetLanguage: string; sourceLanguage: string }
+  /** `sourceLanguage` only for the user's From pick; otherwise the frame detects, like the top frame. */
+  | { action: 'translate'; targetLanguage: string; sourceLanguage: string | undefined }
   | { action: 'restore' };
 
 /**
@@ -61,8 +62,9 @@ export function followTopFrame(
 ): FollowerStep {
   if (!decision || decision.mainFrameOrigin !== topOrigin) return { action: 'wait' };
   if (!decision.shouldTranslate) return current.translated ? { action: 'restore' } : { action: 'stay' };
-  // Goes to the provider as an explicit source, so an undetected 'und' becomes 'auto'.
-  const sourceLanguage = decision.originalLanguage === 'und' ? 'auto' : decision.originalLanguage;
+  // Only a From pick is forced on the provider; a detected language (Safari names
+  // it its own way, e.g. zh-Hans) sent as explicit makes Google echo the text.
+  const sourceLanguage = decision.sourceLanguageIsExplicit ? decision.originalLanguage : undefined;
   if (
     current.translated &&
     current.targetLanguage === decision.targetLanguage &&
