@@ -11,6 +11,8 @@ final class PrismSimChecks: XCTestCase {
 
     override func setUp() {
         continueAfterFailure = true
+        // A hang fails only its own test, so the other tests' screenshots are still kept.
+        executionTimeAllowance = 300
     }
 
     // MARK: helpers
@@ -362,5 +364,51 @@ final class PrismSimChecks: XCTestCase {
             Thread.sleep(forTimeInterval: 2)
             shot("safari-tabs")
         }
+    }
+
+    /// Counts sangtacviet's chapter rows still in Vietnamese ("Chương …") and in English ("Chapter …").
+    /// Predicate counts take one snapshot each; walking every element of a 1,000-row page hangs.
+    func chapterRowCounts(_ step: String) -> (vi: Int, en: Int) {
+        func count(_ query: XCUIElementQuery, _ prefix: String) -> Int {
+            query.matching(NSPredicate(format: "label BEGINSWITH %@", prefix)).count
+        }
+        let web = safari.webViews
+        let linksVi = count(web.links, "Chương"), linksEn = count(web.links, "Chapter")
+        let textsVi = count(web.staticTexts, "Chương"), textsEn = count(web.staticTexts, "Chapter")
+        let note = "\(step): links Chương \(linksVi), Chapter \(linksEn); texts Chương \(textsVi), Chapter \(textsEn)"
+        let attachment = XCTAttachment(string: note)
+        attachment.name = "tree-sangtacviet-\(step)"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        return (max(linksVi, textsVi), max(linksEn, textsEn))
+    }
+
+    /// The owner's live page, on Safari's WebKit: does the clipped chapter list translate, and stay so after Expand?
+    /// Recorded rather than strict, since a live site changes; it fails only when nothing translated.
+    func test8_liveSangtacvietBook() throws {
+        try requireExtension()
+        XCUIDevice.shared.system.open(URL(string: "https://sangtacviet.vip/truyen/qidian/1/1044603424/")!)
+        XCTAssertTrue(safari.wait(for: .runningForeground, timeout: 30), "Safari didn't open")
+        Thread.sleep(forTimeInterval: 15)
+        shot("sangtacviet-loaded")
+        tapBall()
+        Thread.sleep(forTimeInterval: 40)
+        shot("sangtacviet-translated")
+        let before = chapterRowCounts("translated")
+
+        var expand = safari.webViews.staticTexts["Expand"]
+        if !expand.exists { expand = safari.webViews.staticTexts["Mở rộng"] }
+        var swipes = 0
+        while !(expand.exists && expand.isHittable) && swipes < 12 {
+            safari.swipeUp()
+            swipes += 1
+        }
+        if expand.exists && expand.isHittable { expand.tap() }
+        Thread.sleep(forTimeInterval: 20)
+        shot("sangtacviet-expanded-top")
+        for _ in 0..<6 { safari.swipeUp() }
+        shot("sangtacviet-expanded-lower")
+        let after = chapterRowCounts("expanded")
+        XCTAssertGreaterThan(before.en + after.en, 0, "No chapter title was translated on the live page")
     }
 }

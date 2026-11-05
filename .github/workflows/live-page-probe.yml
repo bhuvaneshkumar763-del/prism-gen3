@@ -1,0 +1,61 @@
+# Opens live pages with the built extension in Chromium and records what stays
+# untranslated (tests/live-page/probe.mjs), for reproducing a reader's report.
+# Results go to the live-probe-results branch, readable wherever git is.
+name: Live page probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      urls:
+        description: Space-separated page URLs
+        required: false
+  pull_request:
+    paths: ['tests/live-page/**', '.github/workflows/live-page-probe.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Write access only to force-push the results branch below.
+    permissions:
+      contents: write
+    env:
+      DEFAULT_URLS: https://sangtacviet.vip/truyen/qidian/1/1044603424/
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - run: npx playwright install --with-deps chromium
+
+      - run: npm run build
+
+      - name: Probe the pages
+        env:
+          URLS: ${{ inputs.urls }}
+        run: node tests/live-page/probe.mjs out ${URLS:-$DEFAULT_URLS} || echo "::warning::the probe stopped early"
+
+      - name: Publish to the live-probe-results branch
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p out
+          echo "run $GITHUB_RUN_ID · ${GITHUB_SHA::7}" > out/README.txt
+          cd out
+          git init -q -b live-probe-results
+          git config user.name github-actions
+          git config user.email github-actions@users.noreply.github.com
+          git add -A
+          git commit -qm "Live page probe, run $GITHUB_RUN_ID (${GITHUB_SHA::7})"
+          git push -qf "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" live-probe-results
