@@ -1,0 +1,275 @@
+[
+  {
+    "url": "https://sangtacviet.vip/truyen/qidian/1/1044603424/",
+    "mode": "iphone-early",
+    "steps": {
+      "loaded": {
+        "rows": 0,
+        "count": {
+          "vi": 0,
+          "zh": 0,
+          "other": 0
+        },
+        "firstRows": [],
+        "lastRows": [],
+        "untranslatedSamples": [],
+        "clip": {
+          "maxHeight": "240px",
+          "overflow": "hidden",
+          "height": 53
+        },
+        "containerHtml": "<div id=\"chaptercontainer\" style=\"overflow: hidden;max-height: 240px\">\n\t\t\t\t<div id=\"chaptercontainerinner\">\n\t\t\t\t\t<center id=\"clpl\"><span class=\"spinner-border\"></span><br>Đang tải danh sách chương...</center>\n\t\t\t\t\t<script type=\"text/javascript\">\n\t\t\t\t\t\tvar retrycount = 0;\n\t\t\t\t\t\tvar loadedotherhost=false;\n\t\t\t\t\t\tvar firstCid = 0;\n\t\t\t\t\t\tfunction randomString(len) {\n\t\t\t\t\t\t    len = len || 32;\n\t\t\t\t\t\t    var $chars = 'ABCDEFGHJKMNPQRSTWXYZabcdefhijkmnprstwxyz2345678'; \n\t\t\t\t\t\t    var maxPos = $chars.length;\n\t\t\t\t\t\t    var pwd = '';\n\t\t\t\t\t\t    for (i = 0; i < len; i++) {\n\t\t\t\t\t\t        pwd += $chars.charAt(Math.floor(Math.random() * maxPos));\n\t\t\t\t\t\t    }\n\t\t\t\t\t\t    return pwd;\n\t\t\t\t\t\t}\n\t\t\t\t\t\tfunction decryptAes(encrypted, key, iv) {\n\t\t\t\t\t\t\tencrypted = CryptoJS.enc.Base64.parse(encrypted);\n\t\t\t\t\t\t    key = CryptoJS.enc.Utf8.parse(key);\n\t\t\t\t\t\t    iv = CryptoJS.enc.Utf8.parse(iv);\n\t\t\t\t\t\t    var decrypted = CryptoJS.AES.decrypt({ciphertext: encrypted}, key, {iv: iv});\n\t\t\t\t\t\t    return decrypted.toString(CryptoJS.enc.Utf8);\n\t\t\t\t\t\t}\n\t\t\t\t\t\tfunction parseBInt(s){\n\t\t\t\t\t\t\tif(!s){\n\t\t\t\t\t\t\t\treturn 0;\n\t\t\t\t\t\t\t}\n\t\t\t\t\t\t\tif(window.BigInt){\n\t\t\t\t\t\t\t\treturn BigInt(s);\n\t\t\t\t\t\t\t}\n\t\t\t\t\t\t\treturn parseInt(s);\n\t\t\t\t\t\t}\n\t\t\t\t\t\tfunction renewchapter(force){\n\t\t\t\t\t\t\tvar url = '/index.php?ngmar=chapterlist&h=qidian&bookid=1044603424&sajax=getchapterlist';\n\t\t\t\t\t\t\tif(force){\n\t\t\t\t\t\t\t\turl+=\"&force=true\";\n\t\t\t\t\t\t\t\tg(\"chaptercontainerinner\").innerHTML='<center><span class=\"spinner-border\"></span><br>Đang tải danh sách chương...</center>';\n\t\t\t\t\t\t\t}\n\t\t\t\t\t\t\tvar chapterfetcher = new XMLHttpRequest();\n\t\t\t\t\t\t\tchapterfetcher.open('GET', url, true);\n\t\t\t\t\t\t\tvar loadclretry = 0;\n\t\t\t\t\t\t\tchapterfetcher.onreadystatechange = function() {\n\t\t\t\t\t\t\t\tif(chapterfetcher.readyState == 4 && chapterfetcher.status == 200) {\n\t\t\t\t\t\t\t\t\tif(chapterfetcher.responseText == \"\"){\n\t\t\t\t\t\t\t\t\t\tg(\"chaptercontainerinner\").innerHTML=\"<center>Không có nội dung!!</center>\";\n\t\t\t\t\t\t\t\t\t\treturn;\n\t\t\t\t\t\t\t\t\t}\n\t\t\t\t\t\t\t\t\tvar x=JSON.parse(chapterfetcher.responseText);\n\t\t\t\t\t\t\t\t\ttry{\n\t\t\t\t\t\t\t\t\t\tif(x.code==1){\n\t\t\t\t\t\t\t\t\t\t\tvar wd=g(\"chaptercontainerinner\");\n\t\t\t\t\t\t\t\t\t\t\twd.innerHTML=\"\";\n\t\t\t\t\t\t\t\t\t\t\t//if(x.data.indexOf(\"ữ liệu để dịch trống\")>0){\n\t\t\t\t\t\t\t\t\t\t\t//\tretrycount++;\n\t\t\t\t\t\t\t\t\t\t\t//\tif(retrycount>1){\n\t\t\t\t\t\t\t\t\t\t\t\t//\talert(\"Lỗi: danh sách chương tại trang gốc không tồn tại hoặc bị xóa,bị chặn, tải không được.\");\n\t\t\t\t\t\t\t\t\t\t\t//\t\treturn;\n\t\t\t\t\t\t\t\t\t\t\t//\t}\n\t\t\t\t\t\t\t\t\t\t\t//\trenewchapter(true);\n\t\t\t\t\t\t\t\t\t\t\t//\treturn;\n\t\t\t\t\t\t\t\t\t\t\t//}\n\t\t\t\t\t\t\t\t\t\t\tif(x.enckey){\n\t\t\t\t\t\t\t\t\t\t\t\teval(atob(x.enckey));\n\t\t\t\t\t\t\t\t\t\t\t}\n\t\t\t\t\t\t\t\t\t\t\tif(!x.data){\n\t\t\t\t\t\t\t\t\t\t\t\tg(\"chaptercontainerinner\").innerHTML=\"<center>Tải danh sách chương thất bại hoặc nguồn đã hỏng.</center>\";\n\t\t\t\t\t\t\t\t\t\t\t\treturn;\n\t\t\t\t\t\t\t\t\t\t\t}\n\t\t\t\t\t\t\t\t\t\t\tvar password = randomString();\n\t\t\t\t\t\t\t\t\t\t\tvar cachechapter=x.data.split(\"-//-\");\n\t\t\t\t\t\t\t\t\t\t\tvar charnum=1;\n\t\t\t\t\t\t\t\t\t\t\tvar roww=document.createElement(\"div\");\n\t\t\t\t\t\t\t\t\t\t\troww.className=\"row\";\n\t\t\t\t\t\t\t\t\t\t\twd.appendChild(roww);\n\t\t\t\t\t\t\t\t\t\t\tvar nametester=/^(thứ|chương|hồi|【|no\\.?)? ?([0-9]|một|hai|ba|bốn|năm|sáu|bảy|tám|chín|mười)/i;\n\t\t\t\t\t\t\t\t\t\t\tvar i=(\"qidian\"==\"uukanshu\")?cachechapter.length -1:0;\n\t\t\t\t\t\t\t\t\t\t\tvar idef = i;\n\t\t\t\t\t\t\t\t\t\t\tvar iend= ( i>0 )? -1 : cachechapter.length;\n\t\t\t\t\t\t\t\t\t\t\tvar hidec = 0;\n\t\t\t\t\t\t\t\t\t\t\tvar vipped=0;\n\t\t\t\t\t\t\t\t\t\t\tif(x.unlocked==null){\n\t\t\t\t\t\t\t\t\t\t\t\tx.unlocked={};\n\t\t\t\t\t\t\t\t\t\t\t}\n\t\t\t\t\t\t\t\t\t\t\tif(!window.getlastread){\n\t\t\t\t\t\t\t\t\t\t\t\tui.scriptmanager.load(\"/stv.book.main.js\", function(){\n\t\t\t\t\t\t\t\t\t\t\t\t\tchapterfetcher.onreadystatechange();\n\t\t\t\t\t\t\t\t\t\t\t\t}, true);\n\t\t\t\t\t\t\t\t\t\t\t\treturn;\n\t\t\t\t\t\t\t\t\t\t\t}\n\t\t\t\t\t\t\t\t\t\t\tvar rd = 0;\n\t\t\t\t\t\t\t\t\t\t\ttry{\n\t\t\t\t\t\t\t\t\t\t\t\trd = getlastread();\n\t\t\t\t\t\t\t\t\t\t\t}catch(exc){}\n\t\t\t\t\t\t\t\t\t\t\tvar fid = false;\n\t\t\t\t\t\t\t\t\t\t\tfor(;i!=iend;){\n\t\t\t\t\t\t\t\t\t\t\t\tvar da = cachechapter[i].split(\"-/-\");\n\t\t\t\t\t\t\t\t\t\t\t\tif(window.setting&&window.setting.filterchapterlist){\n\t\t\t\t\t\t\t\t\t\t\t\t\tif(!nametester.test(da[2].trim())){\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tif(\"qidian\"==\"uukanshu\"){\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\ti--;\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t}else i++;\n\t\t\t\t\t\t\t\t\t\t\t\t\t\thidec++;\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tif(window.setting.filterchapterlist){\n\t\t\t\t\t\t",
+        "bubbleLabel": null,
+        "bubbleError": null,
+        "translatedAttr": ""
+      },
+      "translated": {
+        "rows": 1019,
+        "count": {
+          "vi": 1,
+          "zh": 0,
+          "other": 1018
+        },
+        "firstRows": [
+          "Chapter 1: The entrance to the Novice Village, powerful figures everywhere.",
+          "Chapter 02: Talent Assessment",
+          "Chapter 3: Propaganda and Concealment",
+          "Chapter 4: The Cruel Truth"
+        ],
+        "lastRows": [
+          "Chapter 1013: A New Species, an Idea",
+          "Chapter 1014: The Scorpion Tribe",
+          "Chapter 1015: Strength and Skill Level",
+          "Chapter 1016: Unusual Feelings, Forgetting Things"
+        ],
+        "untranslatedSamples": [
+          "Chapter 89: Ai Lạc Tây á"
+        ],
+        "clip": {
+          "maxHeight": "240px",
+          "overflow": "hidden",
+          "height": 240
+        },
+        "containerHtml": "<div id=\"chaptercontainer\" style=\"overflow: hidden; max-height: 240px;\">\n\t\t\t\t<div id=\"chaptercontainerinner\"><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 1: The entrance to the Novice Village, powerful figures everywhere.\" href=\"about:blank\" rel=\"nofollow\"> Chapter 1: The entrance to the Novice Village, powerful figures everywhere. </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 02: Talent Assessment\" href=\"about:blank\" rel=\"nofollow\"> Chapter 02: Talent Assessment </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 3: Propaganda and Concealment\" href=\"about:blank\" rel=\"nofollow\"> Chapter 3: Propaganda and Concealment </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 4: The Cruel Truth\" href=\"about:blank\" rel=\"nofollow\"> Chapter 4: The Cruel Truth </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 5: Legitimacy and Examination\" href=\"about:blank\" rel=\"nofollow\"> Chapter 5: Legitimacy and Examination </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 6: Metallurgy\" href=\"about:blank\" rel=\"nofollow\"> Chapter 6: Metallurgy </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 7: Enrollment\" href=\"about:blank\" rel=\"nofollow\"> Chapter 7: Enrollment </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 8: Meditation Techniques\" href=\"about:blank\" rel=\"nofollow\"> Chapter 8: Meditation Techniques </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 9: The Dining Hall\" href=\"about:blank\" rel=\"nofollow\"> Chapter 9: The Dining Hall </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 10: Amy\" href=\"about:blank\" rel=\"nofollow\"> Chapter 10: Amy </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 11: Introduction\" href=\"about:blank\" rel=\"nofollow\"> Chapter 11: Introduction </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 12: The First Lesson\" href=\"about:blank\" rel=\"nofollow\"> Chapter 12: The First Lesson </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 13: Alchemy\" href=\"about:blank\" rel=\"nofollow\"> Chapter 13: Alchemy </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 14: The Mission\" href=\"about:blank\" rel=\"nofollow\"> Chapter 14: The Mission </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 15: Refined Metal\" href=\"about:blank\" rel=\"nofollow\"> Chapter 15: Refined Metal </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 16: Refinement\" href=\"about:blank\" rel=\"nofollow\"> Chapter 16: Refinement </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 17: Anticipation\" href=\"about:blank\" rel=\"nofollow\"> Chapter 17: Anticipation </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 18: Integrals and integrals\" href=\"about:blank\" rel=\"nofollow\"> Chapter 18: Integrals and integrals </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 19: Victor\" href=\"about:blank\" rel=\"nofollow\"> Chapter 19: Victor </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 20: The Anonymous Masterpiece\" href=\"about:blank\" rel=\"nofollow\"> Chapter 20: The Anonymous Masterpiece </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 21: Thunderclap\" href=\"about:blank\" rel=\"nofollow\"> Chapter 21: Thunderclap </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 22: Two-Layer Qi Cultivation\" href=\"about:blank\" rel=\"nofollow\"> Chapter 22: Two-Layer Qi Cultivation </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 23: Death Energy and Concepts\" href=\"about:blank\" rel=\"nofollow\"> Chapter 23: Death Energy and Concepts </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" titl",
+        "bubbleLabel": "Show original",
+        "bubbleError": null,
+        "translatedAttr": ""
+      },
+      "expandedSoon": {
+        "rows": 1019,
+        "count": {
+          "vi": 1,
+          "zh": 0,
+          "other": 1018
+        },
+        "firstRows": [
+          "Chapter 1: The entrance to the Novice Village, powerful figures everywhere.",
+          "Chapter 02: Talent Assessment",
+          "Chapter 3: Propaganda and Concealment",
+          "Chapter 4: The Cruel Truth"
+        ],
+        "lastRows": [
+          "Chapter 1013: A New Species, an Idea",
+          "Chapter 1014: The Scorpion Tribe",
+          "Chapter 1015: Strength and Skill Level",
+          "Chapter 1016: Unusual Feelings, Forgetting Things"
+        ],
+        "untranslatedSamples": [
+          "Chapter 89: Ai Lạc Tây á"
+        ],
+        "clip": {
+          "maxHeight": "240px",
+          "overflow": "hidden",
+          "height": 240
+        },
+        "containerHtml": "<div id=\"chaptercontainer\" style=\"overflow: hidden; max-height: 240px;\">\n\t\t\t\t<div id=\"chaptercontainerinner\"><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 1: The entrance to the Novice Village, powerful figures everywhere.\" href=\"about:blank\" rel=\"nofollow\"> Chapter 1: The entrance to the Novice Village, powerful figures everywhere. </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 02: Talent Assessment\" href=\"about:blank\" rel=\"nofollow\"> Chapter 02: Talent Assessment </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 3: Propaganda and Concealment\" href=\"about:blank\" rel=\"nofollow\"> Chapter 3: Propaganda and Concealment </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 4: The Cruel Truth\" href=\"about:blank\" rel=\"nofollow\"> Chapter 4: The Cruel Truth </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 5: Legitimacy and Examination\" href=\"about:blank\" rel=\"nofollow\"> Chapter 5: Legitimacy and Examination </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 6: Metallurgy\" href=\"about:blank\" rel=\"nofollow\"> Chapter 6: Metallurgy </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 7: Enrollment\" href=\"about:blank\" rel=\"nofollow\"> Chapter 7: Enrollment </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 8: Meditation Techniques\" href=\"about:blank\" rel=\"nofollow\"> Chapter 8: Meditation Techniques </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 9: The Dining Hall\" href=\"about:blank\" rel=\"nofollow\"> Chapter 9: The Dining Hall </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 10: Amy\" href=\"about:blank\" rel=\"nofollow\"> Chapter 10: Amy </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 11: Introduction\" href=\"about:blank\" rel=\"nofollow\"> Chapter 11: Introduction </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 12: The First Lesson\" href=\"about:blank\" rel=\"nofollow\"> Chapter 12: The First Lesson </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 13: Alchemy\" href=\"about:blank\" rel=\"nofollow\"> Chapter 13: Alchemy </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 14: The Mission\" href=\"about:blank\" rel=\"nofollow\"> Chapter 14: The Mission </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 15: Refined Metal\" href=\"about:blank\" rel=\"nofollow\"> Chapter 15: Refined Metal </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 16: Refinement\" href=\"about:blank\" rel=\"nofollow\"> Chapter 16: Refinement </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 17: Anticipation\" href=\"about:blank\" rel=\"nofollow\"> Chapter 17: Anticipation </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 18: Integrals and integrals\" href=\"about:blank\" rel=\"nofollow\"> Chapter 18: Integrals and integrals </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 19: Victor\" href=\"about:blank\" rel=\"nofollow\"> Chapter 19: Victor </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 20: The Anonymous Masterpiece\" href=\"about:blank\" rel=\"nofollow\"> Chapter 20: The Anonymous Masterpiece </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 21: Thunderclap\" href=\"about:blank\" rel=\"nofollow\"> Chapter 21: Thunderclap </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 22: Two-Layer Qi Cultivation\" href=\"about:blank\" rel=\"nofollow\"> Chapter 22: Two-Layer Qi Cultivation </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 23: Death Energy and Concepts\" href=\"about:blank\" rel=\"nofollow\"> Chapter 23: Death Energy and Concepts </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" titl",
+        "bubbleLabel": "Show original",
+        "bubbleError": null,
+        "translatedAttr": ""
+      },
+      "expanded": {
+        "rows": 1019,
+        "count": {
+          "vi": 1,
+          "zh": 0,
+          "other": 1018
+        },
+        "firstRows": [
+          "Chapter 1: The entrance to the Novice Village, powerful figures everywhere.",
+          "Chapter 02: Talent Assessment",
+          "Chapter 3: Propaganda and Concealment",
+          "Chapter 4: The Cruel Truth"
+        ],
+        "lastRows": [
+          "Chapter 1013: A New Species, an Idea",
+          "Chapter 1014: The Scorpion Tribe",
+          "Chapter 1015: Strength and Skill Level",
+          "Chapter 1016: Unusual Feelings, Forgetting Things"
+        ],
+        "untranslatedSamples": [
+          "Chapter 89: Ai Lạc Tây á"
+        ],
+        "clip": {
+          "maxHeight": "240px",
+          "overflow": "hidden",
+          "height": 240
+        },
+        "containerHtml": "<div id=\"chaptercontainer\" style=\"overflow: hidden; max-height: 240px;\">\n\t\t\t\t<div id=\"chaptercontainerinner\"><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 1: The entrance to the Novice Village, powerful figures everywhere.\" href=\"about:blank\" rel=\"nofollow\"> Chapter 1: The entrance to the Novice Village, powerful figures everywhere. </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 02: Talent Assessment\" href=\"about:blank\" rel=\"nofollow\"> Chapter 02: Talent Assessment </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 3: Propaganda and Concealment\" href=\"about:blank\" rel=\"nofollow\"> Chapter 3: Propaganda and Concealment </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 4: The Cruel Truth\" href=\"about:blank\" rel=\"nofollow\"> Chapter 4: The Cruel Truth </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 5: Legitimacy and Examination\" href=\"about:blank\" rel=\"nofollow\"> Chapter 5: Legitimacy and Examination </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 6: Metallurgy\" href=\"about:blank\" rel=\"nofollow\"> Chapter 6: Metallurgy </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 7: Enrollment\" href=\"about:blank\" rel=\"nofollow\"> Chapter 7: Enrollment </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 8: Meditation Techniques\" href=\"about:blank\" rel=\"nofollow\"> Chapter 8: Meditation Techniques </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 9: The Dining Hall\" href=\"about:blank\" rel=\"nofollow\"> Chapter 9: The Dining Hall </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 10: Amy\" href=\"about:blank\" rel=\"nofollow\"> Chapter 10: Amy </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 11: Introduction\" href=\"about:blank\" rel=\"nofollow\"> Chapter 11: Introduction </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 12: The First Lesson\" href=\"about:blank\" rel=\"nofollow\"> Chapter 12: The First Lesson </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 13: Alchemy\" href=\"about:blank\" rel=\"nofollow\"> Chapter 13: Alchemy </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 14: The Mission\" href=\"about:blank\" rel=\"nofollow\"> Chapter 14: The Mission </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 15: Refined Metal\" href=\"about:blank\" rel=\"nofollow\"> Chapter 15: Refined Metal </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 16: Refinement\" href=\"about:blank\" rel=\"nofollow\"> Chapter 16: Refinement </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 17: Anticipation\" href=\"about:blank\" rel=\"nofollow\"> Chapter 17: Anticipation </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 18: Integrals and integrals\" href=\"about:blank\" rel=\"nofollow\"> Chapter 18: Integrals and integrals </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 19: Victor\" href=\"about:blank\" rel=\"nofollow\"> Chapter 19: Victor </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 20: The Anonymous Masterpiece\" href=\"about:blank\" rel=\"nofollow\"> Chapter 20: The Anonymous Masterpiece </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 21: Thunderclap\" href=\"about:blank\" rel=\"nofollow\"> Chapter 21: Thunderclap </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 22: Two-Layer Qi Cultivation\" href=\"about:blank\" rel=\"nofollow\"> Chapter 22: Two-Layer Qi Cultivation </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 23: Death Energy and Concepts\" href=\"about:blank\" rel=\"nofollow\"> Chapter 23: Death Energy and Concepts </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" titl",
+        "bubbleLabel": "Show original",
+        "bubbleError": null,
+        "translatedAttr": ""
+      }
+    },
+    "expandSelector": "#clicktoexp",
+    "console": []
+  },
+  {
+    "url": "https://sangtacviet.vip/truyen/qidian/1/1044603424/",
+    "mode": "desktop",
+    "steps": {
+      "loaded": {
+        "rows": 1019,
+        "count": {
+          "vi": 1019,
+          "zh": 0,
+          "other": 0
+        },
+        "firstRows": [
+          "Chương 1: Tân Thủ thôn cửa ra vào, đại lão khắp nơi",
+          "Chương 02: Thiên phú khảo hạch",
+          "Chương 03: Tuyên truyền cùng ẩn tàng",
+          "Chương 04: Tàn khốc chân tướng"
+        ],
+        "lastRows": [
+          "Chương 1013: Giống loài mới, ý nghĩ",
+          "Chương 1014: Bọ cạp tộc",
+          "Chương 1015: Thực lực trình độ",
+          "Chương 1016: Khác thường cảm giác, quên đồ vật"
+        ],
+        "untranslatedSamples": [
+          "Chương 1: Tân Thủ thôn cửa ra vào, đại lão khắp nơi",
+          "Chương 02: Thiên phú khảo hạch",
+          "Chương 03: Tuyên truyền cùng ẩn tàng",
+          "Chương 04: Tàn khốc chân tướng",
+          "Chương 05: Chính thống cùng khảo thí",
+          "Chương 06: Luyện kim học"
+        ],
+        "clip": {
+          "maxHeight": "240px",
+          "overflow": "hidden",
+          "height": 240
+        },
+        "containerHtml": "<div id=\"chaptercontainer\" style=\"overflow: hidden; max-height: 240px;\">\n\t\t\t\t<div id=\"chaptercontainerinner\"><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\" Chương 1: Tân Thủ thôn cửa ra vào, đại lão khắp nơi \" href=\"about:blank\" rel=\"nofollow\"> Chương 1: Tân Thủ thôn cửa ra vào, đại lão khắp nơi </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\" Chương 02: Thiên phú khảo hạch \" href=\"about:blank\" rel=\"nofollow\"> Chương 02: Thiên phú khảo hạch </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\" Chương 03: Tuyên truyền cùng ẩn tàng \" href=\"about:blank\" rel=\"nofollow\"> Chương 03: Tuyên truyền cùng ẩn tàng </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\" Chương 04: Tàn khốc chân tướng \" href=\"about:blank\" rel=\"nofollow\"> Chương 04: Tàn khốc chân tướng </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\" Chương 05: Chính thống cùng khảo thí \" href=\"about:blank\" rel=\"nofollow\"> Chương 05: Chính thống cùng khảo thí </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\" Chương 06: Luyện kim học \" href=\"about:blank\" rel=\"nofollow\"> Chương 06: Luyện kim học </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\" Chương 7: Nhập học \" href=\"about:blank\" rel=\"nofollow\"> Chương 7: Nhập học </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\" Chương 08: Minh tưởng pháp \" href=\"about:blank\" rel=\"nofollow\"> Chương 08: Minh tưởng pháp </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\" Chương 09: Nhà ăn \" href=\"about:blank\" rel=\"nofollow\"> Chương 09: Nhà ăn </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\" Chương 10: Amy \" href=\"about:blank\" rel=\"nofollow\"> Chương 10: Amy </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\" Chương 11: Nhập môn \" href=\"about:blank\" rel=\"nofollow\"> Chương 11: Nhập môn </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\" Chương 12: Tiết khóa thứ nhất \" href=\"about:blank\" rel=\"nofollow\"> Chương 12: Tiết khóa thứ nhất </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\" Chương 13: Luyện kim thuật \" href=\"about:blank\" rel=\"nofollow\"> Chương 13: Luyện kim thuật </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\" Chương 14: Nhiệm vụ \" href=\"about:blank\" rel=\"nofollow\"> Chương 14: Nhiệm vụ </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\" Chương 15: Tinh kim \" href=\"about:blank\" rel=\"nofollow\"> Chương 15: Tinh kim </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\" Chương 16: Tinh luyện \" href=\"about:blank\" rel=\"nofollow\"> Chương 16: Tinh luyện </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\" Chương 17: Chờ mong \" href=\"about:blank\" rel=\"nofollow\"> Chương 17: Chờ mong </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\" Chương 18: Tích phân a tích phân \" href=\"about:blank\" rel=\"nofollow\"> Chương 18: Tích phân a tích phân </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\" Chương 19: Victor \" href=\"about:blank\" rel=\"nofollow\"> Chương 19: Victor </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\" Chương 20: Ẩn danh kiệt tác \" href=\"about:blank\" rel=\"nofollow\"> Chương 20: Ẩn danh kiệt tác </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\" Chương 21: Kinh lôi \" href=\"about:blank\" rel=\"nofollow\"> Chương 21: Kinh lôi </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\" Chương 22: Luyện Khí hai tầng \" href=\"about:blank\" rel=\"nofollow\"> Chương 22: Luyện Khí hai tầng </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\" Chương 23: Tử khí cùng khái niệm \" href=\"about:blank\" rel=\"nofollow\"> Chương 23: Tử khí cùng khái niệm </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\" Chương 24: Hoàn cay \" href=\"about:blank\" rel=\"nofollow\"> Chương 24: Hoàn cay </a></div></div><div class=\"row\">",
+        "bubbleLabel": "Translate this page",
+        "bubbleError": null,
+        "translatedAttr": ""
+      },
+      "translated": {
+        "rows": 1019,
+        "count": {
+          "vi": 1,
+          "zh": 0,
+          "other": 1018
+        },
+        "firstRows": [
+          "Chapter 1: The entrance to the Novice Village, powerful figures everywhere.",
+          "Chapter 02: Talent Assessment",
+          "Chapter 3: Propaganda and Concealment",
+          "Chapter 4: The Cruel Truth"
+        ],
+        "lastRows": [
+          "Chapter 1013: A New Species, an Idea",
+          "Chapter 1014: The Scorpion Tribe",
+          "Chapter 1015: Strength and Skill Level",
+          "Chapter 1016: Unusual Feelings, Forgetting Things"
+        ],
+        "untranslatedSamples": [
+          "Chapter 89: Ai Lạc Tây á"
+        ],
+        "clip": {
+          "maxHeight": "240px",
+          "overflow": "hidden",
+          "height": 240
+        },
+        "containerHtml": "<div id=\"chaptercontainer\" style=\"overflow: hidden; max-height: 240px;\">\n\t\t\t\t<div id=\"chaptercontainerinner\"><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 1: The entrance to the Novice Village, powerful figures everywhere.\" href=\"about:blank\" rel=\"nofollow\"> Chapter 1: The entrance to the Novice Village, powerful figures everywhere. </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 02: Talent Assessment\" href=\"about:blank\" rel=\"nofollow\"> Chapter 02: Talent Assessment </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 3: Propaganda and Concealment\" href=\"about:blank\" rel=\"nofollow\"> Chapter 3: Propaganda and Concealment </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 4: The Cruel Truth\" href=\"about:blank\" rel=\"nofollow\"> Chapter 4: The Cruel Truth </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 5: Legitimacy and Examination\" href=\"about:blank\" rel=\"nofollow\"> Chapter 5: Legitimacy and Examination </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 6: Metallurgy\" href=\"about:blank\" rel=\"nofollow\"> Chapter 6: Metallurgy </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 7: Enrollment\" href=\"about:blank\" rel=\"nofollow\"> Chapter 7: Enrollment </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 8: Meditation Techniques\" href=\"about:blank\" rel=\"nofollow\"> Chapter 8: Meditation Techniques </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 9: The Dining Hall\" href=\"about:blank\" rel=\"nofollow\"> Chapter 9: The Dining Hall </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 10: Amy\" href=\"about:blank\" rel=\"nofollow\"> Chapter 10: Amy </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 11: Introduction\" href=\"about:blank\" rel=\"nofollow\"> Chapter 11: Introduction </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 12: The First Lesson\" href=\"about:blank\" rel=\"nofollow\"> Chapter 12: The First Lesson </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 13: Alchemy\" href=\"about:blank\" rel=\"nofollow\"> Chapter 13: Alchemy </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 14: The Mission\" href=\"about:blank\" rel=\"nofollow\"> Chapter 14: The Mission </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 15: Refined Metal\" href=\"about:blank\" rel=\"nofollow\"> Chapter 15: Refined Metal </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 16: Refinement\" href=\"about:blank\" rel=\"nofollow\"> Chapter 16: Refinement </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 17: Anticipation\" href=\"about:blank\" rel=\"nofollow\"> Chapter 17: Anticipation </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 18: Integrals and integrals\" href=\"about:blank\" rel=\"nofollow\"> Chapter 18: Integrals and integrals </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 19: Victor\" href=\"about:blank\" rel=\"nofollow\"> Chapter 19: Victor </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 20: The Anonymous Masterpiece\" href=\"about:blank\" rel=\"nofollow\"> Chapter 20: The Anonymous Masterpiece </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 21: Thunderclap\" href=\"about:blank\" rel=\"nofollow\"> Chapter 21: Thunderclap </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 22: Two-Layer Qi Cultivation\" href=\"about:blank\" rel=\"nofollow\"> Chapter 22: Two-Layer Qi Cultivation </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 23: Death Energy and Concepts\" href=\"about:blank\" rel=\"nofollow\"> Chapter 23: Death Energy and Concepts </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" titl",
+        "bubbleLabel": "Show original",
+        "bubbleError": null,
+        "translatedAttr": ""
+      },
+      "expandedSoon": {
+        "rows": 1019,
+        "count": {
+          "vi": 1,
+          "zh": 0,
+          "other": 1018
+        },
+        "firstRows": [
+          "Chapter 1: The entrance to the Novice Village, powerful figures everywhere.",
+          "Chapter 02: Talent Assessment",
+          "Chapter 3: Propaganda and Concealment",
+          "Chapter 4: The Cruel Truth"
+        ],
+        "lastRows": [
+          "Chapter 1013: A New Species, an Idea",
+          "Chapter 1014: The Scorpion Tribe",
+          "Chapter 1015: Strength and Skill Level",
+          "Chapter 1016: Unusual Feelings, Forgetting Things"
+        ],
+        "untranslatedSamples": [
+          "Chapter 89: Ai Lạc Tây á"
+        ],
+        "clip": {
+          "maxHeight": "240px",
+          "overflow": "hidden",
+          "height": 240
+        },
+        "containerHtml": "<div id=\"chaptercontainer\" style=\"overflow: hidden; max-height: 240px;\">\n\t\t\t\t<div id=\"chaptercontainerinner\"><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 1: The entrance to the Novice Village, powerful figures everywhere.\" href=\"about:blank\" rel=\"nofollow\"> Chapter 1: The entrance to the Novice Village, powerful figures everywhere. </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 02: Talent Assessment\" href=\"about:blank\" rel=\"nofollow\"> Chapter 02: Talent Assessment </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 3: Propaganda and Concealment\" href=\"about:blank\" rel=\"nofollow\"> Chapter 3: Propaganda and Concealment </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 4: The Cruel Truth\" href=\"about:blank\" rel=\"nofollow\"> Chapter 4: The Cruel Truth </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 5: Legitimacy and Examination\" href=\"about:blank\" rel=\"nofollow\"> Chapter 5: Legitimacy and Examination </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 6: Metallurgy\" href=\"about:blank\" rel=\"nofollow\"> Chapter 6: Metallurgy </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 7: Enrollment\" href=\"about:blank\" rel=\"nofollow\"> Chapter 7: Enrollment </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 8: Meditation Techniques\" href=\"about:blank\" rel=\"nofollow\"> Chapter 8: Meditation Techniques </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 9: The Dining Hall\" href=\"about:blank\" rel=\"nofollow\"> Chapter 9: The Dining Hall </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 10: Amy\" href=\"about:blank\" rel=\"nofollow\"> Chapter 10: Amy </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 11: Introduction\" href=\"about:blank\" rel=\"nofollow\"> Chapter 11: Introduction </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 12: The First Lesson\" href=\"about:blank\" rel=\"nofollow\"> Chapter 12: The First Lesson </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 13: Alchemy\" href=\"about:blank\" rel=\"nofollow\"> Chapter 13: Alchemy </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 14: The Mission\" href=\"about:blank\" rel=\"nofollow\"> Chapter 14: The Mission </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 15: Refined Metal\" href=\"about:blank\" rel=\"nofollow\"> Chapter 15: Refined Metal </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 16: Refinement\" href=\"about:blank\" rel=\"nofollow\"> Chapter 16: Refinement </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 17: Anticipation\" href=\"about:blank\" rel=\"nofollow\"> Chapter 17: Anticipation </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 18: Integrals and integrals\" href=\"about:blank\" rel=\"nofollow\"> Chapter 18: Integrals and integrals </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 19: Victor\" href=\"about:blank\" rel=\"nofollow\"> Chapter 19: Victor </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 20: The Anonymous Masterpiece\" href=\"about:blank\" rel=\"nofollow\"> Chapter 20: The Anonymous Masterpiece </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 21: Thunderclap\" href=\"about:blank\" rel=\"nofollow\"> Chapter 21: Thunderclap </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 22: Two-Layer Qi Cultivation\" href=\"about:blank\" rel=\"nofollow\"> Chapter 22: Two-Layer Qi Cultivation </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 23: Death Energy and Concepts\" href=\"about:blank\" rel=\"nofollow\"> Chapter 23: Death Energy and Concepts </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" titl",
+        "bubbleLabel": "Show original",
+        "bubbleError": null,
+        "translatedAttr": ""
+      },
+      "expanded": {
+        "rows": 1019,
+        "count": {
+          "vi": 1,
+          "zh": 0,
+          "other": 1018
+        },
+        "firstRows": [
+          "Chapter 1: The entrance to the Novice Village, powerful figures everywhere.",
+          "Chapter 02: Talent Assessment",
+          "Chapter 3: Propaganda and Concealment",
+          "Chapter 4: The Cruel Truth"
+        ],
+        "lastRows": [
+          "Chapter 1013: A New Species, an Idea",
+          "Chapter 1014: The Scorpion Tribe",
+          "Chapter 1015: Strength and Skill Level",
+          "Chapter 1016: Unusual Feelings, Forgetting Things"
+        ],
+        "untranslatedSamples": [
+          "Chapter 89: Ai Lạc Tây á"
+        ],
+        "clip": {
+          "maxHeight": "240px",
+          "overflow": "hidden",
+          "height": 240
+        },
+        "containerHtml": "<div id=\"chaptercontainer\" style=\"overflow: hidden; max-height: 240px;\">\n\t\t\t\t<div id=\"chaptercontainerinner\"><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 1: The entrance to the Novice Village, powerful figures everywhere.\" href=\"about:blank\" rel=\"nofollow\"> Chapter 1: The entrance to the Novice Village, powerful figures everywhere. </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 02: Talent Assessment\" href=\"about:blank\" rel=\"nofollow\"> Chapter 02: Talent Assessment </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 3: Propaganda and Concealment\" href=\"about:blank\" rel=\"nofollow\"> Chapter 3: Propaganda and Concealment </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 4: The Cruel Truth\" href=\"about:blank\" rel=\"nofollow\"> Chapter 4: The Cruel Truth </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 5: Legitimacy and Examination\" href=\"about:blank\" rel=\"nofollow\"> Chapter 5: Legitimacy and Examination </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 6: Metallurgy\" href=\"about:blank\" rel=\"nofollow\"> Chapter 6: Metallurgy </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 7: Enrollment\" href=\"about:blank\" rel=\"nofollow\"> Chapter 7: Enrollment </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 8: Meditation Techniques\" href=\"about:blank\" rel=\"nofollow\"> Chapter 8: Meditation Techniques </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 9: The Dining Hall\" href=\"about:blank\" rel=\"nofollow\"> Chapter 9: The Dining Hall </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 10: Amy\" href=\"about:blank\" rel=\"nofollow\"> Chapter 10: Amy </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 11: Introduction\" href=\"about:blank\" rel=\"nofollow\"> Chapter 11: Introduction </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 12: The First Lesson\" href=\"about:blank\" rel=\"nofollow\"> Chapter 12: The First Lesson </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 13: Alchemy\" href=\"about:blank\" rel=\"nofollow\"> Chapter 13: Alchemy </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 14: The Mission\" href=\"about:blank\" rel=\"nofollow\"> Chapter 14: The Mission </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 15: Refined Metal\" href=\"about:blank\" rel=\"nofollow\"> Chapter 15: Refined Metal </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 16: Refinement\" href=\"about:blank\" rel=\"nofollow\"> Chapter 16: Refinement </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 17: Anticipation\" href=\"about:blank\" rel=\"nofollow\"> Chapter 17: Anticipation </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 18: Integrals and integrals\" href=\"about:blank\" rel=\"nofollow\"> Chapter 18: Integrals and integrals </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 19: Victor\" href=\"about:blank\" rel=\"nofollow\"> Chapter 19: Victor </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 20: The Anonymous Masterpiece\" href=\"about:blank\" rel=\"nofollow\"> Chapter 20: The Anonymous Masterpiece </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 21: Thunderclap\" href=\"about:blank\" rel=\"nofollow\"> Chapter 21: Thunderclap </a></div></div><div class=\"row\"><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 22: Two-Layer Qi Cultivation\" href=\"about:blank\" rel=\"nofollow\"> Chapter 22: Two-Layer Qi Cultivation </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" title=\"Chapter 23: Death Energy and Concepts\" href=\"about:blank\" rel=\"nofollow\"> Chapter 23: Death Energy and Concepts </a></div><div class=\"col-md-4\"><a class=\"listchapitem\" titl",
+        "bubbleLabel": "Show original",
+        "bubbleError": null,
+        "translatedAttr": ""
+      }
+    },
+    "expandSelector": "#clicktoexp",
+    "scripts": [
+      "jqr.js",
+      "stv.ui.js",
+      "bootstrap.min.js",
+      "stv.host.js",
+      "stv.book.main.js",
+      "stv.excomment.js"
+    ],
+    "console": []
+  }
+]
