@@ -1,0 +1,19 @@
+Test Case '-[PrismSimChecks.PrismSimChecks test1_turnOnTheExtension]' started.
+Test Case '-[PrismSimChecks.PrismSimChecks test1_turnOnTheExtension]' passed (233.151 seconds).
+Test Case '-[PrismSimChecks.PrismSimChecks test2_chineseChapter]' started.
+Test Case '-[PrismSimChecks.PrismSimChecks test2_chineseChapter]' passed (76.545 seconds).
+Test Case '-[PrismSimChecks.PrismSimChecks test3_longVietnameseChapter]' started.
+Test Case '-[PrismSimChecks.PrismSimChecks test3_longVietnameseChapter]' passed (25.283 seconds).
+Test Case '-[PrismSimChecks.PrismSimChecks test4_bubblePanelAndFromPicker]' started.
+Test Case '-[PrismSimChecks.PrismSimChecks test4_bubblePanelAndFromPicker]' passed (11.947 seconds).
+Test Case '-[PrismSimChecks.PrismSimChecks test5_selectToTranslate]' started.
+Test Case '-[PrismSimChecks.PrismSimChecks test5_selectToTranslate]' passed (9.859 seconds).
+Test Case '-[PrismSimChecks.PrismSimChecks test6_sameOriginIframe]' started.
+Test Case '-[PrismSimChecks.PrismSimChecks test6_sameOriginIframe]' passed (12.639 seconds).
+Test Case '-[PrismSimChecks.PrismSimChecks test7_popupAndSettingsScreens]' started.
+Test Case '-[PrismSimChecks.PrismSimChecks test7_popupAndSettingsScreens]' passed (37.470 seconds).
+Test Case '-[PrismSimChecks.PrismSimChecks test8_liveSangtacvietBook]' started.
+Test Case '-[PrismSimChecks.PrismSimChecks test8_liveSangtacvietBook]' passed (242.568 seconds).
+	 Executed 8 tests, with 0 failures (0 unexpected) in 649.462 (649.488) seconds
+	 Executed 8 tests, with 0 failures (0 unexpected) in 649.462 (649.499) seconds
+	 Executed 8 tests, with 0 failures (0 unexpected) in 649.462 (649.504) seconds

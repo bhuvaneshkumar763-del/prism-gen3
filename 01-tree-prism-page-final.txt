@@ -1,0 +1,102 @@
+Attributes: Application, 0x1149b83c0, pid: 14825, label: 'Settings'
+Element subtree:
+ →Application, 0x1149b83c0, pid: 14825, label: 'Settings'
+    Window (Main), 0x1149b8500, {{0.0, 0.0}, {402.0, 874.0}}
+      Other, 0x1149b8640, {{0.0, 0.0}, {402.0, 874.0}}
+        Other, 0x1149b8780, {{0.0, 0.0}, {402.0, 874.0}}
+          Other, 0x1149b88c0, {{0.0, 0.0}, {402.0, 874.0}}
+            Other, 0x1149b8a00, {{0.0, 0.0}, {402.0, 874.0}}
+              Other, 0x1149b8b40, {{0.0, 0.0}, {402.0, 874.0}}
+                Other, 0x1149b8c80, {{0.0, 0.0}, {402.0, 874.0}}
+                  Other, 0x1149b8dc0, {{0.0, 0.0}, {402.0, 874.0}}
+                    Other, 0x1149b8f00, {{0.0, 0.0}, {402.0, 874.0}}
+                      NavigationBar, 0x1149b9040, {{0.0, 62.0}, {402.0, 54.0}}, identifier: 'Prism'
+                        Button, 0x1149b9180, {{16.0, 62.0}, {44.0, 44.0}}, identifier: 'BackButton', label: 'Extensions'
+                        StaticText, 0x1149b92c0, {{178.0, 73.7}, {45.7, 20.7}}, label: 'Prism'
+                      Other, 0x1149b9400, {{0.0, 0.0}, {402.0, 874.0}}
+                        Other, 0x1149b9540, {{0.0, 0.0}, {402.0, 874.0}}
+                          Other, 0x1149b9680, {{0.0, 0.0}, {402.0, 874.0}}
+                            Other, 0x1149b97c0, {{0.0, 0.0}, {402.0, 874.0}}
+                              Other, 0x1149babc0, {{0.0, 116.0}, {402.0, 724.0}}
+                                Table, 0x1149bad00, {{0.0, 0.0}, {402.0, 874.0}}
+                                  Other, 0x1149b9900, {{0.0, 116.0}, {402.0, 17.7}}
+                                  Cell, 0x1149b9a40, {{20.0, 133.7}, {362.0, 53.0}}, identifier: 'Prism', label: 'Prism'
+                                    Other, 0x1149b9b80, {{20.0, 133.7}, {362.0, 53.0}}
+                                      Other, 0x1149b9cc0, {{20.0, 133.7}, {362.0, 53.0}}
+                                        Button, 0x1149b9e00, {{34.0, 146.3}, {85.3, 28.0}}, identifier: 'Prism', label: 'Prism'
+                                          StaticText, 0x1149b9f40, {{34.0, 146.3}, {85.3, 28.0}}, label: 'Prism'
+                                          Image, 0x1149ba080, {{34.0, 146.3}, {28.0, 28.0}}, identifier: '17CF770D-6F91-4290-A0BB-DEFE07B5AACF'
+                                    Other, 0x1149ba1c0, {{20.0, 133.7}, {362.0, 53.0}}
+                                      Other, 0x1149ba300, {{20.0, 133.7}, {362.0, 53.0}}
+                                    Other, 0x1149ba440, {{76.0, 185.7}, {290.0, 1.0}}
+                                  Cell, 0x1149ba580, {{20.0, 186.7}, {362.0, 53.0}}, identifier: 'App', label: 'App, Prism'
+                                    Other, 0x1149ba6c0, {{20.0, 186.7}, {362.0, 53.0}}
+                                      Other, 0x1149ba800, {{20.0, 186.7}, {362.0, 53.0}}
+                                        Button, 0x1149ba940, {{36.0, 203.0}, {330.0, 20.3}}, identifier: 'App', label: 'App, Prism'
+                                          StaticText, 0x1149baa80, {{36.0, 203.0}, {31.0, 20.3}}, label: 'App'
+                                          StaticText, 0x1149bae40, {{322.7, 203.0}, {43.3, 20.3}}, label: 'Prism'
+                                    Other, 0x1149baf80, {{20.0, 186.7}, {362.0, 53.0}}
+                                      Other, 0x1149bb0c0, {{20.0, 186.7}, {362.0, 53.0}}
+                                    Other, 0x1149bb200, {{36.0, 238.7}, {330.0, 1.0}}
+                                  Cell, 0x1149bb340, {{20.0, 239.7}, {362.0, 73.7}}, identifier: 'DESCRIPTION', Disabled
+                                    StaticText, 0x1149bb480, {{36.0, 254.7}, {330.0, 21.3}}, label: 'Description'
+                                    Image, 0x1149bb5c0, {{28.0, 276.7}, {0.0, 0.0}}
+                                    StaticText, 0x1149bb700, {{36.0, 278.0}, {330.0, 20.3}}, label: 'Prism — AI Page Translator (Gen 3)'
+                                    Other, 0x1149bb840, {{20.0, 312.3}, {362.0, 1.0}}
+                                  Other, 0x1149bb980, {{0.0, 313.3}, {402.0, 17.3}}
+                                  Other, 0x1149bbac0, {{0.0, 330.7}, {402.0, 17.7}}
+                                  Cell, 0x1149bbc00, {{20.0, 348.3}, {362.0, 53.0}}, identifier: 'Allow Extension'
+                                    Other, 0x1149bbd40, {{20.0, 348.3}, {362.0, 53.0}}
+                                      Other, 0x1149bbe80, {{20.0, 348.3}, {362.0, 53.0}}
+                                        Switch, 0x1149fc000, {{36.0, 361.0}, {330.0, 28.0}}, identifier: 'Allow Extension', label: 'Allow Extension', value: 1
+                                          Button, 0x1149fc140, {{36.0, 364.7}, {119.3, 20.3}}, identifier: 'Allow Extension', label: 'Allow Extension'
+                                          Switch, 0x1149fc280, {{305.0, 361.0}, {63.0, 28.0}}, value: 1
+                                  Cell, 0x1149fc3c0, {{20.0, 401.3}, {362.0, 53.0}}, identifier: 'Allow in Private Browsing'
+                                    Other, 0x1149fc500, {{20.0, 401.3}, {362.0, 53.0}}
+                                      Other, 0x1149fc640, {{20.0, 401.3}, {362.0, 53.0}}
+                                        Switch, 0x1149fc780, {{36.0, 414.0}, {330.0, 28.0}}, identifier: 'Allow in Private Browsing', label: 'Allow in Private Browsing', value: 0
+                                          Button, 0x1149fc8c0, {{36.0, 417.7}, {189.7, 20.3}}, identifier: 'Allow in Private Browsing', label: 'Allow in Private Browsing'
+                                          Switch, 0x1149fca00, {{305.0, 414.0}, {63.0, 28.0}}, value: 0
+                                  Other, 0x1149fcb40, {{0.0, 454.3}, {402.0, 17.3}}
+                                  Other, 0x1149fcc80, {{0.0, 471.7}, {402.0, 17.7}}
+                                  Cell, 0x1149fcdc0, {{20.0, 489.3}, {362.0, 53.0}}, identifier: 'Settings', label: 'Settings'
+                                    Other, 0x1149fcf00, {{20.0, 489.3}, {362.0, 53.0}}
+                                      Other, 0x1149fd040, {{20.0, 489.3}, {362.0, 53.0}}
+                                        Button, 0x1149fd180, {{36.0, 505.7}, {63.0, 20.3}}, identifier: 'Settings', label: 'Settings'
+                                    Other, 0x1149fd2c0, {{20.0, 489.3}, {362.0, 53.0}}
+                                      Other, 0x1149fd400, {{20.0, 489.3}, {362.0, 53.0}}
+                                    Other, 0x1149fd540, {{20.0, 541.3}, {362.0, 1.0}}
+                                  Other, 0x1149fd680, {{0.0, 542.3}, {402.0, 17.3}}
+                                  Other, 0x1149fd7c0, {{0.0, 559.7}, {402.0, 38.0}}, identifier: 'Permissions'
+                                    Other, 0x1149fd900, {{20.0, 559.7}, {362.0, 38.0}}, label: 'Permissions'
+                                  Cell, 0x1149fda40, {{20.0, 597.7}, {362.0, 161.7}}, identifier: '10', Disabled
+                                    StaticText, 0x1149fdb80, {{36.0, 612.7}, {330.0, 65.3}}, label: 'This extension can read and alter webpages you visit and see your browsing history on all websites.'
+                                    Image, 0x1149fdcc0, {{28.0, 678.7}, {0.0, 0.0}}
+                                    StaticText, 0x1149fde00, {{36.0, 680.0}, {330.0, 64.3}}, label: 'This includes sensitive information from webpages, including passwords, phone numbers, and credit cards.'
+                                    Other, 0x1149fdf40, {{36.0, 758.3}, {330.0, 1.0}}
+                                  Cell, 0x1149fe080, {{20.0, 759.3}, {362.0, 53.0}}, identifier: 'All Websites', label: 'All Websites, Allow'
+                                    Other, 0x1149fe1c0, {{20.0, 759.3}, {331.7, 53.0}}
+                                      Other, 0x1149fe300, {{20.0, 759.3}, {331.7, 53.0}}
+                                        Button, 0x1149fe440, {{36.0, 775.7}, {307.7, 20.3}}, identifier: 'All Websites', label: 'All Websites, Allow'
+                                          StaticText, 0x1149fe580, {{36.0, 775.7}, {93.3, 20.3}}, label: 'All Websites'
+                                          StaticText, 0x1149fe6c0, {{302.7, 775.7}, {41.0, 20.3}}, label: 'Allow'
+                                    Other, 0x1149fe800, {{20.0, 759.3}, {362.0, 53.0}}
+                                      Other, 0x1149fe940, {{20.0, 759.3}, {362.0, 53.0}}
+                                    Other, 0x1149fea80, {{20.0, 811.3}, {362.0, 1.0}}
+                                    Button, 0x1149febc0, {{351.7, 778.7}, {10.3, 14.0}}, label: 'chevron', Disabled
+                                  Other, 0x1149fed00, {{0.0, 812.3}, {402.0, 17.3}}
+                                  Other, 0x1149fee40, {{369.0, 116.0}, {30.0, 696.0}}, label: 'Vertical scroll bar, 2 pages', value: 0%
+                                    Other, 0x1149fef80, {{396.0, 119.0}, {3.0, 682.3}}
+                                  Other, 0x1149ff0c0, {{62.0, 841.0}, {278.0, 30.0}}, label: 'Horizontal scroll bar, 1 page', value: 0%
+                                    Other, 0x1149ff200, {{65.0, 868.0}, {272.0, 3.0}}
+                      Other, 0x1149ff340, {{0.0, 0.0}, {402.0, 874.0}}
+                        Other, 0x1149ff480, {{0.0, 0.0}, {402.0, 874.0}}
+                Other, 0x1149ff5c0, {{0.0, 0.0}, {402.0, 874.0}}
+                  Other, 0x1149ff700, {{0.0, 0.0}, {402.0, 874.0}}
+Path to element:
+ →Application, 0x1149b83c0, pid: 14825, label: 'Settings'
+Query chain:
+ →Find: Application 'com.apple.Preferences'
+  Output: {
+    Application, 0x1149ff840, pid: 14825, label: 'Settings'
+  }
