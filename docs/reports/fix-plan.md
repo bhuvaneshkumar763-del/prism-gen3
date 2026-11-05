@@ -33,9 +33,10 @@ _From [senior-engineer-audit.md](senior-engineer-audit.md). The owner asked for 
 | 4 | Release, CI and tooling hardening (tested release script, AMO duplicate handling, guard scripts, Safari/Xcode) | **Shipped as 0.3.2-beta.2** |
 | 5 | Structural refactors behind locked-down tests (split `createPageTranslator`, structured errors, one frame model, cache accounting) | **Shipped as 0.3.2-beta.3** |
 | 6 | UI and iPhone redesign (popup, bubble, selection popup, Settings) | **Shipped as 0.3.2-beta.4** |
-| 7 | Every remaining audit finding, each fixed or closed with a reason ([audit-tracking.md](audit-tracking.md)); dependency upgrades; outside re-grade (B, up from B−: [senior-engineer-regrade.md](senior-engineer-regrade.md)) and its three bugs fixed | **0.3.2-beta.5** |
+| 7 | Every remaining audit finding, each fixed or closed with a reason ([audit-tracking.md](audit-tracking.md)); dependency upgrades; outside re-grade (B, up from B−: [senior-engineer-regrade.md](senior-engineer-regrade.md)) and its three bugs fixed | **Shipped as 0.3.2-beta.5** |
+| 8 | An automatic iPhone Simulator check (`.github/workflows/ios-simulator.yml`, `tests/ios-sim/`) and the four iPhone problems it found: the iOS 26 selection button and menu, and three Safari frame faults | **Stable 0.3.2** |
 
-**Versions:** the owner asked for the work to continue without waiting for them, so each release ships as the next `0.3.2-beta.N`. **Stable 0.3.2 waits for the owner's iPhone check** of the latest beta; it is never tagged on a desktop check alone.
+**Versions:** the owner asked for the work to continue without waiting for them, so each release ships as the next `0.3.2-beta.N`. **Stable releases need an iPhone check.** On 2026-11-04 the owner decided that a passing run of the iPhone Simulator check (Safari on a simulated iPhone, all seven checks green, screenshots looked at) counts as that check. It doesn't cover Orion's own extension layer, which runs Prism's Firefox build. A stable release is still never tagged on a desktop check alone.
 
 The detail for every release is in [release-programme.md](release-programme.md).
 

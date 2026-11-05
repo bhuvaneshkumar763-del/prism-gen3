@@ -57,16 +57,31 @@ export function placeSelectionPanel(anchor: SelectionAnchor, viewport: Viewport)
   };
 }
 
+/** Room left for a selection end handle between the selected text and the trigger. */
+const HANDLE_ROOM = 12;
+
 /**
  * Above the selected line when it fits, so it never covers the next line; below
- * otherwise. On touch screens it prefers below, because iOS draws its own
- * Copy / Look Up menu above the selection, on top of any page content.
+ * otherwise. With `beside` (touch screens), on the selection's last line, after
+ * its end or else before its start: iOS draws its Copy / Look Up menu above or
+ * below the selection, on top of page content, but never on the line itself.
  */
 export function placeSelectionTrigger(
   anchor: SelectionAnchor,
   viewport: Viewport,
-  options: { preferBelow?: boolean } = {},
+  options: { preferBelow?: boolean; beside?: { top: number; bottom: number; left: number; right: number } } = {},
 ): { top: number; left: number } {
+  const line = options.beside;
+  if (line) {
+    const top = (line.top + line.bottom) / 2 - SELECTION_TRIGGER_SIZE / 2;
+    const after = line.right + GAP + HANDLE_ROOM;
+    const before = line.left - GAP - HANDLE_ROOM - SELECTION_TRIGGER_SIZE;
+    const left =
+      after + SELECTION_TRIGGER_SIZE <= viewport.width - EDGE_MARGIN ? after : before >= EDGE_MARGIN ? before : null;
+    if (left !== null) {
+      return { top: clamp(top, EDGE_MARGIN, viewport.height - SELECTION_TRIGGER_SIZE - EDGE_MARGIN), left };
+    }
+  }
   const above = anchor.top - GAP - SELECTION_TRIGGER_SIZE;
   const below = anchor.bottom + GAP;
   const belowFits = below + SELECTION_TRIGGER_SIZE <= viewport.height - EDGE_MARGIN;

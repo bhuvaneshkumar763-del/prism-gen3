@@ -19,14 +19,9 @@ import {
 } from '../src/platform/pageFrames';
 import { createRemoteTranslator } from '../src/platform/remoteTranslator';
 import { resolveBubbleVisibility } from '../src/shared/config/siteOverrides';
+import { describeFollow, describeFollowError, describeTranslated, showFrameStatus } from './lib/frameStatus';
+import { FRAME_SYNC_KEY, pageKeyFromSync } from './lib/frameSync';
 import { pollForFrameDecision } from './lib/subFramePoll';
-
-/**
- * Posted by the top frame to its sub-frames after publishing a new frame
- * decision. It carries no command: a frame that gets it re-reads the decision
- * from the background, so a page posting it itself changes nothing.
- */
-const FRAME_SYNC_KEY = 'prismFrameSync';
 
 /**
  * Posted by a sub-frame to the top frame when the background has no decision
@@ -98,6 +93,8 @@ export default defineContentScript({
     /** The last command published to sub-frames, re-published when a sub-frame finds no decision. */
     let lastPublished: PageCommand | null = null;
     let republishQueued = false;
+    /** Handed to sub-frames so they find this page's decision even when the browser names no tab for them (Safari). */
+    const pageKey = crypto.randomUUID();
 
     /** The one entry point for translate/restore in the top frame, whichever control sent it. */
     async function runPageCommand(command: PageCommand, control: PageControl): Promise<PageLanguageState> {
@@ -133,7 +130,9 @@ export default defineContentScript({
             shouldTranslate,
             targetLanguage,
             originalLanguage: pickedSource ?? originalLanguageTracker.get(),
+            sourceLanguageIsExplicit: pickedSource !== undefined,
             mainFrameOrigin: location.origin,
+            pageKey,
           });
           notifySubFrames(window);
         })
@@ -150,7 +149,7 @@ export default defineContentScript({
         const child = parent.frames[i];
         if (!child) continue;
         try {
-          child.postMessage({ [FRAME_SYNC_KEY]: true }, location.origin);
+          child.postMessage({ [FRAME_SYNC_KEY]: true, pageKey }, location.origin);
         } catch {
           // A frame that went away mid-walk.
         }
@@ -359,11 +358,20 @@ export default defineContentScript({
     } else {
       let followerState: FollowerState = { translated: false };
       let following: Promise<unknown> = Promise.resolve();
+      /** The top frame's page key, from its sync message; a forged one finds no decision. */
+      let pageKey: string | undefined;
+      // The engine's own progress, for the opt-in status (showFrameStatus does nothing without it).
+      pageTranslator.onWorkingChange((working) => showFrameStatus(document, working ? 'working' : 'idle'));
+      pageTranslator.onError((message, kind) => {
+        if (message) showFrameStatus(document, `engine-error:${kind}:${message.slice(0, 80)}`);
+      });
 
       /** Applies the top frame's latest decision; false while there is none for this page load yet. */
       async function followOnce(): Promise<boolean> {
-        const decision = await sendMessage('getFrameLanguageDecision', undefined);
-        const step = followTopFrame(decision, window.top?.location.origin ?? '', followerState);
+        const decision = await sendMessage('getFrameLanguageDecision', pageKey ? { pageKey } : undefined);
+        const topOrigin = window.top?.location.origin ?? '';
+        const step = followTopFrame(decision, topOrigin, followerState);
+        showFrameStatus(document, describeFollow(decision, topOrigin, step.action));
         if (step.action === 'translate') {
           followerState = {
             translated: true,
@@ -371,6 +379,7 @@ export default defineContentScript({
             sourceLanguage: step.sourceLanguage,
           };
           await pageTranslator.translatePage(step.targetLanguage, step.sourceLanguage);
+          showFrameStatus(document, describeTranslated(pageTranslator.getState(), pageTranslator.getLastErrorKind()));
         } else if (step.action === 'restore') {
           followerState = { translated: false };
           pageTranslator.restorePage();
@@ -387,7 +396,11 @@ export default defineContentScript({
 
       window.addEventListener('message', (event) => {
         if (event.data?.[FRAME_SYNC_KEY] !== true) return;
+        // A sync carries no command: the frame re-reads the decision from the
+        // background, so a page posting one itself changes nothing.
+        pageKey = pageKeyFromSync(event.data, event.origin, location.origin) ?? pageKey;
         syncWithTopFrame().catch((e) => {
+          showFrameStatus(document, describeFollowError(e));
           console.warn('[prism] could not follow the page command', e);
         });
       });
@@ -404,7 +417,10 @@ export default defineContentScript({
           // detection, serial, e.g. a background tab) plus ~1 s of margin.
           maxAttempts: Math.ceil(MAIN_FRAME_DECISION_WORST_CASE_MS / POLL_INTERVAL_MS) + 5, // ~9s
           onFirstWait: () => window.top?.postMessage({ [FRAME_ASK_KEY]: true }, location.origin),
-          onError: (e) => console.warn('[prism] could not follow the page command', e),
+          onError: (e) => {
+            showFrameStatus(document, describeFollowError(e));
+            console.warn('[prism] could not follow the page command', e);
+          },
         });
       })();
     }

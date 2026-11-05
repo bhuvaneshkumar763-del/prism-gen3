@@ -1,0 +1,137 @@
+# Checks the built Safari extension on an iPhone Simulator: turns it on in
+# Settings, then drives Safari through test pages that report what they see
+# (tests/ios-sim/). Screenshots and the pages' reports are uploaded.
+# Run by hand once per release (it uses macOS minutes), and on changes to the
+# check itself.
+name: iPhone Simulator check
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: ['tests/ios-sim/**', '.github/workflows/ios-simulator.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  simulator:
+    runs-on: macos-latest
+    # Write access only to force-push the screenshots branch below.
+    permissions:
+      contents: write
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      - name: Select the newest Xcode
+        run: |
+          sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+          xcodebuild -version
+
+      - name: Boot an iPhone simulator
+        run: |
+          read -r UDID NAME <<<"$(xcrun simctl list devices available -j | node tests/ios-sim/pick-simulator.mjs)"
+          echo "Using $NAME ($UDID)"
+          echo "UDID=$UDID" >> "$GITHUB_ENV"
+          echo "DEVICE=$NAME" >> "$GITHUB_ENV"
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID" -b
+
+      - name: Build Prism for the simulator
+        run: |
+          xcodebuild build \
+            -project safari/Prism/Prism.xcodeproj \
+            -target "Prism (iOS)" \
+            -sdk iphonesimulator \
+            -configuration Debug \
+            SYMROOT="$PWD/build/prism" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
+          APP="$(find build/prism -maxdepth 2 -name '*.app' -path '*iphonesimulator*' | head -1)"
+          echo "APP=$APP" >> "$GITHUB_ENV"
+          echo "Built $APP"
+
+      - name: Install Prism and open it once
+        run: |
+          xcrun simctl install "$UDID" "$APP"
+          xcrun simctl launch "$UDID" com.bhuvaneshkumar.Prism
+          sleep 5
+          mkdir -p shots
+          xcrun simctl io "$UDID" screenshot shots/00-prism-app.png
+          xcrun simctl terminate "$UDID" com.bhuvaneshkumar.Prism || true
+
+      - name: Start the test pages
+        run: |
+          node tests/ios-sim/server.mjs 8080 "$PWD/results.json" > server.log 2>&1 &
+          for _ in $(seq 30); do
+            curl -sf http://localhost:8080/chinese-chapter.html > /dev/null && exit 0
+            sleep 1
+          done
+          echo "::error::The test-page server didn't start"; cat server.log; exit 1
+
+      - name: Generate the UI-test project
+        run: |
+          brew install xcodegen
+          cd tests/ios-sim && xcodegen generate
+
+      - name: Run the checks
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project tests/ios-sim/PrismSimChecks.xcodeproj \
+            -scheme PrismSimChecks \
+            -destination "id=$UDID" \
+            -resultBundlePath sim.xcresult \
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee xcodebuild.log
+
+      - name: Export screenshots
+        if: always()
+        run: |
+          mkdir -p shots
+          xcrun xcresulttool export attachments --path sim.xcresult --output-path shots || true
+          ls shots | head -50
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### iPhone Simulator check on $DEVICE"
+            node tests/ios-sim/summary.mjs results.json
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Artifact downloads go to a storage host some reviewers can't reach;
+      # a git branch is readable anywhere git is.
+      - name: Publish screenshots to the ios-sim-results branch
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p out
+          node tests/ios-sim/collect-shots.mjs shots out
+          cp shots/00-prism-app.png out/ 2>/dev/null || true
+          for f in out/*.png; do sips -Z 1000 "$f" > /dev/null; done
+          cp results.json out/ 2>/dev/null || true
+          grep -E "error:|Test Case|Executed" xcodebuild.log > out/failures.txt || true
+          echo "$DEVICE · run $GITHUB_RUN_ID · ${GITHUB_SHA::7}" > out/README.txt
+          cd out
+          git init -q -b ios-sim-results
+          git config user.name github-actions
+          git config user.email github-actions@users.noreply.github.com
+          git add -A
+          git commit -qm "iPhone Simulator check, run $GITHUB_RUN_ID (${GITHUB_SHA::7})"
+          git push -qf "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" ios-sim-results
+
+      - name: Upload screenshots and reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ios-simulator-check
+          path: |
+            shots/
+            results.json
+            server.log

@@ -1,0 +1,37 @@
+name: PrismSimChecks
+options:
+  bundleIdPrefix: dev.prism.simchecks
+  deploymentTarget:
+    iOS: "16.4"
+settings:
+  base:
+    GENERATE_INFOPLIST_FILE: YES
+    CODE_SIGNING_ALLOWED: NO
+    SWIFT_VERSION: "5.0"
+targets:
+  Host:
+    type: application
+    platform: iOS
+    sources: [Host]
+    settings:
+      base:
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        PRODUCT_BUNDLE_IDENTIFIER: dev.prism.simchecks.host
+  PrismSimChecks:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [UITests]
+    dependencies:
+      - target: Host
+    settings:
+      base:
+        TEST_TARGET_NAME: Host
+        PRODUCT_BUNDLE_IDENTIFIER: dev.prism.simchecks.uitests
+schemes:
+  PrismSimChecks:
+    build:
+      targets:
+        Host: all
+        PrismSimChecks: [test]
+    test:
+      targets: [PrismSimChecks]

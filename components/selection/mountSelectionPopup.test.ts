@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { PieceOutcome, Translator } from '../../src/engine/translator';
 import { ok } from '../../src/shared/result';
+import { SELECTION_TRIGGER_SIZE } from '../../src/shared/ui/selectionPanelPlacement';
 import { TimeoutError } from '../../src/shared/withTimeout';
 import { trusted } from '../../tests/trustedEvent';
 import { mountSelectionPopup } from './mountSelectionPopup';
@@ -72,9 +73,11 @@ function fakeSelectionAt(text: string, rect: { top: number; left: number; bottom
     isCollapsed: false,
     rangeCount: 1,
     toString: () => text,
+    removeAllRanges: () => {},
     getRangeAt: () =>
       ({
         getBoundingClientRect: () => ({ ...rect, width: rect.right - rect.left, height: rect.bottom - rect.top }),
+        getClientRects: () => [{ ...rect, width: rect.right - rect.left, height: rect.bottom - rect.top }],
       }) as unknown as Range,
   } as unknown as Selection;
 }
@@ -84,9 +87,11 @@ function fakeSelection(text: string): Selection {
     isCollapsed: false,
     rangeCount: 1,
     toString: () => text,
+    removeAllRanges: () => {},
     getRangeAt: () =>
       ({
         getBoundingClientRect: () => ({ width: 40, height: 12, top: 100, left: 50, bottom: 112, right: 90 }),
+        getClientRects: () => [{ width: 40, height: 12, top: 100, left: 50, bottom: 112, right: 90 }],
       }) as unknown as Range,
   } as unknown as Selection;
 }
@@ -813,6 +818,50 @@ describe('mountSelectionPopup', () => {
       await new Promise((resolve) => setTimeout(resolve, SELECTIONCHANGE_SETTLE_MS));
 
       expect(shadowRoot()?.querySelector('.trigger')).not.toBeNull();
+      controller.destroy();
+    });
+
+    it("puts the trigger on the selected line, after its end, clear of iOS's menu above or below it", async () => {
+      vi.spyOn(window, 'getSelection').mockReturnValue(fakeSelection('修士'));
+      const controller = mountSelectionPopup({
+        translator: uppercaseTranslator(),
+        getSourceLanguage: () => 'zh',
+        getTargetLanguage: () => 'en',
+      });
+
+      pointerDown('touch');
+      selectionChange();
+      await new Promise((resolve) => setTimeout(resolve, SELECTIONCHANGE_SETTLE_MS));
+
+      const trigger = shadowRoot()?.querySelector('.trigger') as HTMLElement;
+      const top = Number.parseFloat(trigger.style.top);
+      const left = Number.parseFloat(trigger.style.left);
+      // The fake selection's line runs from top 100 to bottom 112 and ends at x 90.
+      expect(left).toBeGreaterThanOrEqual(90 + 6);
+      expect(top + SELECTION_TRIGGER_SIZE / 2).toBe(106);
+      controller.destroy();
+    });
+
+    it("clears the page selection when the button is tapped, so iOS's own menu closes off the result", async () => {
+      const selection = fakeSelection('修士');
+      const removeAllRanges = vi.fn();
+      Object.assign(selection, { removeAllRanges });
+      vi.spyOn(window, 'getSelection').mockReturnValue(selection);
+      const controller = mountSelectionPopup({
+        translator: uppercaseTranslator(),
+        getSourceLanguage: () => 'zh',
+        getTargetLanguage: () => 'en',
+      });
+      pointerDown('touch');
+      selectionChange();
+      await new Promise((resolve) => setTimeout(resolve, SELECTIONCHANGE_SETTLE_MS));
+
+      const trigger = shadowRoot()?.querySelector('.trigger') as HTMLButtonElement;
+      trigger.dispatchEvent(trusted(new MouseEvent('click', { bubbles: true, composed: true })));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(removeAllRanges).toHaveBeenCalled();
+      expect(shadowRoot()?.querySelector('.result')?.textContent).toBe('修士');
       controller.destroy();
     });
 

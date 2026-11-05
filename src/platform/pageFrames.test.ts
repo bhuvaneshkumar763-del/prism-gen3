@@ -68,17 +68,28 @@ describe('followTopFrame', () => {
     });
   });
 
-  it("translates with the top frame's language decision, turning an undetected source into 'auto'", () => {
-    expect(followTopFrame(decision(), TOP, ORIGINAL)).toEqual({
+  it("doesn't force the top frame's detected language on the frame: like the top frame, it's only a hint", () => {
+    // Safari names languages its own way (zh-Hans); sent as an explicit source, Google echoes the text back.
+    expect(followTopFrame(decision({ originalLanguage: 'zh-Hans' }), TOP, ORIGINAL)).toEqual({
       action: 'translate',
       targetLanguage: 'en',
-      sourceLanguage: 'zh',
+      sourceLanguage: undefined,
     });
     expect(followTopFrame(decision({ originalLanguage: 'und' }), TOP, ORIGINAL)).toEqual({
       action: 'translate',
       targetLanguage: 'en',
-      sourceLanguage: 'auto',
+      sourceLanguage: undefined,
     });
+  });
+
+  it("passes on the user's own From pick as the explicit source", () => {
+    expect(followTopFrame(decision({ originalLanguage: 'vi', sourceLanguageIsExplicit: true }), TOP, ORIGINAL)).toEqual(
+      {
+        action: 'translate',
+        targetLanguage: 'en',
+        sourceLanguage: 'vi',
+      },
+    );
   });
 
   it("stays in the original when the top frame decided not to translate and this frame isn't translated", () => {
@@ -90,14 +101,16 @@ describe('followTopFrame', () => {
     expect(followTopFrame(decision({ shouldTranslate: false }), TOP, translated)).toEqual({ action: 'restore' });
   });
 
-  it('re-translates when the top frame changed the target or source language', () => {
-    const translated: FollowerState = { translated: true, targetLanguage: 'en', sourceLanguage: 'zh' };
+  it('re-translates when the top frame changed the target language or the From pick', () => {
+    const translated: FollowerState = { translated: true, targetLanguage: 'en', sourceLanguage: undefined };
     expect(followTopFrame(decision({ targetLanguage: 'fr' }), TOP, translated)).toEqual({
       action: 'translate',
       targetLanguage: 'fr',
-      sourceLanguage: 'zh',
+      sourceLanguage: undefined,
     });
-    expect(followTopFrame(decision({ originalLanguage: 'ja' }), TOP, translated)).toEqual({
+    expect(
+      followTopFrame(decision({ originalLanguage: 'ja', sourceLanguageIsExplicit: true }), TOP, translated),
+    ).toEqual({
       action: 'translate',
       targetLanguage: 'en',
       sourceLanguage: 'ja',
@@ -105,7 +118,11 @@ describe('followTopFrame', () => {
   });
 
   it("doesn't re-translate a frame already showing the top frame's current decision", () => {
-    const translated: FollowerState = { translated: true, targetLanguage: 'en', sourceLanguage: 'zh' };
+    const translated: FollowerState = { translated: true, targetLanguage: 'en', sourceLanguage: undefined };
     expect(followTopFrame(decision(), TOP, translated)).toEqual({ action: 'stay' });
+    const picked: FollowerState = { translated: true, targetLanguage: 'en', sourceLanguage: 'vi' };
+    expect(followTopFrame(decision({ originalLanguage: 'vi', sourceLanguageIsExplicit: true }), TOP, picked)).toEqual({
+      action: 'stay',
+    });
   });
 });

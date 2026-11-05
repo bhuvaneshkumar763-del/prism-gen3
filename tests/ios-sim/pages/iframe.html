@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>框架页面</title>
+<style>body{font:18px/1.7 -apple-system,sans-serif;margin:16px}iframe{width:100%;height:220px;border:1px solid #ccc}#status{font:12px monospace;color:#666}</style>
+</head>
+<body>
+<div id="status" translate="no"></div>
+<p class="c">这是外层页面的一段文字，用来检查翻译是否同时作用于内嵌框架。</p>
+<iframe src="iframe-child.html" title="内嵌框架"></iframe>
+<script>window.CHECK = { page: 'iframe', leftover: /[一-鿿]/ };</script>
+<script src="check.js"></script>
+</body>
+</html>

@@ -1,5 +1,115 @@
 # prism-gen3
 
+## 0.3.2
+
+### Patch Changes
+
+- 67580f1: **Release 2: the reading bugs from the senior-engineer audit, plus release safety.**
+
+  - **No more doubled brackets.** `（本章完）` used to come out as `（(End of this chapter)`, and `【第一章】` as `【[Chapter 1]`. The saved sangtacviet search page had 18 lines like `【 [Trial Rules + …]`; they now read `[Trial Rules + …]`.
+  - **sangtacviet chapters are no longer cut every 300 words.** A chapter that wraps every word separately is sent in one go, so sentences aren't split in half, and it takes one round trip instead of about five.
+  - **No false "N% of this page came back untranslated" on those chapters.** Every word of a translated paragraph is now counted, not just the first.
+  - **Tapping the bubble while its panel is open closes the panel** instead of switching the page back to the original.
+  - **The bubble's pickers no longer make iOS zoom the page** (16px text on touch screens).
+  - **Picking a service that still needs its key no longer breaks every page.** The bubble and popup keep the current service and open Settings, where the service and key are set together.
+  - **Clearer Settings labels.** "Source language" is now "Source language for selected text" (page translation detects the language itself). The paragraph switch says that turning it off also stops sangtacviet's words being joined into sentences.
+  - **Stable releases now sort above their own betas** in Chrome and Firefox, so the next stable release can't break the way 0.3.0 did. One shared rule (`src/shared/manifestVersion.ts`) feeds both the build and the Mozilla lookup.
+  - **A daily check of free Google** (`npm run test:live`, run every morning by the Google canary workflow): a failed run means Google changed something, before it shows up as an untranslated chapter.
+  - **Rules for every AI session** at the top of `CLAUDE.md`: a failing test before each fix, no history in comments, pull requests only, one release per batch.
+
+  Checked on: built extension in desktop Chromium (9 end-to-end checks; saved sangtacviet search, pixiv and Wikipedia pages), plus live free Google, 2026-11-03. iPhone check comes before stable 0.3.2.
+
+- 00da544: **Release 3: fixing what caused the audit's B−.** Nothing about how pages are translated changes, except the small fixes listed here.
+
+  - **The code's comments are now short explanations, not a diary.** Comment lines went from 5,333 to 1,962 and the source from 13,191 lines to 9,889. The built extension was proven byte-for-byte identical before and after this cut, so it can't have changed what the extension does.
+  - **Rules that had been fixed in one place and missed in others now live in one shared place:**
+    - **Translated button labels, placeholders and tooltips** no longer overwrite a label the page changed while the translation was on its way, and "Show original" now restores the page's own current label (for example a Play/Pause toggle) instead of an old one. One failed request no longer stops later label changes from being translated.
+    - **The tab title** can no longer show the previous chapter's translated title after a fast chapter skip.
+    - **The translation cache** recovers from a browser hiccup on the next request, instead of switching itself off until the browser restarts.
+    - **Settings backups** are upgraded by the same code as stored settings.
+    - **Saving "Always translate this site" from the bubble or popup** rolls back visibly if the save fails, instead of showing a saved state that was never stored.
+    - **The hover tooltip** no longer sticks on an iPad or on an iPhone in desktop mode.
+    - **The extension's message checks** go through one shared wrapper instead of 14 copies.
+
+  Checked on: built extension in desktop Chromium (9 end-to-end checks; saved sangtacviet search, pixiv and Wikipedia pages; popup by hand), plus live free Google, 2026-11-03. iPhone check comes before stable 0.3.2.
+
+- 19b0753: **Release 4: safer releases and checks that check.** Nothing about how pages are translated changes.
+
+  - **Release notes and the real-page check are a tested script** (`scripts/release-notes.mjs`) instead of untested shell lines in the workflow.
+  - **A re-run release no longer ships an unsigned Firefox add-on.** When Mozilla says the version already exists, the release now downloads the copy Mozilla already signed. That is what had to be done by hand for 0.3.1.
+  - **The two CI guards now really catch what they claim.** Both read the code with the TypeScript parser instead of text patterns, and their own tests run broken examples through them: framework imports, imports from the wrong layer, ambient extension globals, and settings read in a way the screen won't update from.
+  - **CI is pinned and locked down.** Every GitHub Action is pinned to an exact commit, workflows get read-only permissions unless they need more, Firefox signing uses `web-ext` from the lockfile, and Dependabot proposes updates weekly.
+  - **The Safari app is current.** Its copy of the extension was three betas old and still held the removed AI provider; it now matches, its version follows `package.json`, CI fails when it falls behind, and a new workflow builds the macOS and iOS apps.
+  - **Coverage is checked per folder**, so a folder that loses tests fails CI.
+
+  Checked on: built extension in desktop Chromium (9 end-to-end checks; saved sangtacviet search, pixiv and Wikipedia pages), plus live free Google, 2026-11-03. iPhone check comes before stable 0.3.2.
+
+- 9d7192e: **Release 5: the code's structure, rebuilt behind tests.** Mostly invisible; the visible parts are listed first.
+
+  - **Translate and "Show original" now reach embedded frames the same way, whichever control you use.** Before, the bubble's "Show original" left a same-origin embedded frame (comments, a chapter viewer) translated, and translating from the popup, menu or shortcut skipped those frames. Checked in a real browser: the old code fails, the new code passes.
+  - **Clearer error messages.** The bubble now says what actually went wrong: Google limiting requests, the service being slow, Google changing how it answers (with the advice to switch to Google Cloud in Settings), or the free key not working. Before, almost everything said "Couldn't reach the translation service".
+  - **Short Vietnamese sentences that come back untranslated are noticed and retried.** Names, titles and genre labels are left alone. The rule was checked against every unchanged line on the three saved pages with zero false alarms, but not yet against a saved sangtacviet chapter.
+  - **The progress bar no longer disappears** while text that loads after the start of a translation is still translating.
+  - **A service that is down no longer gets one request per page change**; Prism waits out its retry pause.
+  - **The translation cache keeps one shared size**, so "Clear translation cache" in Settings takes effect everywhere at once, entries expire after 30 days, and a full disk can't leave a save hanging.
+  - **Under the hood:** the main translation file is split into smaller tested parts; the background's translation logic and the Settings tabs are separate, tested pieces; a realistic stand-in for Google is used in tests; dead code is removed. Existing tests were kept unchanged wherever behaviour stayed the same.
+
+  Checked on: built extension in desktop Chromium (9 end-to-end checks; saved sangtacviet search, pixiv and Wikipedia pages; popup by hand; same-origin iframe translate and restore from bubble and popup), plus live free Google, 2026-11-03. iPhone check comes before stable 0.3.2.
+
+- 2c8fdc9: **Release 6: the popup, bubble, select-to-translate and Settings, redesigned for the iPhone.**
+
+  - **Popup:** the main button now says what it will do ("Translate to English" / "Show original"). Only the main button, the language picker and the bubble switch sit on top; everything else is under "More". Language pills no longer jump when tapped. "Translate this site" is one Always / Default / Never choice. There is one Settings link, errors are in plain words ("Prism can't reach this page. Reload it and try again."), and every control is big enough to tap.
+  - **Bubble:** tapping outside its panel closes the panel without turning the page, and tapping the ball doesn't reach the page either. "Hide" can be undone for 5 seconds. The ball is bigger (44 px) and fades while you scroll so it doesn't cover text. A long press no longer starts an iOS text selection, a tap while it's busy gives a short pulse, it stays put when you pinch-zoom, and its colours are easier to read.
+  - **Select-to-translate now works on the iPhone.** You can select a single Chinese character, the button follows the text when you scroll, typing in it no longer triggers the site's shortcuts, and a failure shows plain words instead of spinning forever. The button sits below the selection on touch screens (iOS shows its own Copy menu above) and above it on desktop. The hover tooltip no longer covers the next line.
+  - **Settings:** lists show language names ("Chinese (Simplified)") instead of codes, and Arabic can be added again. Diagnostics are in plain words, without the misleading red "no". Settings links bring the open Settings tab forward instead of opening another. Reset position confirms, and the buttons and text are bigger and easier to read.
+
+  Checked on: built extension in desktop Chromium and a 375 px mobile emulation with touch (9 end-to-end checks; saved sangtacviet search, pixiv and Wikipedia pages; popup, bubble, selection and Settings clicked through with screenshots), plus live free Google, 2026-11-03. iPhone check comes before stable 0.3.2.
+
+- aa0c96b: **Release 7: every remaining audit finding settled, and the tools brought up to date.**
+
+  - **Reading**
+    - The bubble's **From** pick now reaches Google every time. Before, Prism sent "detect it yourself" and used your pick only when something went wrong.
+    - **Show original** also restores text that was off the page at that moment, such as a collapsed section or a list the site had swapped out.
+    - Simplified and Traditional Chinese are kept apart. Translating a Simplified page into Traditional is no longer skipped as "same language".
+    - When Google briefly limits Prism on a long chapter, the paragraphs it refused are retried once Google recovers, instead of being quietly left in the original language.
+    - A timed-out batch no longer resends text that was already translated. Lists, tables, menus and headers are grouped as their own blocks. Parts of a page marked "don't translate" are respected however the page spells it.
+  - **Bubble and select-to-translate**
+    - The bubble's **From** picker starts at Auto on each page, which is what the page actually uses. A language you picked on an earlier visit can be picked again.
+    - Typing in the bubble no longer triggers the site's own keyboard shortcuts.
+    - **Show original** works even while a translation is still running.
+    - Escape closes the selection button for good. Keyboard users can reach it with Tab, and its buttons are big enough to tap.
+  - **Menus and the popup**
+    - The right-click menus no longer disappear after Firefox or Orion restarts. The menu and the shortcut act on the tab you used, and the "!" failure badge shows on the tab that failed.
+    - Translating inside embedded frames keeps working after the browser pauses Prism's background in the middle of a page.
+    - The popup shows "Restoring…" while it restores. Settings' **Test translation** saves a key you just typed before testing it. The per-site **From** list moved to Page translation.
+  - **Behind the scenes**
+    - A browser without session storage can no longer break translation when Prism saves Google's key.
+    - Settings changed in another tab while Prism starts are no longer lost, and a failed save puts the old value back.
+    - The old LibreTranslate key is deleted from storage. A backup made by a newer Prism is refused with a clear message.
+    - The release gate now needs a real date and a browser or device on the "Checked on" line. The size check covers the Firefox build and single files. A release keeps only the signed Firefox file.
+    - TypeScript 7, Vitest 5, happy-dom 21, Biome 2.6 and the GitHub Actions v7 versions are all in.
+    - An outside senior-engineer review re-graded Prism at **B, up from B−** (`docs/reports/senior-engineer-regrade.md`). The three bugs it found are fixed in this release.
+
+  Checked on: built extension in desktop Chromium (9 end-to-end checks; saved sangtacviet search, pixiv and Wikipedia pages; popup by hand; right-click menus after a background restart), plus live free Google, 2026-11-04. iPhone check comes before stable 0.3.2.
+
+- **Release 8: checked on an iPhone (simulated), and four iPhone problems fixed. This is stable 0.3.2.**
+
+  - **Select-to-translate on iOS 26.** Prism's translate button used to sit exactly where iOS 26 now draws its own Copy / Find Selection / Look Up menu, so a tap hit Apple's menu instead. On touch screens the button now sits on the selected line itself, just after the selected text. Tapping it also closes iOS's menu, so the menu no longer covers the translation.
+  - **Pages with a frame inside them now translate on Safari.** Three things kept the embedded part in its original language:
+    - Safari doesn't say which tab a frame's message comes from, so the frame couldn't find the main page's instructions. The main page now hands its frames a one-time key to look them up with.
+    - The frame threw that key away, because of how Safari shows windows to extensions. It now accepts it from its own website.
+    - The frame passed the main page's guess at the language to Google as a firm instruction. Safari names Chinese differently from Google, so Google sent the text back unchanged. Now only a language you pick in the bubble's **From** menu is passed on that way, as on the main page.
+  - **A new automatic iPhone check.** On a GitHub Mac, Prism is installed in an iPhone simulator and switched on in Settings. Safari then goes through the reading checklist on test pages, with a screenshot at every step:
+    - a Chinese chapter ending （本章完）;
+    - a long word-by-word Vietnamese chapter;
+    - the bubble's panel and From picker;
+    - select-to-translate;
+    - a page with a frame inside it;
+    - the popup and Settings.
+  - Test pages can ask a frame to record what Prism did in it, because a simulated iPhone has no console to read. Ordinary pages never see this.
+
+  Checked on: Chinese chapter, long word-per-element Vietnamese chapter, same-origin iframe and plain test pages (bubble, From picker, select-to-translate, popup, Settings), Safari on iPhone Simulator (iPhone 17, iOS 26.5), 2026-11-05. Orion's own extension layer is not covered by the simulator.
+
 ## 0.3.2-beta.5
 
 ### Patch Changes

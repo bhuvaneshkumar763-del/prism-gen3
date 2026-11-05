@@ -315,6 +315,16 @@ Severity for Open rows is the audit's own (Med, Low-Med, Low). "Design" and
 | RG-3 | Bubble From picker shows an earlier visit's pick that isn't in effect, and can't re-pick it | Re-grade | Closed | 207f847 | Picker starts at Auto on each page load |
 | RG-4 | `npm run compile` ran TypeScript 5.9, not 7 | Re-grade | Closed | 2f38fc0 | Script runs TypeScript 7 by path |
 
+## Found by the iPhone Simulator check (Release 8)
+
+| ID | Finding | Source | Status | Where | Note |
+|---|---|---|---|---|---|
+| SIM-1 | On iOS 26 the selection button sits under iOS's own Copy / Find Selection / Look Up menu, so a tap reaches Apple's menu | Simulator run 5 | Closed | cede0e8, f4d4e38 | On touch screens the button sits on the selected line, after its end; tapping it clears the selection so iOS's menu closes |
+| SIM-2 | Same-origin iframes never get the page's decision on Safari: Safari names no tab for a frame's message | Simulator runs 5–6 | Closed | f4d4e38 | The top frame hands its frames a page key; the background stores the decision under it too |
+| SIM-3 | The sub-frame dropped the page key: `event.source === window.top` never holds in Safari's content-script world | Simulator run 7 | Closed | 630e69b | The key is taken by origin; a forged key finds nothing |
+| SIM-4 | The sub-frame sent the top frame's detected language (Safari's `zh-Hans`) as an explicit source, so Google echoed the text | Simulator run 11 | Closed | 94d9278 | Only a From pick is explicit; a detected language is a hint, as in the top frame |
+| SIM-5 | The bubble panel's three pickers cut their labels short at iPhone width ("Englisl", "Googl") | Simulator run 12 screenshot | Open | components/bubble/bubbleStyles.ts | Cosmetic; left for the owner to prioritise |
+
 ## Release 7 outcome
 
 Every Open row was settled in Release 7 (marked `R7` in the table): fixed

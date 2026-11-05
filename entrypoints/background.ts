@@ -18,7 +18,13 @@ import {
   TRANSLATE_SELECTION_MENU_ID,
 } from './lib/contextMenus';
 import { createFailureBadge } from './lib/failureBadge';
-import { createFrameDecisionStore, type SessionArea } from './lib/frameDecisions';
+import {
+  createFrameDecisionStore,
+  forgetTabDecision,
+  lookUpFrameDecision,
+  recordFrameDecision,
+  type SessionArea,
+} from './lib/frameDecisions';
 import { tabIdOrActive } from './lib/targetTab';
 
 /**
@@ -212,21 +218,17 @@ export default defineBackground(() => {
   // only `changeInfo.status`, no extra permission). The `mainFrameOrigin`
   // check in content.ts covers the race this can't close.
   browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
-    if (changeInfo.status === 'loading') void frameLanguageDecisions.delete(tabId);
+    if (changeInfo.status === 'loading') void forgetTabDecision(frameLanguageDecisions, tabId);
   });
 
   // Answered once stored, so a worker restart right after can't lose it.
   onTrustedMessage('reportFrameLanguageDecision', async (message) => {
-    const tabId = message.sender.tab?.id;
-    if (tabId === undefined) return;
-    await frameLanguageDecisions.set(tabId, message.data);
+    await recordFrameDecision(frameLanguageDecisions, message.sender.tab?.id, message.data);
   });
 
-  onTrustedMessage('getFrameLanguageDecision', (message) => {
-    const tabId = message.sender.tab?.id;
-    if (tabId === undefined) return null;
-    return frameLanguageDecisions.get(tabId);
-  });
+  onTrustedMessage('getFrameLanguageDecision', (message) =>
+    lookUpFrameDecision(frameLanguageDecisions, message.sender.tab?.id, message.data?.pageKey),
+  );
 
   onTrustedMessage('detectTabLanguage', async (message) => {
     const tabId = message.sender.tab?.id;

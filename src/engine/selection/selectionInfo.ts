@@ -44,6 +44,24 @@ export function rangesRect(ranges: readonly Range[]): DOMRect | null {
   return { left, top, right, bottom, width: right - left, height: bottom - top, x: left, y: top } as DOMRect;
 }
 
+/** A line box: where one line of the selection starts, ends and sits. */
+export interface LineRect {
+  top: number;
+  bottom: number;
+  left: number;
+  right: number;
+}
+
+/** The box of the selection's last visible line, where its end handle sits; null when nothing visible is selected. */
+export function lastLineRect(ranges: readonly Range[]): LineRect | null {
+  for (const range of [...ranges].reverse()) {
+    for (const { top, bottom, left, right, width, height } of Array.from(range.getClientRects()).reverse()) {
+      if (width > 0 || height > 0) return { top, bottom, left, right };
+    }
+  }
+  return null;
+}
+
 /** One letter is a whole word in Chinese and Japanese; one Latin letter is noise. */
 const SINGLE_NON_LATIN_LETTER = /^(?!\p{Script=Latin})\p{L}$/u;
 

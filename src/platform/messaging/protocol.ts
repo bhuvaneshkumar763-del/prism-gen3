@@ -53,9 +53,12 @@ interface ProtocolMap {
    * translate/restore command (from any control, or the auto-translate decision)
    * so same-origin sub-frames follow it. Same-origin scoping is the caller's job.
    */
-  reportFrameLanguageDecision(data: FrameLanguageDecision): void;
-  /** A same-origin sub-frame → background: asks for the main frame's decision, if it's reported one yet. */
-  getFrameLanguageDecision(): FrameLanguageDecision | null;
+  reportFrameLanguageDecision(data: FrameLanguageDecision & { pageKey?: string }): void;
+  /**
+   * A same-origin sub-frame → background: asks for the main frame's decision, if
+   * it's reported one yet; by the page key the main frame posted, when it has it.
+   */
+  getFrameLanguageDecision(data?: { pageKey?: string }): FrameLanguageDecision | null;
   /**
    * Content script → background: detect the tab's language via the
    * background-only `browser.tabs.detectLanguage()`, which sees the real
@@ -67,11 +70,10 @@ interface ProtocolMap {
 export interface FrameLanguageDecision {
   shouldTranslate: boolean;
   targetLanguage: string;
-  /**
-   * The main frame's detected source language, so a sub-frame passes it as an
-   * explicit source instead of falling back to `'auto'`.
-   */
+  /** The main frame's source language: the user's From pick, or else its detected language. */
   originalLanguage: string;
+  /** True only for a From pick, which sub-frames pass on as an explicit source; a detected language isn't. */
+  sourceLanguageIsExplicit?: boolean;
   /**
    * The reporting main frame's origin. The background's entry isn't cleared on
    * navigation, so a sub-frame rejects a decision whose origin doesn't match
