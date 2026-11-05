@@ -363,4 +363,45 @@ final class PrismSimChecks: XCTestCase {
             shot("safari-tabs")
         }
     }
+
+    /// Counts sangtacviet's chapter rows still in Vietnamese ("Chương …") and in English ("Chapter …").
+    func chapterRowCounts(_ step: String) -> (vi: Int, en: Int) {
+        let rows = safari.webViews.staticTexts.allElementsBoundByIndex.map { $0.label }
+        let vi = rows.filter { $0.hasPrefix("Chương") }.count
+        let en = rows.filter { $0.hasPrefix("Chapter") }.count
+        let attachment = XCTAttachment(string: "\(step): Chương \(vi), Chapter \(en)\n" + rows.prefix(80).joined(separator: "\n"))
+        attachment.name = "tree-sangtacviet-\(step)"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        return (vi, en)
+    }
+
+    /// The owner's live page, on Safari's WebKit: does the clipped chapter list translate, and stay so after Expand?
+    /// Recorded rather than strict, since a live site changes; it fails only when nothing translated.
+    func test8_liveSangtacvietBook() throws {
+        try requireExtension()
+        XCUIDevice.shared.system.open(URL(string: "https://sangtacviet.vip/truyen/qidian/1/1044603424/")!)
+        XCTAssertTrue(safari.wait(for: .runningForeground, timeout: 30), "Safari didn't open")
+        Thread.sleep(forTimeInterval: 15)
+        shot("sangtacviet-loaded")
+        tapBall()
+        Thread.sleep(forTimeInterval: 40)
+        shot("sangtacviet-translated")
+        let before = chapterRowCounts("translated")
+
+        var expand = safari.webViews.staticTexts["Expand"]
+        if !expand.exists { expand = safari.webViews.staticTexts["Mở rộng"] }
+        var swipes = 0
+        while !(expand.exists && expand.isHittable) && swipes < 12 {
+            safari.swipeUp()
+            swipes += 1
+        }
+        if expand.exists && expand.isHittable { expand.tap() }
+        Thread.sleep(forTimeInterval: 20)
+        shot("sangtacviet-expanded-top")
+        for _ in 0..<6 { safari.swipeUp() }
+        shot("sangtacviet-expanded-lower")
+        let after = chapterRowCounts("expanded")
+        XCTAssertGreaterThan(before.en + after.en, 0, "No chapter title was translated on the live page")
+    }
 }
