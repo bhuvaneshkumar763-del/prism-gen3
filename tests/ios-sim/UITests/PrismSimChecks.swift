@@ -11,6 +11,8 @@ final class PrismSimChecks: XCTestCase {
 
     override func setUp() {
         continueAfterFailure = true
+        // A hang fails only its own test, so the other tests' screenshots are still kept.
+        executionTimeAllowance = 300
     }
 
     // MARK: helpers
@@ -365,15 +367,20 @@ final class PrismSimChecks: XCTestCase {
     }
 
     /// Counts sangtacviet's chapter rows still in Vietnamese ("Chương …") and in English ("Chapter …").
+    /// Predicate counts take one snapshot each; walking every element of a 1,000-row page hangs.
     func chapterRowCounts(_ step: String) -> (vi: Int, en: Int) {
-        let rows = safari.webViews.staticTexts.allElementsBoundByIndex.map { $0.label }
-        let vi = rows.filter { $0.hasPrefix("Chương") }.count
-        let en = rows.filter { $0.hasPrefix("Chapter") }.count
-        let attachment = XCTAttachment(string: "\(step): Chương \(vi), Chapter \(en)\n" + rows.prefix(80).joined(separator: "\n"))
+        func count(_ query: XCUIElementQuery, _ prefix: String) -> Int {
+            query.matching(NSPredicate(format: "label BEGINSWITH %@", prefix)).count
+        }
+        let web = safari.webViews
+        let linksVi = count(web.links, "Chương"), linksEn = count(web.links, "Chapter")
+        let textsVi = count(web.staticTexts, "Chương"), textsEn = count(web.staticTexts, "Chapter")
+        let note = "\(step): links Chương \(linksVi), Chapter \(linksEn); texts Chương \(textsVi), Chapter \(textsEn)"
+        let attachment = XCTAttachment(string: note)
         attachment.name = "tree-sangtacviet-\(step)"
         attachment.lifetime = .keepAlways
         add(attachment)
-        return (vi, en)
+        return (max(linksVi, textsVi), max(linksEn, textsEn))
     }
 
     /// The owner's live page, on Safari's WebKit: does the clipped chapter list translate, and stay so after Expand?
